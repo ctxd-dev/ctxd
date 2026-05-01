@@ -431,6 +431,30 @@ def test_cli_search_accepts_unquoted_query_tokens() -> None:
     assert '"results": []' in stdout.getvalue()
 
 
+def test_cli_search_restores_shell_stripped_text_quotes() -> None:
+    stdout = StringIO()
+
+    with patch(
+        "ctxd.cli.Client.search",
+        return_value=type(
+            "SearchResultLike",
+            (),
+            {
+                "model_dump": lambda self: {
+                    "results": [],
+                    "error": None,
+                    "dsl_parse_error": None,
+                }
+            },
+        )(),
+    ) as search, redirect_stdout(stdout):
+        exit_code = main(["search", "text:deployment process", "application:slack"])
+
+    assert exit_code == 0
+    search.assert_called_once_with('text:"deployment process" application:slack')
+    assert '"results": []' in stdout.getvalue()
+
+
 def test_cli_search_outputs_json_for_empty_success() -> None:
     stdout = StringIO()
 

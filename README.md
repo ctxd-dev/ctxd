@@ -66,3 +66,8 @@ from ctxd import AsyncClient
 async with AsyncClient(api_key="<api-key>") as client:
     results = await client.search("text:deployment")
 ```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the package version bump and release
+process.

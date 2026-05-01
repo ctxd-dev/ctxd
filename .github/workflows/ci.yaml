@@ -4,7 +4,6 @@ on:
   pull_request:
   push:
     branches: [main]
-    tags: ["v*"]
   workflow_dispatch:
 
 jobs:
@@ -34,7 +33,7 @@ jobs:
         run: uv build
 
   publish:
-    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     name: Publish to PyPI
     needs: test
     runs-on: ubuntu-latest
@@ -62,6 +61,18 @@ jobs:
       - name: Build Distributions
         run: uv build
 
-      - name: Publish Distributions to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Check PyPI Version
+        id: pypi_version
+        run: |
+          VERSION=$(uv run python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+          if curl -fs "https://pypi.org/pypi/ctxd/$VERSION/json" > /dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish Distributions to PyPI
+        if: ${{ steps.pypi_version.outputs.exists == 'false' }}
+        uses: pypa/gh-action-pypi-publish@release/v1
