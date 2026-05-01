@@ -4,6 +4,7 @@ import argparse
 import getpass
 import json
 import os
+import re
 import sys
 import webbrowser
 from typing import Sequence
@@ -30,7 +31,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         client = Client()
 
         if args.command == "search":
-            result = client.search(" ".join(args.query))
+            result = client.search(_normalize_search_query(args.query))
             return _emit_result(result.model_dump(), as_json=True)
         if args.command == "fetch":
             result = client.fetch_document(args.document_uid)
@@ -151,6 +152,32 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     return parser
+
+
+def _normalize_search_query(query_tokens: Sequence[str]) -> str:
+    normalized_tokens = [
+        _quote_shell_stripped_text_token(token) for token in query_tokens
+    ]
+    return " ".join(normalized_tokens)
+
+
+def _quote_shell_stripped_text_token(token: str) -> str:
+    if not token.lower().startswith("text:"):
+        return token
+
+    value = token[5:]
+    if not value or not re.search(r"\s", value):
+        return token
+
+    stripped_value = value.strip()
+    if (
+        stripped_value.startswith(("\"", "'", "("))
+        or stripped_value.endswith(("\"", "'", ")"))
+    ):
+        return token
+
+    escaped_value = stripped_value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'text:"{escaped_value}"'
 
 
 def _handle_login(args: argparse.Namespace) -> int:
