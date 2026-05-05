@@ -10,6 +10,8 @@ Python SDK and CLI for the `ctxd` platform.
 
 CTXD is cloud context infrastructure for AI agents. It connects to cloud files and data across apps such as Google Drive, Slack, GitHub, and Google Calendar, then parses, indexes, and syncs that content so it can be searched from the same permission-aware index through the Python SDK, CLI, MCP, or REST API.
 
+For a fuller introduction, see the [CTXD docs overview](https://ctxd.dev/docs/overview/).
+
 Install:
 
 ```bash
