@@ -1,7 +1,7 @@
 # ctxd
 
 <p align="center">
-  <img src="img/ctxd.png" alt="ctxd logo" width="240">
+  <img src="img/ctxd.png" alt="ctxd logo" width="160">
 </p>
 
 Python SDK and CLI for the `ctxd` platform.
