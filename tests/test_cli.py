@@ -50,6 +50,9 @@ def test_cli_search_help_describes_query_and_json_output() -> None:
     assert "Search output is always JSON." in output
     assert "QUERY" in output
     assert "text:deployment application:slack" in output
+    assert 'text:"a b" runs a semantic multi-word text search.' in output
+    assert "text:(a b) matches any listed term" in output
+    assert "application:x OR application:y" in output
 
 
 def test_cli_profile_json_calls_sdk() -> None:
@@ -339,6 +342,32 @@ def test_cli_fetch_returns_document() -> None:
     assert "Deploy completed successfully." in output
 
 
+def test_cli_fetch_returns_nonzero_exit_code_for_unresolved_document() -> None:
+    stdout = StringIO()
+    document = DocumentResult(error="Document UID could not be resolved.")
+
+    with patch(
+        "ctxd.cli.Client.fetch_document", return_value=document
+    ), redirect_stdout(stdout):
+        exit_code = main(["fetch", "missing-doc"])
+
+    assert exit_code == 1
+    assert stdout.getvalue() == "Error: Document UID could not be resolved.\n"
+
+
+def test_cli_fetch_json_returns_nonzero_exit_code_for_unresolved_document() -> None:
+    stdout = StringIO()
+    document = DocumentResult(error="Document UID could not be resolved.")
+
+    with patch(
+        "ctxd.cli.Client.fetch_document", return_value=document
+    ), redirect_stdout(stdout):
+        exit_code = main(["fetch", "missing-doc", "--json"])
+
+    assert exit_code == 1
+    assert '"error": "Document UID could not be resolved."' in stdout.getvalue()
+
+
 def test_cli_search_returns_nonzero_exit_code_for_payload_errors() -> None:
     stdout = StringIO()
 
@@ -354,6 +383,82 @@ def test_cli_search_returns_nonzero_exit_code_for_payload_errors() -> None:
 
     assert exit_code == 1
     assert '"error": "bad query"' in stdout.getvalue()
+
+
+def test_cli_search_rejects_empty_application_filter() -> None:
+    stderr = StringIO()
+
+    with patch("ctxd.cli.Client.search") as search, patch("sys.stderr", stderr):
+        exit_code = main(["search", "application:"])
+
+    assert exit_code == 1
+    search.assert_not_called()
+    assert "application: requires an app name" in stderr.getvalue()
+
+
+def test_cli_search_rejects_grouped_application_filter() -> None:
+    stderr = StringIO()
+
+    with patch("ctxd.cli.Client.search") as search, patch("sys.stderr", stderr):
+        exit_code = main(
+            ["search", "application:(google_drive OR slack)", "text:onboarding"]
+        )
+
+    assert exit_code == 1
+    search.assert_not_called()
+    assert "grouped application filters are not supported" in stderr.getvalue()
+
+
+def test_cli_search_rejects_repeated_application_filters_without_or() -> None:
+    stderr = StringIO()
+
+    with patch("ctxd.cli.Client.search") as search, patch("sys.stderr", stderr):
+        exit_code = main(
+            [
+                "search",
+                "application:google_drive",
+                "application:slack",
+                "text:onboarding",
+            ]
+        )
+
+    assert exit_code == 1
+    search.assert_not_called()
+    assert "repeated application filters must be joined with OR" in stderr.getvalue()
+
+
+def test_cli_search_allows_application_filters_joined_by_or() -> None:
+    stdout = StringIO()
+
+    with patch(
+        "ctxd.cli.Client.search",
+        return_value=type(
+            "SearchResultLike",
+            (),
+            {
+                "model_dump": lambda self: {
+                    "results": [],
+                    "error": None,
+                    "dsl_parse_error": None,
+                }
+            },
+        )(),
+    ) as search, redirect_stdout(stdout):
+        exit_code = main(
+            [
+                "search",
+                "application:google_drive",
+                "OR",
+                "application:slack",
+                "text:onboarding",
+            ]
+        )
+
+    assert exit_code == 0
+    search.assert_called_once_with(
+        "application:google_drive OR application:slack text:onboarding"
+    )
+    assert '"results": []' in stdout.getvalue()
 
 
 def test_cli_search_prints_clean_message_for_network_errors(

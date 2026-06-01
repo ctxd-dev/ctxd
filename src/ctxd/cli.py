@@ -5,6 +5,7 @@ import getpass
 import json
 import os
 import re
+import shlex
 import sys
 import webbrowser
 from typing import Sequence
@@ -31,7 +32,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         client = Client()
 
         if args.command == "search":
-            result = client.search(_normalize_search_query(args.query))
+            query = _normalize_search_query(args.query)
+            _validate_search_query(query)
+            result = client.search(query)
             return _emit_result(result.model_dump(), as_json=True)
         if args.command == "fetch":
             result = client.fetch_document(args.document_uid)
@@ -117,7 +120,18 @@ def _build_parser() -> argparse.ArgumentParser:
         epilog=(
             "Examples:\n"
             "  ctxd search text:deployment application:slack\n"
-            '  ctxd search "text:deployment application:slack"'
+            '  ctxd search "text:deployment application:slack"\n'
+            '  ctxd search \'text:"incident response" application:google_drive\'\n'
+            "  ctxd search 'text:(incident response) application:google_drive'\n"
+            "  ctxd search 'text:incident AND text:response application:google_drive'\n"
+            "  ctxd search 'application:google_drive OR application:slack text:onboarding'\n"
+            "\n"
+            "DSL notes:\n"
+            '  text:"a b" runs a semantic multi-word text search.\n'
+            "  text:(a b) matches any listed term, equivalent to text:a OR text:b.\n"
+            "  text:a AND text:b requires both terms.\n"
+            "  Use application:x OR application:y for multi-app unions; grouped or repeated\n"
+            "  application filters are rejected because they can otherwise look successful."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -178,6 +192,45 @@ def _quote_shell_stripped_text_token(token: str) -> str:
 
     escaped_value = stripped_value.replace("\\", "\\\\").replace('"', '\\"')
     return f'text:"{escaped_value}"'
+
+
+def _validate_search_query(query: str) -> None:
+    tokens = _split_search_query(query)
+    _validate_application_filters(tokens)
+
+
+def _split_search_query(query: str) -> list[str]:
+    try:
+        return shlex.split(query)
+    except ValueError:
+        return query.split()
+
+
+def _validate_application_filters(tokens: Sequence[str]) -> None:
+    application_positions: list[int] = []
+    for index, token in enumerate(tokens):
+        if not token.lower().startswith("application:"):
+            continue
+
+        value = token[len("application:") :]
+        if not value:
+            raise ValueError(
+                "Invalid search query: application: requires an app name, for example application:slack."
+            )
+        if value.startswith("("):
+            raise ValueError(
+                "Invalid search query: grouped application filters are not supported. "
+                "Use application:google_drive OR application:slack."
+            )
+        application_positions.append(index)
+
+    for left, right in zip(application_positions, application_positions[1:]):
+        between = [token.upper() for token in tokens[left + 1 : right]]
+        if "OR" not in between:
+            raise ValueError(
+                "Invalid search query: repeated application filters must be joined with OR, "
+                "for example application:google_drive OR application:slack."
+            )
 
 
 def _handle_login(args: argparse.Namespace) -> int:
@@ -311,6 +364,14 @@ def _emit_result(payload: dict, *, as_json: bool) -> int:
 
 
 def _payload_has_error(payload: dict) -> bool:
+    if "results" in payload:
+        return bool(payload.get("error") or payload.get("dsl_parse_error"))
     if payload.get("error"):
         return True
-    return bool(payload.get("dsl_parse_error"))
+    if payload.get("dsl_parse_error"):
+        return True
+    return "error" in payload and _document_payload_is_unresolved(payload)
+
+
+def _document_payload_is_unresolved(payload: dict) -> bool:
+    return not any(payload.get(key) for key in ("id", "title", "text", "url"))
