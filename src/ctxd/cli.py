@@ -61,7 +61,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "Examples:\n"
             "  ctxd login\n"
             "  ctxd install-app\n"
-            "  ctxd search text:deployment application:slack\n"
+            "  ctxd search application:slack text:deployment\n"
             "  ctxd fetch doc-123 --json"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -119,19 +119,17 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
         epilog=(
             "Examples:\n"
-            "  ctxd search text:deployment application:slack\n"
-            '  ctxd search "text:deployment application:slack"\n'
-            '  ctxd search \'text:"incident response" application:google_drive\'\n'
-            "  ctxd search 'text:(incident response) application:google_drive'\n"
-            "  ctxd search 'text:incident AND text:response application:google_drive'\n"
-            "  ctxd search 'application:google_drive OR application:slack text:onboarding'\n"
+            "  ctxd search text:deployment\n"
+            "  ctxd search application:slack text:deployment\n"
+            "  ctxd search application:google_drive text:incident response\n"
+            '  ctxd search application:google_drive \'text:"incident response"\'\n'
             "\n"
-            "DSL notes:\n"
-            '  text:"a b" runs a semantic multi-word text search.\n'
-            "  text:(a b) matches any listed term, equivalent to text:a OR text:b.\n"
-            "  text:a AND text:b requires both terms.\n"
-            "  Use application:x OR application:y for multi-app unions; grouped or repeated\n"
-            "  application filters are rejected because they can otherwise look successful."
+            "Query format:\n"
+            "  application:<app> text:<terms>\n"
+            "  application:<app> is optional; omit it to search all connected apps.\n"
+            "  If application:<app> is present, it must be the first token.\n"
+            "  Only one application filter is supported.\n"
+            '  Use text:"a b" when your shell preserves the quotes and you need exact text.'
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -139,7 +137,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "query",
         nargs="+",
         metavar="QUERY",
-        help="Search query or DSL tokens, for example: text:deployment application:slack.",
+        help="Search query tokens, for example: application:slack text:deployment.",
     )
 
     fetch_parser = subparsers.add_parser(
@@ -197,6 +195,7 @@ def _quote_shell_stripped_text_token(token: str) -> str:
 def _validate_search_query(query: str) -> None:
     tokens = _split_search_query(query)
     _validate_application_filters(tokens)
+    _validate_boolean_operators(tokens)
 
 
 def _split_search_query(query: str) -> list[str]:
@@ -220,16 +219,31 @@ def _validate_application_filters(tokens: Sequence[str]) -> None:
         if value.startswith("("):
             raise ValueError(
                 "Invalid search query: grouped application filters are not supported. "
-                "Use application:google_drive OR application:slack."
+                "Use one leading application filter, for example application:google_drive text:onboarding."
             )
         application_positions.append(index)
 
-    for left, right in zip(application_positions, application_positions[1:]):
-        between = [token.upper() for token in tokens[left + 1 : right]]
-        if "OR" not in between:
+    if not application_positions:
+        return
+    if application_positions[0] != 0:
+        raise ValueError(
+            "Invalid search query: application: must be the first token, "
+            "for example application:slack text:deployment."
+        )
+    if len(application_positions) > 1:
+        raise ValueError(
+            "Invalid search query: only one application filter is supported. "
+            "Omit application: to search all connected apps."
+        )
+
+
+def _validate_boolean_operators(tokens: Sequence[str]) -> None:
+    operators = {"AND", "OR"}
+    for token in tokens:
+        if token.upper() in operators:
             raise ValueError(
-                "Invalid search query: repeated application filters must be joined with OR, "
-                "for example application:google_drive OR application:slack."
+                "Invalid search query: AND/OR clauses are not supported. "
+                "Use application:<app> text:<terms>, or omit application:<app> to search all apps."
             )
 
 

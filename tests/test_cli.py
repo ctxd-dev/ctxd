@@ -35,7 +35,7 @@ def test_cli_help_describes_commands() -> None:
     assert "Store an API key for future CLI and SDK calls." in output
     assert "install-app" in output
     assert "Open the app installation page" in output
-    assert "ctxd search text:deployment application:slack" in output
+    assert "ctxd search application:slack text:deployment" in output
 
 
 def test_cli_search_help_describes_query_and_json_output() -> None:
@@ -49,10 +49,12 @@ def test_cli_search_help_describes_query_and_json_output() -> None:
     assert "Search indexed app content using ctxd DSL." in output
     assert "Search output is always JSON." in output
     assert "QUERY" in output
-    assert "text:deployment application:slack" in output
-    assert 'text:"a b" runs a semantic multi-word text search.' in output
-    assert "text:(a b) matches any listed term" in output
-    assert "application:x OR application:y" in output
+    assert "ctxd search text:deployment" in output
+    assert "ctxd search application:slack text:deployment" in output
+    assert "application:<app> is optional" in output
+    assert "must be the first token" in output
+    assert "Only one application filter is supported" in output
+    assert 'Use text:"a b"' in output
 
 
 def test_cli_profile_json_calls_sdk() -> None:
@@ -409,7 +411,24 @@ def test_cli_search_rejects_grouped_application_filter() -> None:
     assert "grouped application filters are not supported" in stderr.getvalue()
 
 
-def test_cli_search_rejects_repeated_application_filters_without_or() -> None:
+def test_cli_search_rejects_application_filter_after_text() -> None:
+    stderr = StringIO()
+
+    with patch("ctxd.cli.Client.search") as search, patch("sys.stderr", stderr):
+        exit_code = main(
+            [
+                "search",
+                "text:onboarding",
+                "application:google_drive",
+            ]
+        )
+
+    assert exit_code == 1
+    search.assert_not_called()
+    assert "application: must be the first token" in stderr.getvalue()
+
+
+def test_cli_search_rejects_repeated_application_filters() -> None:
     stderr = StringIO()
 
     with patch("ctxd.cli.Client.search") as search, patch("sys.stderr", stderr):
@@ -424,10 +443,21 @@ def test_cli_search_rejects_repeated_application_filters_without_or() -> None:
 
     assert exit_code == 1
     search.assert_not_called()
-    assert "repeated application filters must be joined with OR" in stderr.getvalue()
+    assert "only one application filter is supported" in stderr.getvalue()
 
 
-def test_cli_search_allows_application_filters_joined_by_or() -> None:
+def test_cli_search_rejects_boolean_operators() -> None:
+    stderr = StringIO()
+
+    with patch("ctxd.cli.Client.search") as search, patch("sys.stderr", stderr):
+        exit_code = main(["search", "text:incident", "AND", "text:response"])
+
+    assert exit_code == 1
+    search.assert_not_called()
+    assert "AND/OR clauses are not supported" in stderr.getvalue()
+
+
+def test_cli_search_accepts_leading_application_filter() -> None:
     stdout = StringIO()
 
     with patch(
@@ -448,16 +478,12 @@ def test_cli_search_allows_application_filters_joined_by_or() -> None:
             [
                 "search",
                 "application:google_drive",
-                "OR",
-                "application:slack",
                 "text:onboarding",
             ]
         )
 
     assert exit_code == 0
-    search.assert_called_once_with(
-        "application:google_drive OR application:slack text:onboarding"
-    )
+    search.assert_called_once_with("application:google_drive text:onboarding")
     assert '"results": []' in stdout.getvalue()
 
 
@@ -529,10 +555,10 @@ def test_cli_search_accepts_unquoted_query_tokens() -> None:
             },
         )(),
     ) as search, redirect_stdout(stdout):
-        exit_code = main(["search", "text:test", "application:slack"])
+        exit_code = main(["search", "application:slack", "text:test"])
 
     assert exit_code == 0
-    search.assert_called_once_with("text:test application:slack")
+    search.assert_called_once_with("application:slack text:test")
     assert '"results": []' in stdout.getvalue()
 
 
@@ -553,10 +579,10 @@ def test_cli_search_restores_shell_stripped_text_quotes() -> None:
             },
         )(),
     ) as search, redirect_stdout(stdout):
-        exit_code = main(["search", "text:deployment process", "application:slack"])
+        exit_code = main(["search", "application:slack", "text:deployment process"])
 
     assert exit_code == 0
-    search.assert_called_once_with('text:"deployment process" application:slack')
+    search.assert_called_once_with('application:slack text:"deployment process"')
     assert '"results": []' in stdout.getvalue()
 
 
