@@ -240,7 +240,7 @@ def _validate_text_filters(tokens: Sequence[str]) -> None:
 def _validate_boolean_operators(tokens: Sequence[str]) -> None:
     operators = {"AND", "OR"}
     for token in tokens:
-        if token.upper() in operators:
+        if token in operators:
             raise ValueError(
                 "Invalid search query: AND/OR clauses are not supported. "
                 "Use application:<app> text:<terms>, or omit application:<app> to search all apps."

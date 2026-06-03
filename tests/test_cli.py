@@ -457,6 +457,32 @@ def test_cli_search_rejects_boolean_operators() -> None:
     assert "AND/OR clauses are not supported" in stderr.getvalue()
 
 
+def test_cli_search_allows_lowercase_and_or_as_text_terms() -> None:
+    stdout = StringIO()
+
+    with patch(
+        "ctxd.cli.Client.search",
+        return_value=type(
+            "SearchResultLike",
+            (),
+            {
+                "model_dump": lambda self: {
+                    "results": [],
+                    "error": None,
+                    "dsl_parse_error": None,
+                }
+            },
+        )(),
+    ) as search, redirect_stdout(stdout):
+        exit_code = main(
+            ["search", "text:research", "and", "development", "or", "testing"]
+        )
+
+    assert exit_code == 0
+    search.assert_called_once_with("text:research and development or testing")
+    assert '"results": []' in stdout.getvalue()
+
+
 def test_cli_search_rejects_quoted_text_filter() -> None:
     stderr = StringIO()
 
