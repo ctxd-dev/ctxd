@@ -121,14 +121,13 @@ def _build_parser() -> argparse.ArgumentParser:
             "Examples:\n"
             "  ctxd search text:deployment\n"
             "  ctxd search application:slack text:deployment\n"
-            "  ctxd search application:google_drive text:incident response\n"
             "\n"
             "Query format:\n"
-            "  application:<app> text:<terms>\n"
+            "  application:<app> text:<term>\n"
             "  application:<app> is optional; omit it to search all connected apps.\n"
             "  If application:<app> is present, it must be the first token.\n"
             "  Only one application filter is supported.\n"
-            "  Use simple text terms; quoted and parenthesized text values are not supported."
+            "  Use one text term; multi-word, quoted, and parenthesized text values are not supported."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -173,8 +172,8 @@ def _validate_search_query(query: str) -> None:
     _validate_raw_text_filters(query)
     tokens = _split_search_query(query)
     _validate_application_filters(tokens)
-    _validate_text_filters(tokens)
     _validate_boolean_operators(tokens)
+    _validate_text_filters(tokens)
 
 
 def _split_search_query(query: str) -> list[str]:
@@ -188,7 +187,7 @@ def _validate_raw_text_filters(query: str) -> None:
     if re.search(r"(?i)(?:^|\s)text:[\"'()]", query):
         raise ValueError(
             "Invalid search query: quoted and parenthesized text values are not supported. "
-            "Use simple text terms, for example text:incident response."
+            "Use a single text term, for example text:incident."
         )
 
 
@@ -225,7 +224,7 @@ def _validate_application_filters(tokens: Sequence[str]) -> None:
 
 
 def _validate_text_filters(tokens: Sequence[str]) -> None:
-    for token in tokens:
+    for index, token in enumerate(tokens):
         if not token.lower().startswith("text:"):
             continue
 
@@ -233,7 +232,19 @@ def _validate_text_filters(tokens: Sequence[str]) -> None:
         if value.startswith(("\"", "'", "(")) or value.endswith(("\"", "'", ")")):
             raise ValueError(
                 "Invalid search query: quoted and parenthesized text values are not supported. "
-                "Use simple text terms, for example text:incident response."
+                "Use a single text term, for example text:incident."
+            )
+        if re.search(r"\s", value):
+            raise ValueError(
+                "Invalid search query: multi-word text values are not supported by the current DSL. "
+                "Use a single text term, for example text:incident."
+            )
+        if index + 1 < len(tokens) and not tokens[index + 1].lower().startswith(
+            ("application:", "text:")
+        ):
+            raise ValueError(
+                "Invalid search query: multi-word text values are not supported by the current DSL. "
+                "Use a single text term, for example text:incident."
             )
 
 
@@ -243,7 +254,7 @@ def _validate_boolean_operators(tokens: Sequence[str]) -> None:
         if token in operators:
             raise ValueError(
                 "Invalid search query: AND/OR clauses are not supported. "
-                "Use application:<app> text:<terms>, or omit application:<app> to search all apps."
+                "Use application:<app> text:<term>, or omit application:<app> to search all apps."
             )
 
 

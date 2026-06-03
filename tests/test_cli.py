@@ -54,7 +54,7 @@ def test_cli_search_help_describes_query_and_json_output() -> None:
     assert "application:<app> is optional" in output
     assert "must be the first token" in output
     assert "Only one application filter is supported" in output
-    assert "quoted and parenthesized text values are not supported" in output
+    assert "multi-word, quoted, and parenthesized text values are not supported" in output
 
 
 def test_cli_profile_json_calls_sdk() -> None:
@@ -457,7 +457,8 @@ def test_cli_search_rejects_boolean_operators() -> None:
     assert "AND/OR clauses are not supported" in stderr.getvalue()
 
 
-def test_cli_search_allows_lowercase_and_or_as_text_terms() -> None:
+@pytest.mark.parametrize("term", ["and", "or"])
+def test_cli_search_allows_lowercase_and_or_as_text_terms(term: str) -> None:
     stdout = StringIO()
 
     with patch(
@@ -474,12 +475,10 @@ def test_cli_search_allows_lowercase_and_or_as_text_terms() -> None:
             },
         )(),
     ) as search, redirect_stdout(stdout):
-        exit_code = main(
-            ["search", "text:research", "and", "development", "or", "testing"]
-        )
+        exit_code = main(["search", f"text:{term}"])
 
     assert exit_code == 0
-    search.assert_called_once_with("text:research and development or testing")
+    search.assert_called_once_with(f"text:{term}")
     assert '"results": []' in stdout.getvalue()
 
 
@@ -610,28 +609,26 @@ def test_cli_search_accepts_unquoted_query_tokens() -> None:
     assert '"results": []' in stdout.getvalue()
 
 
-def test_cli_search_keeps_multi_word_text_simple() -> None:
-    stdout = StringIO()
+def test_cli_search_rejects_shell_stripped_multi_word_text_filter() -> None:
+    stderr = StringIO()
 
-    with patch(
-        "ctxd.cli.Client.search",
-        return_value=type(
-            "SearchResultLike",
-            (),
-            {
-                "model_dump": lambda self: {
-                    "results": [],
-                    "error": None,
-                    "dsl_parse_error": None,
-                }
-            },
-        )(),
-    ) as search, redirect_stdout(stdout):
+    with patch("ctxd.cli.Client.search") as search, patch("sys.stderr", stderr):
         exit_code = main(["search", "application:slack", "text:deployment process"])
 
-    assert exit_code == 0
-    search.assert_called_once_with("application:slack text:deployment process")
-    assert '"results": []' in stdout.getvalue()
+    assert exit_code == 1
+    search.assert_not_called()
+    assert "multi-word text values are not supported" in stderr.getvalue()
+
+
+def test_cli_search_rejects_text_continuation_terms() -> None:
+    stderr = StringIO()
+
+    with patch("ctxd.cli.Client.search") as search, patch("sys.stderr", stderr):
+        exit_code = main(["search", "application:slack", "text:deployment", "process"])
+
+    assert exit_code == 1
+    search.assert_not_called()
+    assert "multi-word text values are not supported" in stderr.getvalue()
 
 
 def test_cli_search_outputs_json_for_empty_success() -> None:
