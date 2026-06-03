@@ -115,21 +115,20 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Search indexed app content and print JSON results.",
         description=(
             "Search indexed app content using ctxd DSL. Search output is always JSON. "
-            "The query can be quoted or passed as separate tokens."
+            "The query can be passed as separate tokens."
         ),
         epilog=(
             "Examples:\n"
             "  ctxd search text:deployment\n"
             "  ctxd search application:slack text:deployment\n"
             "  ctxd search application:google_drive text:incident response\n"
-            '  ctxd search application:google_drive \'text:"incident response"\'\n'
             "\n"
             "Query format:\n"
             "  application:<app> text:<terms>\n"
             "  application:<app> is optional; omit it to search all connected apps.\n"
             "  If application:<app> is present, it must be the first token.\n"
             "  Only one application filter is supported.\n"
-            '  Use text:"a b" when your shell preserves the quotes and you need exact text.'
+            "  Use simple text terms; quoted and parenthesized text values are not supported."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -167,34 +166,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _normalize_search_query(query_tokens: Sequence[str]) -> str:
-    normalized_tokens = [
-        _quote_shell_stripped_text_token(token) for token in query_tokens
-    ]
-    return " ".join(normalized_tokens)
-
-
-def _quote_shell_stripped_text_token(token: str) -> str:
-    if not token.lower().startswith("text:"):
-        return token
-
-    value = token[5:]
-    if not value or not re.search(r"\s", value):
-        return token
-
-    stripped_value = value.strip()
-    if (
-        stripped_value.startswith(("\"", "'", "("))
-        or stripped_value.endswith(("\"", "'", ")"))
-    ):
-        return token
-
-    escaped_value = stripped_value.replace("\\", "\\\\").replace('"', '\\"')
-    return f'text:"{escaped_value}"'
+    return " ".join(query_tokens)
 
 
 def _validate_search_query(query: str) -> None:
+    _validate_raw_text_filters(query)
     tokens = _split_search_query(query)
     _validate_application_filters(tokens)
+    _validate_text_filters(tokens)
     _validate_boolean_operators(tokens)
 
 
@@ -203,6 +182,14 @@ def _split_search_query(query: str) -> list[str]:
         return shlex.split(query)
     except ValueError:
         return query.split()
+
+
+def _validate_raw_text_filters(query: str) -> None:
+    if re.search(r"(?i)(?:^|\s)text:[\"'()]", query):
+        raise ValueError(
+            "Invalid search query: quoted and parenthesized text values are not supported. "
+            "Use simple text terms, for example text:incident response."
+        )
 
 
 def _validate_application_filters(tokens: Sequence[str]) -> None:
@@ -235,6 +222,19 @@ def _validate_application_filters(tokens: Sequence[str]) -> None:
             "Invalid search query: only one application filter is supported. "
             "Omit application: to search all connected apps."
         )
+
+
+def _validate_text_filters(tokens: Sequence[str]) -> None:
+    for token in tokens:
+        if not token.lower().startswith("text:"):
+            continue
+
+        value = token[len("text:") :]
+        if value.startswith(("\"", "'", "(")) or value.endswith(("\"", "'", ")")):
+            raise ValueError(
+                "Invalid search query: quoted and parenthesized text values are not supported. "
+                "Use simple text terms, for example text:incident response."
+            )
 
 
 def _validate_boolean_operators(tokens: Sequence[str]) -> None:

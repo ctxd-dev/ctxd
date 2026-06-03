@@ -54,7 +54,7 @@ def test_cli_search_help_describes_query_and_json_output() -> None:
     assert "application:<app> is optional" in output
     assert "must be the first token" in output
     assert "Only one application filter is supported" in output
-    assert 'Use text:"a b"' in output
+    assert "quoted and parenthesized text values are not supported" in output
 
 
 def test_cli_profile_json_calls_sdk() -> None:
@@ -457,6 +457,28 @@ def test_cli_search_rejects_boolean_operators() -> None:
     assert "AND/OR clauses are not supported" in stderr.getvalue()
 
 
+def test_cli_search_rejects_quoted_text_filter() -> None:
+    stderr = StringIO()
+
+    with patch("ctxd.cli.Client.search") as search, patch("sys.stderr", stderr):
+        exit_code = main(["search", "application:slack", 'text:"incident response"'])
+
+    assert exit_code == 1
+    search.assert_not_called()
+    assert "quoted and parenthesized text values are not supported" in stderr.getvalue()
+
+
+def test_cli_search_rejects_parenthesized_text_filter() -> None:
+    stderr = StringIO()
+
+    with patch("ctxd.cli.Client.search") as search, patch("sys.stderr", stderr):
+        exit_code = main(["search", "application:slack", "text:(incident response)"])
+
+    assert exit_code == 1
+    search.assert_not_called()
+    assert "quoted and parenthesized text values are not supported" in stderr.getvalue()
+
+
 def test_cli_search_accepts_leading_application_filter() -> None:
     stdout = StringIO()
 
@@ -562,7 +584,7 @@ def test_cli_search_accepts_unquoted_query_tokens() -> None:
     assert '"results": []' in stdout.getvalue()
 
 
-def test_cli_search_restores_shell_stripped_text_quotes() -> None:
+def test_cli_search_keeps_multi_word_text_simple() -> None:
     stdout = StringIO()
 
     with patch(
@@ -582,7 +604,7 @@ def test_cli_search_restores_shell_stripped_text_quotes() -> None:
         exit_code = main(["search", "application:slack", "text:deployment process"])
 
     assert exit_code == 0
-    search.assert_called_once_with('application:slack text:"deployment process"')
+    search.assert_called_once_with("application:slack text:deployment process")
     assert '"results": []' in stdout.getvalue()
 
 
