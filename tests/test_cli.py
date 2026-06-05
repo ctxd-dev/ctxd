@@ -35,7 +35,7 @@ def test_cli_help_describes_commands() -> None:
     assert "Store an API key for future CLI and SDK calls." in output
     assert "install-app" in output
     assert "Open the app installation page" in output
-    assert "ctxd search text:deployment application:slack" in output
+    assert "ctxd search application:slack text:deployment" in output
 
 
 def test_cli_search_help_describes_query_and_json_output() -> None:
@@ -49,7 +49,12 @@ def test_cli_search_help_describes_query_and_json_output() -> None:
     assert "Search indexed app content using ctxd DSL." in output
     assert "Search output is always JSON." in output
     assert "QUERY" in output
-    assert "text:deployment application:slack" in output
+    assert "ctxd search text:deployment" in output
+    assert "ctxd search application:slack text:deployment" in output
+    assert "application:<app> is optional" in output
+    assert "must be the first token" in output
+    assert "Only one application filter is supported" in output
+    assert "multi-word, quoted, and parenthesized text values are not supported" in output
 
 
 def test_cli_profile_json_calls_sdk() -> None:
@@ -339,6 +344,32 @@ def test_cli_fetch_returns_document() -> None:
     assert "Deploy completed successfully." in output
 
 
+def test_cli_fetch_returns_nonzero_exit_code_for_unresolved_document() -> None:
+    stdout = StringIO()
+    document = DocumentResult(error="Document UID could not be resolved.")
+
+    with patch(
+        "ctxd.cli.Client.fetch_document", return_value=document
+    ), redirect_stdout(stdout):
+        exit_code = main(["fetch", "missing-doc"])
+
+    assert exit_code == 1
+    assert stdout.getvalue() == "Error: Document UID could not be resolved.\n"
+
+
+def test_cli_fetch_json_returns_nonzero_exit_code_for_unresolved_document() -> None:
+    stdout = StringIO()
+    document = DocumentResult(error="Document UID could not be resolved.")
+
+    with patch(
+        "ctxd.cli.Client.fetch_document", return_value=document
+    ), redirect_stdout(stdout):
+        exit_code = main(["fetch", "missing-doc", "--json"])
+
+    assert exit_code == 1
+    assert '"error": "Document UID could not be resolved."' in stdout.getvalue()
+
+
 def test_cli_search_returns_nonzero_exit_code_for_payload_errors() -> None:
     stdout = StringIO()
 
@@ -354,6 +385,153 @@ def test_cli_search_returns_nonzero_exit_code_for_payload_errors() -> None:
 
     assert exit_code == 1
     assert '"error": "bad query"' in stdout.getvalue()
+
+
+def test_cli_search_rejects_empty_application_filter() -> None:
+    stderr = StringIO()
+
+    with patch("ctxd.cli.Client.search") as search, patch("sys.stderr", stderr):
+        exit_code = main(["search", "application:"])
+
+    assert exit_code == 1
+    search.assert_not_called()
+    assert "application: requires an app name" in stderr.getvalue()
+
+
+def test_cli_search_rejects_grouped_application_filter() -> None:
+    stderr = StringIO()
+
+    with patch("ctxd.cli.Client.search") as search, patch("sys.stderr", stderr):
+        exit_code = main(
+            ["search", "application:(google_drive OR slack)", "text:onboarding"]
+        )
+
+    assert exit_code == 1
+    search.assert_not_called()
+    assert "grouped application filters are not supported" in stderr.getvalue()
+
+
+def test_cli_search_rejects_application_filter_after_text() -> None:
+    stderr = StringIO()
+
+    with patch("ctxd.cli.Client.search") as search, patch("sys.stderr", stderr):
+        exit_code = main(
+            [
+                "search",
+                "text:onboarding",
+                "application:google_drive",
+            ]
+        )
+
+    assert exit_code == 1
+    search.assert_not_called()
+    assert "application: must be the first token" in stderr.getvalue()
+
+
+def test_cli_search_rejects_repeated_application_filters() -> None:
+    stderr = StringIO()
+
+    with patch("ctxd.cli.Client.search") as search, patch("sys.stderr", stderr):
+        exit_code = main(
+            [
+                "search",
+                "application:google_drive",
+                "application:slack",
+                "text:onboarding",
+            ]
+        )
+
+    assert exit_code == 1
+    search.assert_not_called()
+    assert "only one application filter is supported" in stderr.getvalue()
+
+
+def test_cli_search_rejects_boolean_operators() -> None:
+    stderr = StringIO()
+
+    with patch("ctxd.cli.Client.search") as search, patch("sys.stderr", stderr):
+        exit_code = main(["search", "text:incident", "AND", "text:response"])
+
+    assert exit_code == 1
+    search.assert_not_called()
+    assert "AND/OR clauses are not supported" in stderr.getvalue()
+
+
+@pytest.mark.parametrize("term", ["and", "or"])
+def test_cli_search_allows_lowercase_and_or_as_text_terms(term: str) -> None:
+    stdout = StringIO()
+
+    with patch(
+        "ctxd.cli.Client.search",
+        return_value=type(
+            "SearchResultLike",
+            (),
+            {
+                "model_dump": lambda self: {
+                    "results": [],
+                    "error": None,
+                    "dsl_parse_error": None,
+                }
+            },
+        )(),
+    ) as search, redirect_stdout(stdout):
+        exit_code = main(["search", f"text:{term}"])
+
+    assert exit_code == 0
+    search.assert_called_once_with(f"text:{term}")
+    assert '"results": []' in stdout.getvalue()
+
+
+def test_cli_search_rejects_quoted_text_filter() -> None:
+    stderr = StringIO()
+
+    with patch("ctxd.cli.Client.search") as search, patch("sys.stderr", stderr):
+        exit_code = main(["search", "application:slack", 'text:"incident response"'])
+
+    assert exit_code == 1
+    search.assert_not_called()
+    assert "quoted and parenthesized text values are not supported" in stderr.getvalue()
+
+
+def test_cli_search_rejects_parenthesized_text_filter() -> None:
+    stderr = StringIO()
+
+    with patch("ctxd.cli.Client.search") as search, patch("sys.stderr", stderr):
+        exit_code = main(["search", "application:slack", "text:(incident response)"])
+
+    assert exit_code == 1
+    search.assert_not_called()
+    assert "quoted and parenthesized text values are not supported" in stderr.getvalue()
+
+
+def test_cli_search_accepts_leading_application_filter() -> None:
+    stdout = StringIO()
+
+    with patch(
+        "ctxd.cli.Client.search",
+        return_value=type(
+            "SearchResultLike",
+            (),
+            {
+                "model_dump": lambda self: {
+                    "results": [],
+                    "error": None,
+                    "dsl_parse_error": None,
+                }
+            },
+        )(),
+    ) as search, redirect_stdout(stdout):
+        exit_code = main(
+            [
+                "search",
+                "application:google_drive",
+                "text:onboarding",
+            ]
+        )
+
+    assert exit_code == 0
+    search.assert_called_once_with("application:google_drive text:onboarding")
+    assert '"results": []' in stdout.getvalue()
 
 
 def test_cli_search_prints_clean_message_for_network_errors(
@@ -424,35 +602,66 @@ def test_cli_search_accepts_unquoted_query_tokens() -> None:
             },
         )(),
     ) as search, redirect_stdout(stdout):
-        exit_code = main(["search", "text:test", "application:slack"])
+        exit_code = main(["search", "application:slack", "text:test"])
 
     assert exit_code == 0
-    search.assert_called_once_with("text:test application:slack")
+    search.assert_called_once_with("application:slack text:test")
     assert '"results": []' in stdout.getvalue()
 
 
-def test_cli_search_restores_shell_stripped_text_quotes() -> None:
-    stdout = StringIO()
+def test_cli_search_rejects_shell_stripped_multi_word_text_filter() -> None:
+    stderr = StringIO()
 
-    with patch(
-        "ctxd.cli.Client.search",
-        return_value=type(
-            "SearchResultLike",
-            (),
-            {
-                "model_dump": lambda self: {
-                    "results": [],
-                    "error": None,
-                    "dsl_parse_error": None,
-                }
-            },
-        )(),
-    ) as search, redirect_stdout(stdout):
-        exit_code = main(["search", "text:deployment process", "application:slack"])
+    with patch("ctxd.cli.Client.search") as search, patch("sys.stderr", stderr):
+        exit_code = main(["search", "application:slack", "text:deployment process"])
 
-    assert exit_code == 0
-    search.assert_called_once_with('text:"deployment process" application:slack')
-    assert '"results": []' in stdout.getvalue()
+    assert exit_code == 1
+    search.assert_not_called()
+    assert "multi-word text values are not supported" in stderr.getvalue()
+
+
+def test_cli_search_rejects_text_continuation_terms() -> None:
+    stderr = StringIO()
+
+    with patch("ctxd.cli.Client.search") as search, patch("sys.stderr", stderr):
+        exit_code = main(["search", "application:slack", "text:deployment", "process"])
+
+    assert exit_code == 1
+    search.assert_not_called()
+    assert "multi-word text values are not supported" in stderr.getvalue()
+
+
+def test_cli_search_rejects_repeated_text_filters() -> None:
+    stderr = StringIO()
+
+    with patch("ctxd.cli.Client.search") as search, patch("sys.stderr", stderr):
+        exit_code = main(
+            ["search", "application:slack", "text:incident", "text:response"]
+        )
+
+    assert exit_code == 1
+    search.assert_not_called()
+    assert "only one text filter is supported" in stderr.getvalue()
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        ["search", "application:slack"],
+        ["search", "application:slack", "deployment"],
+    ],
+)
+def test_cli_search_rejects_application_filter_without_text_filter(
+    query: list[str],
+) -> None:
+    stderr = StringIO()
+
+    with patch("ctxd.cli.Client.search") as search, patch("sys.stderr", stderr):
+        exit_code = main(query)
+
+    assert exit_code == 1
+    search.assert_not_called()
+    assert "must be followed by one text:<term>" in stderr.getvalue()
 
 
 def test_cli_search_outputs_json_for_empty_success() -> None:

@@ -39,7 +39,7 @@ ctxd login                    # Prompt for an API key and store it
 ctxd status                   # Check whether an API key is configured
 ctxd install-app              # Open the app installation page
 ctxd search "text:deployment"
-ctxd search text:test application:slack
+ctxd search application:slack text:test
 ctxd fetch doc-123
 ctxd profile
 ctxd logout                   # Remove the stored API key
@@ -54,7 +54,7 @@ from ctxd import Client
 
 client = Client(api_key="<api-key>")
 
-results = client.search("text:deployment application:slack")
+results = client.search("application:slack text:deployment")
 profile = client.get_profile()
 document = client.fetch_document("doc-123")
 ```
@@ -65,7 +65,7 @@ API key example:
 from ctxd import Client
 
 client = Client(api_key="<api-key>")
-results = client.search("text:deployment application:slack")
+results = client.search("application:slack text:deployment")
 ```
 
 Async example:
