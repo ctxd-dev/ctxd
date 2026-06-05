@@ -644,6 +644,26 @@ def test_cli_search_rejects_repeated_text_filters() -> None:
     assert "only one text filter is supported" in stderr.getvalue()
 
 
+@pytest.mark.parametrize(
+    "query",
+    [
+        ["search", "application:slack"],
+        ["search", "application:slack", "deployment"],
+    ],
+)
+def test_cli_search_rejects_application_filter_without_text_filter(
+    query: list[str],
+) -> None:
+    stderr = StringIO()
+
+    with patch("ctxd.cli.Client.search") as search, patch("sys.stderr", stderr):
+        exit_code = main(query)
+
+    assert exit_code == 1
+    search.assert_not_called()
+    assert "must be followed by one text:<term>" in stderr.getvalue()
+
+
 def test_cli_search_outputs_json_for_empty_success() -> None:
     stdout = StringIO()
 

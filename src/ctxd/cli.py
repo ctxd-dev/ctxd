@@ -174,6 +174,7 @@ def _validate_search_query(query: str) -> None:
     _validate_application_filters(tokens)
     _validate_boolean_operators(tokens)
     _validate_text_filters(tokens)
+    _validate_application_scoped_search_shape(tokens)
 
 
 def _split_search_query(query: str) -> list[str]:
@@ -264,6 +265,16 @@ def _validate_boolean_operators(tokens: Sequence[str]) -> None:
                 "Invalid search query: AND/OR clauses are not supported. "
                 "Use application:<app> text:<term>, or omit application:<app> to search all apps."
             )
+
+
+def _validate_application_scoped_search_shape(tokens: Sequence[str]) -> None:
+    if not tokens or not tokens[0].lower().startswith("application:"):
+        return
+    if len(tokens) != 2 or not tokens[1].lower().startswith("text:"):
+        raise ValueError(
+            "Invalid search query: application:<app> must be followed by one text:<term> filter, "
+            "for example application:slack text:deployment."
+        )
 
 
 def _handle_login(args: argparse.Namespace) -> int:
