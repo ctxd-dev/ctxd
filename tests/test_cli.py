@@ -631,6 +631,19 @@ def test_cli_search_rejects_text_continuation_terms() -> None:
     assert "multi-word text values are not supported" in stderr.getvalue()
 
 
+def test_cli_search_rejects_repeated_text_filters() -> None:
+    stderr = StringIO()
+
+    with patch("ctxd.cli.Client.search") as search, patch("sys.stderr", stderr):
+        exit_code = main(
+            ["search", "application:slack", "text:incident", "text:response"]
+        )
+
+    assert exit_code == 1
+    search.assert_not_called()
+    assert "only one text filter is supported" in stderr.getvalue()
+
+
 def test_cli_search_outputs_json_for_empty_success() -> None:
     stdout = StringIO()
 

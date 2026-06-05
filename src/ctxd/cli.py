@@ -224,10 +224,12 @@ def _validate_application_filters(tokens: Sequence[str]) -> None:
 
 
 def _validate_text_filters(tokens: Sequence[str]) -> None:
+    text_positions: list[int] = []
     for index, token in enumerate(tokens):
         if not token.lower().startswith("text:"):
             continue
 
+        text_positions.append(index)
         value = token[len("text:") :]
         if value.startswith(("\"", "'", "(")) or value.endswith(("\"", "'", ")")):
             raise ValueError(
@@ -246,6 +248,12 @@ def _validate_text_filters(tokens: Sequence[str]) -> None:
                 "Invalid search query: multi-word text values are not supported by the current DSL. "
                 "Use a single text term, for example text:incident."
             )
+
+    if len(text_positions) > 1:
+        raise ValueError(
+            "Invalid search query: only one text filter is supported. "
+            "Use a single text term, for example text:incident."
+        )
 
 
 def _validate_boolean_operators(tokens: Sequence[str]) -> None:
