@@ -3,6 +3,8 @@ name = "ctxd"
 version = "0.1.13"
 description = "Python SDK and CLI for the ctxd platform."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11, <3.13"
 dependencies = [
     "httpx>=0.28.1",
