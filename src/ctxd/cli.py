@@ -272,7 +272,7 @@ def _handle_login(args: argparse.Namespace) -> int:
             "Missing API key. Set `CTXD_API_KEY` or run `ctxd login` in an interactive terminal."
         )
 
-    Client(api_key=api_key).get_profile()
+    Client(api_key=api_key, backend="hosted").get_profile()
 
     if should_save:
         save_api_key(api_key)

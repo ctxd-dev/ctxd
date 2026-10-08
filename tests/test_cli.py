@@ -237,6 +237,26 @@ def test_cli_login_uses_resolved_api_key() -> None:
     save_api_key.assert_not_called()
 
 
+def test_cli_login_validates_against_hosted_backend() -> None:
+    stdout = StringIO()
+    profile = ProfileResult(
+        integration_access="# Integration Access\n- Slack (`slack`) [INSTALLED]",
+        file_tree="",
+    )
+
+    with patch.dict(
+        "os.environ",
+        {"CTXD_API_KEY": "env-api-key", "CTXD_BACKEND": "ctxfs"},
+        clear=False,
+    ), patch("ctxd.cli.Client") as client_class, redirect_stdout(stdout):
+        client_class.return_value.get_profile.return_value = profile
+        exit_code = main(["login"])
+
+    assert exit_code == 0
+    client_class.assert_called_once_with(api_key="env-api-key", backend="hosted")
+    assert stdout.getvalue() == "API key authentication is valid.\n"
+
+
 def test_cli_login_requires_api_key() -> None:
     stderr = StringIO()
 
@@ -299,6 +319,25 @@ def test_cli_logout_clears_api_key(tmp_path: Path) -> None:
     assert exit_code == 0
     assert stdout.getvalue() == "Cleared stored ctxd API key.\n"
     assert config_path.read_text() == '{\n  "base_url": "https://ctxd.example.com"\n}\n'
+    assert not credentials_path.exists()
+
+
+def test_cli_logout_preserves_backend_config(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    credentials_path = tmp_path / "credentials.json"
+    config_path.write_text(
+        '{\n  "backend": "ctxfs",\n  "base_url": "https://ctxd.example.com"\n}\n'
+    )
+    credentials_path.write_text('{\n  "api_key": "token"\n}\n')
+    stdout = StringIO()
+
+    with patch.dict(
+        "os.environ", {"CTXD_CONFIG_PATH": str(config_path)}, clear=False
+    ), redirect_stdout(stdout):
+        exit_code = main(["logout"])
+
+    assert exit_code == 0
+    assert '"backend": "ctxfs"' in config_path.read_text()
     assert not credentials_path.exists()
 
 

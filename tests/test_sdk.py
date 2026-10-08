@@ -375,6 +375,38 @@ def test_ctxfs_endpoint_prefers_socket_env(monkeypatch: pytest.MonkeyPatch) -> N
     assert resolve_ctxfs_endpoint() == "unix:///tmp/ctxfs.sock"
 
 
+def test_ctxfs_endpoint_reads_local_daemon_ctxfs_section(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CTXD_CONFIG_PATH", str(tmp_path / "config.json"))
+    monkeypatch.delenv("CTXD_CTXFS_URL", raising=False)
+    monkeypatch.delenv("CTXD_CTXFS_SOCKET", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    daemon_config_dir = tmp_path / ".ctxd" / "local"
+    daemon_config_dir.mkdir(parents=True)
+    (daemon_config_dir / "config.toml").write_text(
+        '[ctxfs]\nhost = "127.0.0.2"\nport = 9999\nsocket_path = "/tmp/custom.sock"\n'
+    )
+
+    assert resolve_ctxfs_endpoint() == "unix:///tmp/custom.sock"
+
+
+def test_ctxfs_endpoint_reads_local_daemon_host_port_when_socket_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CTXD_CONFIG_PATH", str(tmp_path / "config.json"))
+    monkeypatch.delenv("CTXD_CTXFS_URL", raising=False)
+    monkeypatch.delenv("CTXD_CTXFS_SOCKET", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    daemon_config_dir = tmp_path / ".ctxd" / "local"
+    daemon_config_dir.mkdir(parents=True)
+    (daemon_config_dir / "config.toml").write_text(
+        '[ctxfs]\nhost = "127.0.0.2"\nport = 9999\nsocket_path = "none"\n'
+    )
+
+    assert resolve_ctxfs_endpoint() == "http://127.0.0.2:9999"
+
+
 def test_ctxfs_search_uses_grep_without_hosted_auth(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -151,9 +151,11 @@ def clear_api_key(*, base_url: str | None = None, keep_base_url: bool = True) ->
     resolved_base_url = resolve_base_url(base_url)
     clear_secret_bundle(base_url=resolved_base_url, client_id=None)
 
-    retained: dict[str, Any] = {}
+    retained = load_config()
     if keep_base_url:
         retained["base_url"] = resolved_base_url
+    else:
+        retained.pop("base_url", None)
 
     return save_config(retained)
 
@@ -209,6 +211,18 @@ def _resolve_local_daemon_ctxfs_endpoint() -> str | None:
     value = config.get("ctxfs_socket")
     if isinstance(value, str) and value.strip():
         return _socket_endpoint(value.strip())
+
+    ctxfs = config.get("ctxfs")
+    if isinstance(ctxfs, dict):
+        socket_path = ctxfs.get("socket_path")
+        if isinstance(socket_path, str) and socket_path.strip():
+            if socket_path.strip().lower() not in {"none", "null"}:
+                return _socket_endpoint(socket_path.strip())
+
+        host = ctxfs.get("host")
+        port = ctxfs.get("port")
+        if isinstance(host, str) and host.strip() and isinstance(port, int):
+            return f"http://{host.strip()}:{port}"
 
     return None
 
