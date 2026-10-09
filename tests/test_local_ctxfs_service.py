@@ -9,6 +9,28 @@ import pytest
 from ctxd.local_ctxfs_service import LocalCtxfsPaths, ensure_started, status
 
 
+class _Process:
+    def __init__(self, pid: int = 456, poll_result=None) -> None:
+        self.pid = pid
+        self.poll_result = poll_result
+        self.terminated = False
+        self.killed = False
+
+    def poll(self):
+        return self.poll_result
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def kill(self) -> None:
+        self.killed = True
+
+    def wait(self, timeout=None):
+        del timeout
+        self.poll_result = 0
+        return 0
+
+
 def _paths(tmp_path: Path) -> LocalCtxfsPaths:
     return LocalCtxfsPaths(
         local_home=tmp_path / "local",
@@ -21,9 +43,9 @@ def _paths(tmp_path: Path) -> LocalCtxfsPaths:
 def test_ensure_started_returns_existing_healthy_service(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     paths.local_home.mkdir(parents=True)
-    paths.pid_file.write_text("123\n")
+    paths.pid_file.write_text('{"pid": 123, "marker": "ctxd.local_ctxfs_service"}\n')
 
-    with patch("ctxd.local_ctxfs_service._pid_is_running", return_value=True), patch(
+    with patch("ctxd.local_ctxfs_service._pid_matches", return_value=True), patch(
         "ctxd.local_ctxfs_service.CtxfsClient"
     ) as client_class, patch("ctxd.local_ctxfs_service.subprocess.Popen") as popen:
         client_class.return_value.status.return_value = object()
@@ -37,7 +59,7 @@ def test_ensure_started_returns_existing_healthy_service(tmp_path: Path) -> None
 
 def test_ensure_started_launches_service_when_unhealthy(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
-    process = SimpleNamespace(pid=456, poll=lambda: None)
+    process = _Process()
     attempts = {"count": 0}
 
     def status_side_effect():
@@ -46,7 +68,7 @@ def test_ensure_started_launches_service_when_unhealthy(tmp_path: Path) -> None:
             raise RuntimeError("not ready")
         return object()
 
-    with patch("ctxd.local_ctxfs_service._pid_is_running", return_value=True), patch(
+    with patch("ctxd.local_ctxfs_service._pid_matches", return_value=True), patch(
         "ctxd.local_ctxfs_service.CtxfsClient"
     ) as client_class, patch(
         "ctxd.local_ctxfs_service.subprocess.Popen", return_value=process
@@ -56,7 +78,7 @@ def test_ensure_started_launches_service_when_unhealthy(tmp_path: Path) -> None:
 
     assert result["pid"] == 456
     assert result["healthy"] is True
-    assert paths.pid_file.read_text() == "456\n"
+    assert '"pid": 456' in paths.pid_file.read_text()
     command = popen.call_args.args[0]
     assert command[1:4] == ["-m", "ctxd.local_ctxfs_service", "serve"]
     assert str(paths.root) in command
@@ -66,9 +88,9 @@ def test_ensure_started_launches_service_when_unhealthy(tmp_path: Path) -> None:
 def test_status_reports_unhealthy_service_error(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     paths.local_home.mkdir(parents=True)
-    paths.pid_file.write_text("123\n")
+    paths.pid_file.write_text('{"pid": 123, "marker": "ctxd.local_ctxfs_service"}\n')
 
-    with patch("ctxd.local_ctxfs_service._pid_is_running", return_value=True), patch(
+    with patch("ctxd.local_ctxfs_service._pid_matches", return_value=True), patch(
         "ctxd.local_ctxfs_service.CtxfsClient"
     ) as client_class:
         client_class.return_value.status.side_effect = RuntimeError("boom")
@@ -83,9 +105,11 @@ def test_ensure_started_raises_when_process_never_becomes_healthy(
     tmp_path: Path,
 ) -> None:
     paths = _paths(tmp_path)
-    process = SimpleNamespace(pid=456, poll=lambda: None)
+    paths.local_home.mkdir(parents=True)
+    paths.socket_path.write_text("")
+    process = _Process()
 
-    with patch("ctxd.local_ctxfs_service._pid_is_running", return_value=False), patch(
+    with patch("ctxd.local_ctxfs_service._pid_matches", return_value=False), patch(
         "ctxd.local_ctxfs_service.CtxfsClient"
     ) as client_class, patch(
         "ctxd.local_ctxfs_service.subprocess.Popen", return_value=process
@@ -95,3 +119,22 @@ def test_ensure_started_raises_when_process_never_becomes_healthy(
         client_class.return_value.status.side_effect = RuntimeError("not ready")
         with pytest.raises(RuntimeError, match="did not become healthy"):
             ensure_started(paths)
+
+    assert process.terminated is True
+    assert not paths.pid_file.exists()
+    assert not paths.socket_path.exists()
+
+
+def test_status_ignores_stale_or_unrelated_pid(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    paths.local_home.mkdir(parents=True)
+    paths.pid_file.write_text('{"pid": 123, "marker": "ctxd.local_ctxfs_service"}\n')
+
+    with patch("ctxd.local_ctxfs_service._pid_matches", return_value=False), patch(
+        "ctxd.local_ctxfs_service.CtxfsClient"
+    ) as client_class:
+        result = status(paths)
+
+    assert result["running"] is False
+    assert result["healthy"] is False
+    client_class.assert_not_called()

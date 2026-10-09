@@ -53,7 +53,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _emit_result(result.model_dump(), as_json=args.json)
         if args.command == "files":
             return _handle_files(args, client)
-    except (CtxdError, ValueError) as exc:
+    except (CtxdError, RuntimeError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
 
@@ -412,12 +412,15 @@ def _handle_backend(args: argparse.Namespace) -> int:
 
     if args.backend_command == "set":
         backend = resolve_backend(args.backend)
-        save_backend(backend)
-        print(f"Backend set to {_display_backend(backend)}.")
         if backend == "ctxfs":
             service = ensure_started()
+            save_backend(backend)
+            print(f"Backend set to {_display_backend(backend)}.")
             print(f"ctxfs endpoint: {service['endpoint']}")
             print(f"ctxfs root: {service['root']}")
+        else:
+            save_backend(backend)
+            print(f"Backend set to {_display_backend(backend)}.")
         return 0
 
     if args.backend_command == "status":

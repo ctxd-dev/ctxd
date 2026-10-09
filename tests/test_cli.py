@@ -623,6 +623,26 @@ def test_cli_backend_set_ctxfs_starts_service(tmp_path: Path) -> None:
     assert '"backend": "ctxfs"' in config_path.read_text()
 
 
+def test_cli_backend_set_ctxfs_failure_does_not_save_backend(tmp_path: Path) -> None:
+    stderr = StringIO()
+    config_path = tmp_path / "config.json"
+
+    with patch.dict(
+        "os.environ",
+        {"CTXD_CONFIG_PATH": str(config_path)},
+        clear=False,
+    ), patch(
+        "ctxd.cli.ensure_started", side_effect=RuntimeError("service failed")
+    ), patch(
+        "sys.stderr", stderr
+    ):
+        exit_code = main(["backend", "set", "ctxfs"])
+
+    assert exit_code == 1
+    assert stderr.getvalue() == "service failed\n"
+    assert not config_path.exists()
+
+
 def test_cli_search_passes_ctxfs_options() -> None:
     stdout = StringIO()
 
