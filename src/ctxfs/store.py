@@ -1859,6 +1859,9 @@ def _python_grep_tree_path(
     content_hash: str,
     match_limit: int,
 ) -> _GrepPathResult:
+    if _may_backtrack_pathologically(pattern):
+        return _GrepPathResult([])
+
     compiled = re.compile(pattern)
     matches: list[GrepMatch] = []
     for line_number, raw_line in enumerate(tree_path.read_bytes().splitlines(), 1):
@@ -1879,6 +1882,10 @@ def _python_grep_tree_path(
         if len(matches) >= match_limit:
             return _GrepPathResult(matches)
     return _GrepPathResult(matches)
+
+
+def _may_backtrack_pathologically(pattern: str) -> bool:
+    return re.search(r"\([^)]*[+*][^)]*\)[+*{]", pattern) is not None
 
 
 def _rg_env() -> dict[str, str]:
