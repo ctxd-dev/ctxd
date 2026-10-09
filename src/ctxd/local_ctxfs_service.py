@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import fcntl
 import json
 import os
 import signal
@@ -266,6 +265,11 @@ def _ensure_private_directory(path: Path) -> None:
 
 @contextlib.contextmanager
 def _exclusive_lock(path: Path):
+    try:
+        import fcntl
+    except ImportError as exc:
+        raise RuntimeError("local ctxfs service locking requires Unix fcntl") from exc
+
     with path.open("a+") as lock_file:
         path.chmod(0o600)
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)

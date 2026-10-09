@@ -60,14 +60,14 @@ def create_ctxfs_app(root: Path) -> FastAPI:
         store_root = _with_store(root, lambda store: str(store.root))
         return {"ok": True, "root": store_root}
 
-    @app.get("/api/ctxfs/stat", response_model=Entry | None)
+    @app.get("/api/ctxfs/stat", response_model=Entry)
     def stat_ctxfs_path(
         path: str = Query(..., min_length=1),
         _identity_guard: None = Depends(_reject_user_id_query),
-    ) -> Entry | None:
+    ) -> Entry:
         return _with_store(
             root,
-            lambda store: _call_store(store.stat, LOCAL_CTXFS_USER_ID, path),
+            lambda store: _stat_or_404(store, LOCAL_CTXFS_USER_ID, path),
         )
 
     @app.get("/api/ctxfs/ls", response_model=Bounded[DirectoryEntry])
@@ -219,6 +219,13 @@ def _call_store(operation: Callable[..., T], *args: Any, **kwargs: Any) -> T:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _stat_or_404(store: CtxfsStore, user_id: str, path: str) -> Entry:
+    entry = _call_store(store.stat, user_id, path)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="ctxfs path not found")
+    return entry
 
 
 def _reject_user_id_query(user_id: str | None = Query(default=None)) -> None:

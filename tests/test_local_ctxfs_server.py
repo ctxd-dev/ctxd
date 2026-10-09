@@ -58,6 +58,17 @@ def test_local_ctxfs_server_rejects_user_id_query(tmp_path) -> None:
     assert response.status_code == 400
 
 
+def test_local_ctxfs_server_returns_404_for_missing_stat_path(tmp_path) -> None:
+    client = TestClient(create_ctxfs_app(tmp_path / "ctxfs"))
+
+    response = client.get(
+        "/api/ctxfs/stat",
+        params={"path": "local-files/root/missing.md"},
+    )
+
+    assert response.status_code == 404
+
+
 def test_local_ctxfs_server_rejects_malformed_submission_operation(tmp_path) -> None:
     client = TestClient(create_ctxfs_app(tmp_path / "ctxfs"))
 
