@@ -11,7 +11,13 @@ from typing import Sequence
 
 from ctxd import Client, CtxdError
 from ctxd._metadata import SDK_VERSION
-from ctxd.config import clear_api_key, resolve_api_key, save_api_key
+from ctxd.config import (
+    clear_api_key,
+    resolve_api_key,
+    resolve_backend,
+    save_api_key,
+    save_backend,
+)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -27,11 +33,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _handle_status(args)
         if args.command == "install-app":
             return _handle_install_app(args)
+        if args.command == "backend":
+            return _handle_backend(args)
+        if args.command == "config":
+            return _handle_config(args)
 
-        client = Client()
+        client = Client(backend=getattr(args, "backend", None))
 
         if args.command == "search":
-            result = client.search(_normalize_search_query(args.query))
+            kwargs = _ctxfs_search_kwargs(args)
+            result = client.search(_normalize_search_query(args.query), **kwargs)
             return _emit_result(result.model_dump(), as_json=True)
         if args.command == "fetch":
             result = client.fetch_document(args.document_uid)
@@ -39,6 +50,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "profile":
             result = client.get_profile()
             return _emit_result(result.model_dump(), as_json=args.json)
+        if args.command == "files":
+            return _handle_files(args, client)
     except (CtxdError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -68,6 +81,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="version",
         version=f"ctxd {SDK_VERSION}",
         help="Print the installed ctxd version and exit.",
+    )
+    parser.add_argument(
+        "--backend",
+        choices=("remote", "hosted", "ctxfs"),
+        help="Backend to use for this command. Defaults to CTXD_BACKEND, config, then remote.",
     )
 
     subparsers = parser.add_subparsers(
@@ -107,6 +125,46 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Print the installation URL without opening a browser.",
     )
 
+    backend_parser = subparsers.add_parser(
+        "backend",
+        help="Get, set, or inspect the active ctxd backend.",
+        description="Get, set, or inspect the active ctxd backend.",
+    )
+    backend_subparsers = backend_parser.add_subparsers(
+        dest="backend_command",
+        metavar="<backend-command>",
+        required=True,
+    )
+    backend_subparsers.add_parser("get", help="Print the active backend.")
+    backend_set_parser = backend_subparsers.add_parser(
+        "set",
+        help="Set the default backend.",
+    )
+    backend_set_parser.add_argument("backend", choices=("remote", "hosted", "ctxfs"))
+    backend_subparsers.add_parser("status", help="Print backend status.")
+
+    config_parser = subparsers.add_parser(
+        "config",
+        help="Get or set ctxd CLI configuration.",
+        description="Get or set ctxd CLI configuration.",
+    )
+    config_subparsers = config_parser.add_subparsers(
+        dest="config_command",
+        metavar="<config-command>",
+        required=True,
+    )
+    config_get_parser = config_subparsers.add_parser(
+        "get",
+        help="Get a configuration value.",
+    )
+    config_get_parser.add_argument("key", choices=("backend",))
+    config_set_parser = config_subparsers.add_parser(
+        "set",
+        help="Set a configuration value.",
+    )
+    config_set_parser.add_argument("key", choices=("backend",))
+    config_set_parser.add_argument("value")
+
     search_parser = subparsers.add_parser(
         "search",
         help="Search indexed app content and print JSON results.",
@@ -127,6 +185,16 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="QUERY",
         help="Search query or DSL tokens, for example: text:deployment application:slack.",
     )
+    search_parser.add_argument(
+        "--prefix",
+        help="For ctxfs backend searches, restrict grep to this path prefix.",
+    )
+    search_parser.add_argument(
+        "--limit",
+        type=int,
+        help="For ctxfs backend searches, limit grep matches.",
+    )
+    _add_backend_override(search_parser)
 
     fetch_parser = subparsers.add_parser(
         "fetch",
@@ -139,6 +207,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the full document response as JSON.",
     )
+    _add_backend_override(fetch_parser)
 
     profile_parser = subparsers.add_parser(
         "profile",
@@ -150,8 +219,61 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the profile response as JSON.",
     )
+    _add_backend_override(profile_parser)
+
+    files_parser = subparsers.add_parser(
+        "files",
+        help="Read path-oriented content from the active backend.",
+        description="Read path-oriented content from the active backend.",
+    )
+    _add_backend_override(files_parser)
+    files_subparsers = files_parser.add_subparsers(
+        dest="files_command",
+        metavar="<files-command>",
+        required=True,
+    )
+
+    files_tree_parser = files_subparsers.add_parser("tree", help="List a bounded tree.")
+    files_tree_parser.add_argument("prefix", nargs="?", default="")
+    files_tree_parser.add_argument("--depth", type=int)
+    files_tree_parser.add_argument("--limit", type=int)
+    _add_backend_override(files_tree_parser)
+
+    files_ls_parser = files_subparsers.add_parser("ls", help="List a directory.")
+    files_ls_parser.add_argument("path", nargs="?", default="")
+    files_ls_parser.add_argument("--limit", type=int)
+    _add_backend_override(files_ls_parser)
+
+    files_glob_parser = files_subparsers.add_parser("glob", help="Match paths by glob.")
+    files_glob_parser.add_argument("pattern")
+    files_glob_parser.add_argument("--prefix", default="")
+    files_glob_parser.add_argument("--limit", type=int)
+    _add_backend_override(files_glob_parser)
+
+    files_stat_parser = files_subparsers.add_parser("stat", help="Show path metadata.")
+    files_stat_parser.add_argument("path")
+    _add_backend_override(files_stat_parser)
+
+    files_read_lines_parser = files_subparsers.add_parser(
+        "read-lines",
+        help="Read a line range.",
+    )
+    files_read_lines_parser.add_argument("path")
+    files_read_lines_parser.add_argument("--start", type=int, required=True)
+    files_read_lines_parser.add_argument("--end", type=int, required=True)
+    files_read_lines_parser.add_argument("--json", action="store_true")
+    _add_backend_override(files_read_lines_parser)
 
     return parser
+
+
+def _add_backend_override(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--backend",
+        choices=("remote", "hosted", "ctxfs"),
+        default=argparse.SUPPRESS,
+        help="Backend to use for this command.",
+    )
 
 
 def _normalize_search_query(query_tokens: Sequence[str]) -> str:
@@ -188,7 +310,7 @@ def _handle_login(args: argparse.Namespace) -> int:
             "Missing API key. Set `CTXD_API_KEY` or run `ctxd login` in an interactive terminal."
         )
 
-    Client(api_key=api_key).get_profile()
+    Client(api_key=api_key, backend="hosted").get_profile()
 
     if should_save:
         save_api_key(api_key)
@@ -265,6 +387,98 @@ def _handle_install_app(args: argparse.Namespace) -> int:
 
     if not args.no_browser:
         webbrowser.open(auth_url)
+    return 0
+
+
+def _handle_config(args: argparse.Namespace) -> int:
+    if args.config_command == "get" and args.key == "backend":
+        print(_display_backend(resolve_backend()))
+        return 0
+
+    if args.config_command == "set" and args.key == "backend":
+        backend = resolve_backend(args.value)
+        save_backend(backend)
+        print(f"Backend set to {_display_backend(backend)}.")
+        return 0
+
+    raise ValueError("Unsupported config command.")
+
+
+def _handle_backend(args: argparse.Namespace) -> int:
+    if args.backend_command == "get":
+        print(_display_backend(resolve_backend()))
+        return 0
+
+    if args.backend_command == "set":
+        backend = resolve_backend(args.backend)
+        save_backend(backend)
+        print(f"Backend set to {_display_backend(backend)}.")
+        if backend == "ctxfs":
+            print("ctxfs service management is not installed in this package yet.")
+        return 0
+
+    if args.backend_command == "status":
+        backend = resolve_backend()
+        print(f"Backend: {_display_backend(backend)}")
+        if backend == "ctxfs":
+            profile = Client(backend="ctxfs").get_profile()
+            print(profile.integration_access)
+        else:
+            print("Remote backend configured.")
+        return 0
+
+    raise ValueError("Unsupported backend command.")
+
+
+def _display_backend(backend: str) -> str:
+    if backend == "hosted":
+        return "remote"
+    return backend
+
+
+def _ctxfs_search_kwargs(args: argparse.Namespace) -> dict:
+    kwargs = {}
+    if getattr(args, "prefix", None):
+        kwargs["prefix"] = args.prefix
+    if getattr(args, "limit", None) is not None:
+        kwargs["limit"] = args.limit
+    return kwargs
+
+
+def _handle_files(args: argparse.Namespace, client: Client) -> int:
+    if args.files_command == "tree":
+        result = client.files.tree(args.prefix, depth=args.depth, limit=args.limit)
+        return _emit_json_model(result)
+    if args.files_command == "ls":
+        result = client.files.ls(args.path, limit=args.limit)
+        return _emit_json_model(result)
+    if args.files_command == "glob":
+        result = client.files.glob(args.pattern, prefix=args.prefix, limit=args.limit)
+        return _emit_json_model(result)
+    if args.files_command == "stat":
+        result = client.files.stat(args.path)
+        return _emit_json_model(result)
+    if args.files_command == "read-lines":
+        result = client.files.read_lines(
+            args.path,
+            start_line=args.start,
+            end_line=args.end,
+        )
+        if args.json:
+            return _emit_json_model(result)
+        print("\n".join(result.lines))
+        if not result.complete:
+            print(
+                f"Warning: output truncated by {result.stopped_by or 'limit'}.",
+                file=sys.stderr,
+            )
+        return 0
+
+    raise ValueError("Unsupported files command.")
+
+
+def _emit_json_model(result) -> int:
+    print(json.dumps(result.model_dump(), indent=2, sort_keys=True))
     return 0
 
 

@@ -8,7 +8,13 @@ import pytest
 
 from ctxd import SDK_NAME, AsyncClient, Client, __version__, get_user_agent
 from ctxd._metadata import SDK_VERSION
-from ctxd.config import clear_api_key, resolve_api_key, save_api_key
+from ctxd.config import (
+    clear_api_key,
+    resolve_api_key,
+    resolve_backend,
+    resolve_ctxfs_endpoint,
+    save_api_key,
+)
 from ctxd.exceptions import CtxdAuthError, CtxdError, CtxdProtocolError
 
 
@@ -342,3 +348,136 @@ async def test_async_client_search_parses_mcp_sse_response() -> None:
         result = await client.search("incident")
 
     assert result.results[0].id == "doc-2"
+
+
+def test_backend_defaults_to_hosted_with_temp_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CTXD_CONFIG_PATH", str(tmp_path / "config.json"))
+    monkeypatch.delenv("CTXD_BACKEND", raising=False)
+
+    assert resolve_backend() == "remote"
+
+
+def test_backend_resolves_from_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CTXD_CONFIG_PATH", str(tmp_path / "config.json"))
+    monkeypatch.setenv("CTXD_BACKEND", "ctxfs")
+
+    assert resolve_backend() == "ctxfs"
+
+
+def test_hosted_backend_alias_canonicalizes_to_remote() -> None:
+    assert resolve_backend("hosted") == "remote"
+    assert Client(backend="hosted", api_key="token").backend == "remote"
+
+
+def test_ctxfs_endpoint_prefers_socket_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CTXD_CTXFS_URL", raising=False)
+    monkeypatch.setenv("CTXD_CTXFS_SOCKET", "/tmp/ctxfs.sock")
+
+    assert resolve_ctxfs_endpoint() == "unix:///tmp/ctxfs.sock"
+
+
+def test_ctxfs_endpoint_reads_local_daemon_ctxfs_section(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CTXD_CONFIG_PATH", str(tmp_path / "config.json"))
+    monkeypatch.delenv("CTXD_CTXFS_URL", raising=False)
+    monkeypatch.delenv("CTXD_CTXFS_SOCKET", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    daemon_config_dir = tmp_path / ".ctxd" / "local"
+    daemon_config_dir.mkdir(parents=True)
+    (daemon_config_dir / "config.toml").write_text(
+        '[ctxfs]\nhost = "127.0.0.2"\nport = 9999\nsocket_path = "/tmp/custom.sock"\n'
+    )
+
+    assert resolve_ctxfs_endpoint() == "unix:///tmp/custom.sock"
+
+
+def test_ctxfs_endpoint_reads_local_daemon_host_port_when_socket_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CTXD_CONFIG_PATH", str(tmp_path / "config.json"))
+    monkeypatch.delenv("CTXD_CTXFS_URL", raising=False)
+    monkeypatch.delenv("CTXD_CTXFS_SOCKET", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    daemon_config_dir = tmp_path / ".ctxd" / "local"
+    daemon_config_dir.mkdir(parents=True)
+    (daemon_config_dir / "config.toml").write_text(
+        '[ctxfs]\nhost = "127.0.0.2"\nport = 9999\nsocket_path = "none"\n'
+    )
+
+    assert resolve_ctxfs_endpoint() == "http://127.0.0.2:9999"
+
+
+def test_ctxfs_search_uses_grep_without_hosted_auth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CTXD_CONFIG_PATH", str(tmp_path / "config.json"))
+    monkeypatch.setenv("CTXD_API_KEY", "hosted-token")
+    client = Client(backend="ctxfs", ctxfs_endpoint="http://127.0.0.1:8765")
+
+    async def mock_request(self, method, url, *, params=None, headers=None):
+        del self
+        assert method == "GET"
+        assert url == "/api/ctxfs/grep"
+        assert params == {
+            "pattern": "needle",
+            "prefix": "local-files/root",
+            "limit": 5,
+        }
+        assert headers is not None
+        assert "Authorization" not in headers
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "path": "local-files/root/README.md",
+                        "line_number": 3,
+                        "line": "needle here",
+                    }
+                ],
+                "complete": True,
+                "stopped_by": None,
+            },
+        )
+
+    with patch("httpx.AsyncClient.request", mock_request):
+        result = client.search("needle", prefix="local-files/root", limit=5)
+
+    assert result.results[0].app_name == "ctxfs"
+    assert result.results[0].title == "local-files/root/README.md"
+    assert result.results[0].metadata["line_number"] == 3
+
+
+def test_ctxfs_fetch_maps_read_to_document_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CTXD_CONFIG_PATH", str(tmp_path / "config.json"))
+    client = Client(backend="ctxfs", ctxfs_endpoint="http://127.0.0.1:8765")
+
+    async def mock_request(self, method, url, *, params=None, headers=None):
+        del self, headers
+        assert method == "GET"
+        assert url == "/api/ctxfs/read"
+        assert params == {"path": "local-files/root/README.md"}
+        return httpx.Response(
+            200,
+            json={
+                "path": "local-files/root/README.md",
+                "text": "hello",
+                "content_hash": "sha256:abc",
+                "complete": True,
+                "stopped_by": None,
+            },
+        )
+
+    with patch("httpx.AsyncClient.request", mock_request):
+        document = client.fetch("local-files/root/README.md")
+
+    assert document.app_name == "ctxfs"
+    assert document.text == "hello"
+    assert document.metadata["content_hash"] == "sha256:abc"

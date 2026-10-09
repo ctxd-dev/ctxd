@@ -4,9 +4,10 @@ from typing import Any
 import httpx
 
 from ctxd._metadata import get_user_agent
-from ctxd.config import resolve_api_key, resolve_base_url
+from ctxd.config import resolve_api_key, resolve_backend, resolve_base_url
+from ctxd.ctxfs_client import AsyncCtxfsClient
 from ctxd.exceptions import CtxdAuthError, CtxdError, CtxdProtocolError
-from ctxd.models import DocumentResult, ProfileResult, SearchResult
+from ctxd.models import DocumentResult, ProfileResult, SearchItem, SearchResult
 
 
 class AsyncClient:
@@ -17,39 +18,134 @@ class AsyncClient:
         *,
         api_key: str | None = None,
         base_url: str | None = None,
+        backend: str | None = None,
+        ctxfs_endpoint: str | None = None,
+        ctxfs_socket: str | None = None,
         timeout: float = 30.0,
     ) -> None:
+        self._backend = resolve_backend(backend)
         self._base_url = self._normalize_base_url(resolve_base_url(base_url))
-        self._api_key = resolve_api_key(api_key, base_url=self._base_url)
+        self._api_key = (
+            None
+            if self._backend == "ctxfs"
+            else resolve_api_key(api_key, base_url=self._base_url)
+        )
         self._timeout = timeout
         self._client: httpx.AsyncClient | None = None
+        self._ctxfs_client = (
+            AsyncCtxfsClient(
+                endpoint=ctxfs_endpoint,
+                socket_path=ctxfs_socket,
+                timeout=timeout,
+            )
+            if self._backend == "ctxfs"
+            else None
+        )
+        self.files = AsyncFilesClient(self)
 
     @property
     def base_url(self) -> str:
         return self._base_url
 
+    @property
+    def backend(self) -> str:
+        return self._backend
+
     async def __aenter__(self) -> "AsyncClient":
-        self._client = httpx.AsyncClient(timeout=self._timeout)
+        if self._backend != "ctxfs":
+            self._client = httpx.AsyncClient(timeout=self._timeout)
+        elif self._ctxfs_client is not None:
+            await self._ctxfs_client.__aenter__()
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
         if self._client is not None:
             await self._client.aclose()
             self._client = None
+        if self._ctxfs_client is not None:
+            await self._ctxfs_client.__aexit__(exc_type, exc, tb)
 
-    async def search(self, query: str) -> SearchResult:
+    async def search(
+        self,
+        query: str,
+        *,
+        prefix: str = "",
+        limit: int | None = None,
+    ) -> SearchResult:
+        if self._ctxfs_client is not None:
+            matches = await self._ctxfs_client.grep(query, prefix=prefix, limit=limit)
+            return SearchResult(
+                results=[
+                    SearchItem(
+                        id=f"{match.path}:{match.line_number}",
+                        app_name="ctxfs",
+                        title=match.path,
+                        url=match.path,
+                        text=match.line,
+                        metadata={
+                            "line_number": match.line_number,
+                            "match_start": match.match_start,
+                            "match_end": match.match_end,
+                            "content_hash": match.content_hash,
+                        },
+                    )
+                    for match in matches.items
+                ],
+                complete=matches.complete,
+                stopped_by=matches.stopped_by,
+            )
+
+        if prefix or limit is not None:
+            raise ValueError(
+                "`prefix` and `limit` are only supported by the ctxfs backend."
+            )
         payload = await self.call_tool("search", {"query": query})
         return SearchResult.model_validate(payload)
 
     async def fetch_document(self, document_uid: str) -> DocumentResult:
+        if self._ctxfs_client is not None:
+            document = await self._ctxfs_client.read(document_uid)
+            return DocumentResult(
+                id=document.path,
+                app_name="ctxfs",
+                title=document.path,
+                url=document.path,
+                text=document.text,
+                metadata={
+                    "content_hash": document.content_hash,
+                    "complete": document.complete,
+                    "stopped_by": document.stopped_by,
+                },
+            )
+
         payload = await self.call_tool("fetch_document", {"document_uid": document_uid})
         return DocumentResult.model_validate(payload)
 
+    async def fetch(self, identifier: str) -> DocumentResult:
+        return await self.fetch_document(identifier)
+
     async def get_profile(self) -> ProfileResult:
+        if self._ctxfs_client is not None:
+            status = await self._ctxfs_client.status()
+            return ProfileResult(
+                integration_access=(
+                    "# Local ctxfs\n"
+                    f"- Status: {status.status or 'unknown'}\n"
+                    f"- Endpoint: {status.endpoint or self._ctxfs_client.endpoint}"
+                ),
+                file_tree="",
+            )
+
         payload = await self.call_tool("get_profile", {})
         return ProfileResult.model_validate(payload)
 
+    async def profile(self) -> ProfileResult:
+        return await self.get_profile()
+
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if self._backend == "ctxfs":
+            raise CtxdError("MCP tools are only available for the remote backend.")
+
         request_body = {
             "jsonrpc": "2.0",
             "method": "tools/call",
@@ -172,3 +268,41 @@ class AsyncClient:
             raise CtxdProtocolError(
                 "MCP result text payload was not valid JSON"
             ) from exc
+
+
+class AsyncFilesClient:
+    def __init__(self, client: AsyncClient) -> None:
+        self._client = client
+
+    def _ctxfs(self) -> AsyncCtxfsClient:
+        if self._client._ctxfs_client is None:
+            raise CtxdError("File operations are not supported by the hosted backend.")
+        return self._client._ctxfs_client
+
+    async def stat(self, path: str):
+        return await self._ctxfs().stat(path)
+
+    async def ls(self, path: str = "", *, limit: int | None = None):
+        return await self._ctxfs().ls(path, limit=limit)
+
+    async def tree(
+        self,
+        prefix: str = "",
+        *,
+        depth: int | None = None,
+        limit: int | None = None,
+    ):
+        return await self._ctxfs().tree(prefix, depth=depth, limit=limit)
+
+    async def glob(self, pattern: str, *, prefix: str = "", limit: int | None = None):
+        return await self._ctxfs().glob(pattern, prefix=prefix, limit=limit)
+
+    async def read(self, path: str, *, max_bytes: int | None = None):
+        return await self._ctxfs().read(path, max_bytes=max_bytes)
+
+    async def read_lines(self, path: str, *, start_line: int, end_line: int):
+        return await self._ctxfs().read_lines(
+            path,
+            start_line=start_line,
+            end_line=end_line,
+        )

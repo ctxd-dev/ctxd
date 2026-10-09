@@ -1,6 +1,7 @@
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
@@ -9,7 +10,13 @@ import pytest
 from ctxd.cli import main
 from ctxd.exceptions import CtxdAuthError
 from ctxd._metadata import SDK_VERSION
-from ctxd.models import DocumentResult, ProfileResult
+from ctxd.models import (
+    CtxfsBounded,
+    CtxfsDirectoryEntry,
+    CtxfsReadLinesResult,
+    DocumentResult,
+    ProfileResult,
+)
 
 
 def test_cli_version_prints_sdk_version() -> None:
@@ -230,6 +237,26 @@ def test_cli_login_uses_resolved_api_key() -> None:
     save_api_key.assert_not_called()
 
 
+def test_cli_login_validates_against_hosted_backend() -> None:
+    stdout = StringIO()
+    profile = ProfileResult(
+        integration_access="# Integration Access\n- Slack (`slack`) [INSTALLED]",
+        file_tree="",
+    )
+
+    with patch.dict(
+        "os.environ",
+        {"CTXD_API_KEY": "env-api-key", "CTXD_BACKEND": "ctxfs"},
+        clear=False,
+    ), patch("ctxd.cli.Client") as client_class, redirect_stdout(stdout):
+        client_class.return_value.get_profile.return_value = profile
+        exit_code = main(["login"])
+
+    assert exit_code == 0
+    client_class.assert_called_once_with(api_key="env-api-key", backend="hosted")
+    assert stdout.getvalue() == "API key authentication is valid.\n"
+
+
 def test_cli_login_requires_api_key() -> None:
     stderr = StringIO()
 
@@ -292,6 +319,25 @@ def test_cli_logout_clears_api_key(tmp_path: Path) -> None:
     assert exit_code == 0
     assert stdout.getvalue() == "Cleared stored ctxd API key.\n"
     assert config_path.read_text() == '{\n  "base_url": "https://ctxd.example.com"\n}\n'
+    assert not credentials_path.exists()
+
+
+def test_cli_logout_preserves_backend_config(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    credentials_path = tmp_path / "credentials.json"
+    config_path.write_text(
+        '{\n  "backend": "ctxfs",\n  "base_url": "https://ctxd.example.com"\n}\n'
+    )
+    credentials_path.write_text('{\n  "api_key": "token"\n}\n')
+    stdout = StringIO()
+
+    with patch.dict(
+        "os.environ", {"CTXD_CONFIG_PATH": str(config_path)}, clear=False
+    ), redirect_stdout(stdout):
+        exit_code = main(["logout"])
+
+    assert exit_code == 0
+    assert '"backend": "ctxfs"' in config_path.read_text()
     assert not credentials_path.exists()
 
 
@@ -476,3 +522,188 @@ def test_cli_search_outputs_json_for_empty_success() -> None:
 
     assert exit_code == 0
     assert '"results": []' in stdout.getvalue()
+
+
+def test_cli_config_set_backend_saves_backend(tmp_path: Path) -> None:
+    stdout = StringIO()
+    config_path = tmp_path / "config.json"
+
+    with patch.dict(
+        "os.environ",
+        {"CTXD_CONFIG_PATH": str(config_path)},
+        clear=False,
+    ), redirect_stdout(stdout):
+        exit_code = main(["config", "set", "backend", "ctxfs"])
+
+    assert exit_code == 0
+    assert stdout.getvalue() == "Backend set to ctxfs.\n"
+    assert '"backend": "ctxfs"' in config_path.read_text()
+
+
+def test_cli_backend_set_remote_saves_remote_backend(tmp_path: Path) -> None:
+    stdout = StringIO()
+    config_path = tmp_path / "config.json"
+
+    with patch.dict(
+        "os.environ",
+        {"CTXD_CONFIG_PATH": str(config_path)},
+        clear=False,
+    ), redirect_stdout(stdout):
+        exit_code = main(["backend", "set", "remote"])
+
+    assert exit_code == 0
+    assert stdout.getvalue() == "Backend set to remote.\n"
+    assert '"backend": "remote"' in config_path.read_text()
+
+
+def test_cli_backend_get_prints_remote_for_hosted_alias(tmp_path: Path) -> None:
+    stdout = StringIO()
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{\n  "backend": "hosted"\n}\n')
+
+    with patch.dict(
+        "os.environ",
+        {"CTXD_CONFIG_PATH": str(config_path)},
+        clear=False,
+    ), redirect_stdout(stdout):
+        exit_code = main(["backend", "get"])
+
+    assert exit_code == 0
+    assert stdout.getvalue() == "remote\n"
+
+
+def test_cli_backend_status_uses_ctxfs_profile() -> None:
+    stdout = StringIO()
+    profile = ProfileResult(
+        integration_access="# Local ctxfs\n- Status: ok",
+        file_tree="",
+    )
+
+    with patch.dict("os.environ", {"CTXD_BACKEND": "ctxfs"}, clear=False), patch(
+        "ctxd.cli.Client.get_profile", return_value=profile
+    ) as get_profile, redirect_stdout(stdout):
+        exit_code = main(["backend", "status"])
+
+    assert exit_code == 0
+    get_profile.assert_called_once_with()
+    output = stdout.getvalue()
+    assert "Backend: ctxfs" in output
+    assert "# Local ctxfs" in output
+
+
+def test_cli_search_passes_ctxfs_options() -> None:
+    stdout = StringIO()
+
+    with patch(
+        "ctxd.cli.Client.search",
+        return_value=type(
+            "SearchResultLike",
+            (),
+            {
+                "model_dump": lambda self: {
+                    "results": [],
+                    "error": None,
+                    "dsl_parse_error": None,
+                }
+            },
+        )(),
+    ) as search, redirect_stdout(stdout):
+        exit_code = main(
+            [
+                "--backend",
+                "ctxfs",
+                "search",
+                "needle",
+                "--prefix",
+                "local-files/root",
+                "--limit",
+                "3",
+            ]
+        )
+
+    assert exit_code == 0
+    search.assert_called_once_with("needle", prefix="local-files/root", limit=3)
+    assert '"results": []' in stdout.getvalue()
+
+
+def test_cli_search_accepts_command_local_backend_override() -> None:
+    stdout = StringIO()
+
+    with patch(
+        "ctxd.cli.Client.search",
+        return_value=type(
+            "SearchResultLike",
+            (),
+            {
+                "model_dump": lambda self: {
+                    "results": [],
+                    "error": None,
+                    "dsl_parse_error": None,
+                }
+            },
+        )(),
+    ) as search, redirect_stdout(stdout):
+        exit_code = main(
+            [
+                "search",
+                "needle",
+                "--backend",
+                "ctxfs",
+                "--prefix",
+                "local-files/root",
+            ]
+        )
+
+    assert exit_code == 0
+    search.assert_called_once_with("needle", prefix="local-files/root")
+
+
+def test_cli_files_tree_outputs_json() -> None:
+    stdout = StringIO()
+    tree = CtxfsBounded[CtxfsDirectoryEntry](
+        items=[CtxfsDirectoryEntry(path="local-files/root/README.md", kind="file")],
+        complete=True,
+        stopped_by=None,
+    )
+
+    client = SimpleNamespace(files=SimpleNamespace(tree=lambda *args, **kwargs: tree))
+
+    with patch("ctxd.cli.Client", return_value=client), redirect_stdout(stdout):
+        exit_code = main(["files", "tree", "local-files/root", "--backend", "ctxfs"])
+
+    assert exit_code == 0
+    assert '"path": "local-files/root/README.md"' in stdout.getvalue()
+
+
+def test_cli_files_read_lines_outputs_text() -> None:
+    stdout = StringIO()
+    lines = CtxfsReadLinesResult(
+        path="local-files/root/README.md",
+        start_line=1,
+        end_line=2,
+        lines=["one", "two"],
+        complete=True,
+        stopped_by=None,
+    )
+
+    client = SimpleNamespace(
+        files=SimpleNamespace(read_lines=lambda *args, **kwargs: lines)
+    )
+
+    with patch("ctxd.cli.Client", return_value=client), redirect_stdout(stdout):
+        exit_code = main(
+            [
+                "--backend",
+                "ctxfs",
+                "files",
+                "read-lines",
+                "local-files/root/README.md",
+                "--start",
+                "1",
+                "--end",
+                "2",
+            ]
+        )
+
+    assert exit_code == 0
+    assert stdout.getvalue() == "one\ntwo\n"

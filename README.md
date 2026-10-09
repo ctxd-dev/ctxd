@@ -77,6 +77,34 @@ async with AsyncClient(api_key="<api-key>") as client:
     results = await client.search("text:deployment")
 ```
 
+## Local ctxfs backend
+
+The CLI can also point at a local ctxfs backend exposed by the local ctxd
+service:
+
+```bash
+ctxd backend set ctxfs
+ctxd search "deployment" --prefix local-files/<root-id> --limit 20
+ctxd fetch local-files/<root-id>/README.md
+ctxd files tree local-files/<root-id> --depth 2
+ctxd files read-lines local-files/<root-id>/README.md --start 1 --end 20
+```
+
+Endpoint discovery uses `CTXD_CTXFS_URL`, `CTXD_CTXFS_SOCKET`, stored config, the
+local daemon config, `unix://~/.ctxd/local/ctxfs.sock` when present, then
+`http://127.0.0.1:8765`. Local ctxfs reads do not use `CTXD_API_KEY`.
+
+SDK example:
+
+```python
+from ctxd import Client
+
+client = Client(backend="ctxfs")
+matches = client.search("deployment", prefix="local-files/<root-id>", limit=20)
+document = client.fetch("local-files/<root-id>/README.md")
+tree = client.files.tree("local-files/<root-id>", depth=2)
+```
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the package version bump and release
