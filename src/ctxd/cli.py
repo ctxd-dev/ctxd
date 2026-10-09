@@ -18,6 +18,13 @@ from ctxd.config import (
     save_api_key,
     save_backend,
 )
+from ctxd.folders import (
+    add_folder,
+    list_folders,
+    remove_folder,
+    resolve_folder_prefix,
+    try_resolve_named_path,
+)
 from ctxd.local_ctxfs_service import ensure_started, status as ctxfs_service_status
 
 
@@ -38,6 +45,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _handle_backend(args)
         if args.command == "config":
             return _handle_config(args)
+        if args.command == "folders":
+            return _handle_folders(args)
 
         client = Client(backend=getattr(args, "backend", None))
 
@@ -191,6 +200,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="For ctxfs backend searches, restrict grep to this path prefix.",
     )
     search_parser.add_argument(
+        "--folder",
+        help="For ctxfs backend searches, restrict grep to a configured folder name.",
+    )
+    search_parser.add_argument(
         "--limit",
         type=int,
         help="For ctxfs backend searches, limit grep matches.",
@@ -264,6 +277,33 @@ def _build_parser() -> argparse.ArgumentParser:
     files_read_lines_parser.add_argument("--end", type=int, required=True)
     files_read_lines_parser.add_argument("--json", action="store_true")
     _add_backend_override(files_read_lines_parser)
+
+    files_read_parser = files_subparsers.add_parser("read", help="Read a file.")
+    files_read_parser.add_argument("path")
+    files_read_parser.add_argument("--max-bytes", type=int)
+    files_read_parser.add_argument("--json", action="store_true")
+    _add_backend_override(files_read_parser)
+
+    folders_parser = subparsers.add_parser(
+        "folders",
+        help="Manage local folders tracked through ctxfs.",
+        description="Manage local folders tracked through ctxfs.",
+    )
+    folders_subparsers = folders_parser.add_subparsers(
+        dest="folders_command",
+        metavar="<folders-command>",
+        required=True,
+    )
+    folders_add_parser = folders_subparsers.add_parser(
+        "add", help="Register a local folder."
+    )
+    folders_add_parser.add_argument("path")
+    folders_add_parser.add_argument("--name")
+    folders_subparsers.add_parser("list", help="List registered folders.")
+    folders_remove_parser = folders_subparsers.add_parser(
+        "remove", help="Remove a registered folder."
+    )
+    folders_remove_parser.add_argument("name")
 
     return parser
 
@@ -405,6 +445,29 @@ def _handle_config(args: argparse.Namespace) -> int:
     raise ValueError("Unsupported config command.")
 
 
+def _handle_folders(args: argparse.Namespace) -> int:
+    if args.folders_command == "add":
+        folder = add_folder(args.path, name=args.name)
+        print(f"Added folder {folder.name}: {folder.path}")
+        return 0
+
+    if args.folders_command == "list":
+        folders = list_folders()
+        if not folders:
+            print("No folders configured.")
+            return 0
+        for folder in folders:
+            print(f"{folder.name}\t{folder.path}")
+        return 0
+
+    if args.folders_command == "remove":
+        folder = remove_folder(args.name)
+        print(f"Removed folder {folder.name}.")
+        return 0
+
+    raise ValueError("Unsupported folders command.")
+
+
 def _handle_backend(args: argparse.Namespace) -> int:
     if args.backend_command == "get":
         print(_display_backend(resolve_backend()))
@@ -449,7 +512,13 @@ def _display_backend(backend: str) -> str:
 
 def _ctxfs_search_kwargs(args: argparse.Namespace) -> dict:
     kwargs = {}
-    if getattr(args, "prefix", None):
+    prefix = getattr(args, "prefix", None)
+    folder = getattr(args, "folder", None)
+    if prefix and folder:
+        raise ValueError("Use either `--prefix` or `--folder`, not both.")
+    if folder:
+        kwargs["prefix"] = resolve_folder_prefix(folder)
+    elif prefix:
         kwargs["prefix"] = args.prefix
     if getattr(args, "limit", None) is not None:
         kwargs["limit"] = args.limit
@@ -458,26 +527,48 @@ def _ctxfs_search_kwargs(args: argparse.Namespace) -> dict:
 
 def _handle_files(args: argparse.Namespace, client: Client) -> int:
     if args.files_command == "tree":
-        result = client.files.tree(args.prefix, depth=args.depth, limit=args.limit)
+        result = client.files.tree(
+            try_resolve_named_path(args.prefix),
+            depth=args.depth,
+            limit=args.limit,
+        )
         return _emit_json_model(result)
     if args.files_command == "ls":
-        result = client.files.ls(args.path, limit=args.limit)
+        result = client.files.ls(try_resolve_named_path(args.path), limit=args.limit)
         return _emit_json_model(result)
     if args.files_command == "glob":
-        result = client.files.glob(args.pattern, prefix=args.prefix, limit=args.limit)
+        result = client.files.glob(
+            args.pattern,
+            prefix=try_resolve_named_path(args.prefix) if args.prefix else "",
+            limit=args.limit,
+        )
         return _emit_json_model(result)
     if args.files_command == "stat":
-        result = client.files.stat(args.path)
+        result = client.files.stat(try_resolve_named_path(args.path))
         return _emit_json_model(result)
     if args.files_command == "read-lines":
         result = client.files.read_lines(
-            args.path,
+            try_resolve_named_path(args.path),
             start_line=args.start,
             end_line=args.end,
         )
         if args.json:
             return _emit_json_model(result)
         print("\n".join(result.lines))
+        if not result.complete:
+            print(
+                f"Warning: output truncated by {result.stopped_by or 'limit'}.",
+                file=sys.stderr,
+            )
+        return 0
+    if args.files_command == "read":
+        result = client.files.read(
+            try_resolve_named_path(args.path),
+            max_bytes=args.max_bytes,
+        )
+        if args.json:
+            return _emit_json_model(result)
+        print(result.text, end="" if result.text.endswith("\n") else "\n")
         if not result.complete:
             print(
                 f"Warning: output truncated by {result.stopped_by or 'limit'}.",

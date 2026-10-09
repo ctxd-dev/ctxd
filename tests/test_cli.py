@@ -14,6 +14,7 @@ from ctxd.models import (
     CtxfsBounded,
     CtxfsDirectoryEntry,
     CtxfsReadLinesResult,
+    CtxfsReadResult,
     DocumentResult,
     ProfileResult,
 )
@@ -759,3 +760,164 @@ def test_cli_files_read_lines_outputs_text() -> None:
 
     assert exit_code == 0
     assert stdout.getvalue() == "one\ntwo\n"
+
+
+def test_cli_folders_add_list_and_remove_persist_config(tmp_path: Path) -> None:
+    stdout = StringIO()
+    config_path = tmp_path / "config.json"
+    docs_path = tmp_path / "Docs"
+    docs_path.mkdir()
+
+    with patch.dict(
+        "os.environ",
+        {"CTXD_CONFIG_PATH": str(config_path)},
+        clear=False,
+    ), redirect_stdout(stdout):
+        add_code = main(["folders", "add", str(docs_path), "--name", "Documents"])
+        list_code = main(["folders", "list"])
+        remove_code = main(["folders", "remove", "Documents"])
+
+    assert add_code == 0
+    assert list_code == 0
+    assert remove_code == 0
+    output = stdout.getvalue()
+    assert f"Added folder Documents: {docs_path}" in output
+    assert f"Documents\t{docs_path}" in output
+    assert "Removed folder Documents." in output
+    assert '"folders": {}' in config_path.read_text()
+
+
+def test_cli_search_folder_maps_name_to_ctxfs_prefix(tmp_path: Path) -> None:
+    stdout = StringIO()
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        '{\n'
+        '  "folders": {\n'
+        '    "Documents": {\n'
+        '      "name": "Documents",\n'
+        '      "path": "/tmp/Documents",\n'
+        '      "prefix": "local-files/folder-1"\n'
+        "    }\n"
+        "  }\n"
+        "}\n"
+    )
+
+    with patch.dict(
+        "os.environ",
+        {"CTXD_CONFIG_PATH": str(config_path)},
+        clear=False,
+    ), patch(
+        "ctxd.cli.Client.search",
+        return_value=type(
+            "SearchResultLike",
+            (),
+            {
+                "model_dump": lambda self: {
+                    "results": [],
+                    "error": None,
+                    "dsl_parse_error": None,
+                }
+            },
+        )(),
+    ) as search, redirect_stdout(stdout):
+        exit_code = main(
+            ["search", "needle", "--backend", "ctxfs", "--folder", "Documents"]
+        )
+
+    assert exit_code == 0
+    search.assert_called_once_with("needle", prefix="local-files/folder-1")
+
+
+def test_cli_search_rejects_folder_and_prefix_together(tmp_path: Path) -> None:
+    stderr = StringIO()
+    config_path = tmp_path / "config.json"
+
+    with patch.dict(
+        "os.environ",
+        {"CTXD_CONFIG_PATH": str(config_path)},
+        clear=False,
+    ), patch("sys.stderr", stderr):
+        exit_code = main(
+            [
+                "search",
+                "needle",
+                "--backend",
+                "ctxfs",
+                "--folder",
+                "Documents",
+                "--prefix",
+                "local-files/root",
+            ]
+        )
+
+    assert exit_code == 1
+    assert "Use either `--prefix` or `--folder`, not both." in stderr.getvalue()
+
+
+def test_cli_files_tree_resolves_folder_name(tmp_path: Path) -> None:
+    stdout = StringIO()
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        '{\n'
+        '  "folders": {\n'
+        '    "Documents": {\n'
+        '      "name": "Documents",\n'
+        '      "path": "/tmp/Documents",\n'
+        '      "prefix": "local-files/folder-1"\n'
+        "    }\n"
+        "  }\n"
+        "}\n"
+    )
+    tree = CtxfsBounded[CtxfsDirectoryEntry](
+        items=[CtxfsDirectoryEntry(path="local-files/folder-1/README.md", kind="file")],
+        complete=True,
+        stopped_by=None,
+    )
+
+    client = SimpleNamespace(files=SimpleNamespace(tree=lambda *args, **kwargs: tree))
+
+    with patch.dict(
+        "os.environ",
+        {"CTXD_CONFIG_PATH": str(config_path)},
+        clear=False,
+    ), patch("ctxd.cli.Client", return_value=client), redirect_stdout(stdout):
+        exit_code = main(["files", "tree", "Documents", "--backend", "ctxfs"])
+
+    assert exit_code == 0
+    assert '"path": "local-files/folder-1/README.md"' in stdout.getvalue()
+
+
+def test_cli_files_read_resolves_folder_name_and_outputs_text(tmp_path: Path) -> None:
+    stdout = StringIO()
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        '{\n'
+        '  "folders": {\n'
+        '    "Documents": {\n'
+        '      "name": "Documents",\n'
+        '      "path": "/tmp/Documents",\n'
+        '      "prefix": "local-files/folder-1"\n'
+        "    }\n"
+        "  }\n"
+        "}\n"
+    )
+    read_result = CtxfsReadResult(
+        path="local-files/folder-1/README.md",
+        text="hello\n",
+        complete=True,
+        stopped_by=None,
+    )
+    files = SimpleNamespace(read=lambda *args, **kwargs: read_result)
+    client = SimpleNamespace(files=files)
+
+    with patch.dict(
+        "os.environ",
+        {"CTXD_CONFIG_PATH": str(config_path)},
+        clear=False,
+    ), patch("ctxd.cli.Client", return_value=client), redirect_stdout(stdout):
+        exit_code = main(
+            ["files", "read", "Documents/README.md", "--backend", "ctxfs"]
+        )
+
+    assert exit_code == 0
+    assert stdout.getvalue() == "hello\n"
