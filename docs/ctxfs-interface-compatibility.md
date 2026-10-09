@@ -12,7 +12,7 @@ whether a command talks to hosted MCP, local ctxfs, or a future backend.
 
 ## Goals
 
-- Keep hosted behavior as the default.
+- Keep remote hosted behavior as the default.
 - Add backend selection through config, environment, and per-command override.
 - Add a ctxfs adapter that supports Unix socket and loopback HTTP endpoints.
 - Keep hosted API keys scoped to hosted calls; local ctxfs reads do not use
@@ -32,15 +32,15 @@ ctxd profile
 Backend selection:
 
 ```bash
-ctxd config set backend hosted
-ctxd config set backend ctxfs
-ctxd config get backend
+ctxd backend set remote
+ctxd backend set ctxfs
+ctxd backend get
 ```
 
 For local ctxfs:
 
 ```bash
-ctxd config set backend ctxfs
+ctxd backend set ctxfs
 ctxd search "ctxfs" --prefix local-files/<root-id> --limit 20
 ctxd fetch local-files/<root-id>/README.md
 ctxd profile
@@ -58,8 +58,8 @@ operation should return a clear unsupported-operation error.
 ```python
 from ctxd import Client
 
-hosted = Client(backend="hosted")
-hosted.search("text:deployment")
+remote = Client(backend="remote")
+remote.search("text:deployment")
 
 local = Client(backend="ctxfs")
 local.search("deployment", prefix="local-files/<root-id>", limit=20)
@@ -72,7 +72,7 @@ reads, grep matches, and service status.
 
 ## Endpoint Resolution
 
-Hosted uses `CTXD_BASE_URL` and hosted config. Ctxfs endpoint resolution is
+Remote uses `CTXD_BASE_URL` and hosted config. Ctxfs endpoint resolution is
 separate:
 
 1. `CTXD_CTXFS_URL`
@@ -86,7 +86,7 @@ Unix socket endpoints use `httpx` UDS transport with a synthetic base URL.
 
 ## Implementation Plan
 
-1. Add backend config and keep hosted behavior default.
+1. Add backend config and keep remote behavior default.
 2. Add ctxfs models and ctxfs sync/async clients.
 3. Route `Client`, `AsyncClient`, and CLI commands through the selected backend.
 4. Add backend-neutral `ctxd files ...` commands.
@@ -95,6 +95,6 @@ Unix socket endpoints use `httpx` UDS transport with a synthetic base URL.
 ## Verification
 
 - Unit tests for backend config and endpoint resolution.
-- Unit tests proving hosted behavior remains default.
+- Unit tests proving remote hosted behavior remains default.
 - Unit tests proving ctxfs requests do not send hosted credentials.
 - CLI tests for backend config, ctxfs `search`, and `files` commands.

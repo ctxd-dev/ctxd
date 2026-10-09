@@ -12,8 +12,8 @@ from ctxd.secure_store import (
 
 DEFAULT_BASE_URL = "https://mcp.ctxd.dev"
 DEFAULT_CONFIG_PATH = Path.home() / ".ctxd" / "config.json"
-DEFAULT_BACKEND = "hosted"
-SUPPORTED_BACKENDS = frozenset({"hosted", "ctxfs"})
+DEFAULT_BACKEND = "remote"
+SUPPORTED_BACKENDS = frozenset({"hosted", "remote", "ctxfs"})
 DEFAULT_CTXFS_SOCKET = Path.home() / ".ctxd" / "local" / "ctxfs.sock"
 DEFAULT_CTXFS_URL = "http://127.0.0.1:8765"
 

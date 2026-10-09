@@ -356,7 +356,7 @@ def test_backend_defaults_to_hosted_with_temp_config(
     monkeypatch.setenv("CTXD_CONFIG_PATH", str(tmp_path / "config.json"))
     monkeypatch.delenv("CTXD_BACKEND", raising=False)
 
-    assert resolve_backend() == "hosted"
+    assert resolve_backend() == "remote"
 
 
 def test_backend_resolves_from_env(

@@ -33,6 +33,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _handle_status(args)
         if args.command == "install-app":
             return _handle_install_app(args)
+        if args.command == "backend":
+            return _handle_backend(args)
         if args.command == "config":
             return _handle_config(args)
 
@@ -82,8 +84,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--backend",
-        choices=("hosted", "ctxfs"),
-        help="Backend to use for this command. Defaults to CTXD_BACKEND, config, then hosted.",
+        choices=("remote", "hosted", "ctxfs"),
+        help="Backend to use for this command. Defaults to CTXD_BACKEND, config, then remote.",
     )
 
     subparsers = parser.add_subparsers(
@@ -122,6 +124,24 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the installation URL without opening a browser.",
     )
+
+    backend_parser = subparsers.add_parser(
+        "backend",
+        help="Get, set, or inspect the active ctxd backend.",
+        description="Get, set, or inspect the active ctxd backend.",
+    )
+    backend_subparsers = backend_parser.add_subparsers(
+        dest="backend_command",
+        metavar="<backend-command>",
+        required=True,
+    )
+    backend_subparsers.add_parser("get", help="Print the active backend.")
+    backend_set_parser = backend_subparsers.add_parser(
+        "set",
+        help="Set the default backend.",
+    )
+    backend_set_parser.add_argument("backend", choices=("remote", "hosted", "ctxfs"))
+    backend_subparsers.add_parser("status", help="Print backend status.")
 
     config_parser = subparsers.add_parser(
         "config",
@@ -354,16 +374,48 @@ def _handle_install_app(args: argparse.Namespace) -> int:
 
 def _handle_config(args: argparse.Namespace) -> int:
     if args.config_command == "get" and args.key == "backend":
-        print(resolve_backend())
+        print(_display_backend(resolve_backend()))
         return 0
 
     if args.config_command == "set" and args.key == "backend":
         backend = resolve_backend(args.value)
         save_backend(backend)
-        print(f"Backend set to {backend}.")
+        print(f"Backend set to {_display_backend(backend)}.")
         return 0
 
     raise ValueError("Unsupported config command.")
+
+
+def _handle_backend(args: argparse.Namespace) -> int:
+    if args.backend_command == "get":
+        print(_display_backend(resolve_backend()))
+        return 0
+
+    if args.backend_command == "set":
+        backend = resolve_backend(args.backend)
+        save_backend(backend)
+        print(f"Backend set to {_display_backend(backend)}.")
+        if backend == "ctxfs":
+            print("ctxfs service management is not installed in this package yet.")
+        return 0
+
+    if args.backend_command == "status":
+        backend = resolve_backend()
+        print(f"Backend: {_display_backend(backend)}")
+        if backend == "ctxfs":
+            profile = Client(backend="ctxfs").get_profile()
+            print(profile.integration_access)
+        else:
+            print("Remote backend configured.")
+        return 0
+
+    raise ValueError("Unsupported backend command.")
+
+
+def _display_backend(backend: str) -> str:
+    if backend == "hosted":
+        return "remote"
+    return backend
 
 
 def _ctxfs_search_kwargs(args: argparse.Namespace) -> dict:

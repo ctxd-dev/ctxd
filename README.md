@@ -83,7 +83,7 @@ The CLI can also point at a local ctxfs backend exposed by the local ctxd
 service:
 
 ```bash
-ctxd config set backend ctxfs
+ctxd backend set ctxfs
 ctxd search "deployment" --prefix local-files/<root-id> --limit 20
 ctxd fetch local-files/<root-id>/README.md
 ctxd files tree local-files/<root-id> --depth 2

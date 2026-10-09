@@ -26,9 +26,9 @@ class AsyncClient:
         self._backend = resolve_backend(backend)
         self._base_url = self._normalize_base_url(resolve_base_url(base_url))
         self._api_key = (
-            resolve_api_key(api_key, base_url=self._base_url)
-            if self._backend == "hosted"
-            else None
+            None
+            if self._backend == "ctxfs"
+            else resolve_api_key(api_key, base_url=self._base_url)
         )
         self._timeout = timeout
         self._client: httpx.AsyncClient | None = None
@@ -52,7 +52,7 @@ class AsyncClient:
         return self._backend
 
     async def __aenter__(self) -> "AsyncClient":
-        if self._backend == "hosted":
+        if self._backend != "ctxfs":
             self._client = httpx.AsyncClient(timeout=self._timeout)
         elif self._ctxfs_client is not None:
             await self._ctxfs_client.__aenter__()
@@ -143,8 +143,8 @@ class AsyncClient:
         return await self.get_profile()
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        if self._backend != "hosted":
-            raise CtxdError("MCP tools are only available for the hosted backend.")
+        if self._backend == "ctxfs":
+            raise CtxdError("MCP tools are only available for the remote backend.")
 
         request_body = {
             "jsonrpc": "2.0",

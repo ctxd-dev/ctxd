@@ -540,6 +540,57 @@ def test_cli_config_set_backend_saves_backend(tmp_path: Path) -> None:
     assert '"backend": "ctxfs"' in config_path.read_text()
 
 
+def test_cli_backend_set_remote_saves_remote_backend(tmp_path: Path) -> None:
+    stdout = StringIO()
+    config_path = tmp_path / "config.json"
+
+    with patch.dict(
+        "os.environ",
+        {"CTXD_CONFIG_PATH": str(config_path)},
+        clear=False,
+    ), redirect_stdout(stdout):
+        exit_code = main(["backend", "set", "remote"])
+
+    assert exit_code == 0
+    assert stdout.getvalue() == "Backend set to remote.\n"
+    assert '"backend": "remote"' in config_path.read_text()
+
+
+def test_cli_backend_get_prints_remote_for_hosted_alias(tmp_path: Path) -> None:
+    stdout = StringIO()
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{\n  "backend": "hosted"\n}\n')
+
+    with patch.dict(
+        "os.environ",
+        {"CTXD_CONFIG_PATH": str(config_path)},
+        clear=False,
+    ), redirect_stdout(stdout):
+        exit_code = main(["backend", "get"])
+
+    assert exit_code == 0
+    assert stdout.getvalue() == "remote\n"
+
+
+def test_cli_backend_status_uses_ctxfs_profile() -> None:
+    stdout = StringIO()
+    profile = ProfileResult(
+        integration_access="# Local ctxfs\n- Status: ok",
+        file_tree="",
+    )
+
+    with patch.dict("os.environ", {"CTXD_BACKEND": "ctxfs"}, clear=False), patch(
+        "ctxd.cli.Client.get_profile", return_value=profile
+    ) as get_profile, redirect_stdout(stdout):
+        exit_code = main(["backend", "status"])
+
+    assert exit_code == 0
+    get_profile.assert_called_once_with()
+    output = stdout.getvalue()
+    assert "Backend: ctxfs" in output
+    assert "# Local ctxfs" in output
+
+
 def test_cli_search_passes_ctxfs_options() -> None:
     stdout = StringIO()
 
