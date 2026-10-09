@@ -739,7 +739,8 @@ def test_grep_skips_missing_tree_paths(tmp_path):
     assert matches.stopped_by == "catalog_mismatch"
 
 
-def test_grep_pathological_regex_does_not_backtrack_indefinitely(tmp_path):
+def test_grep_pathological_regex_does_not_backtrack_indefinitely(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", "")
     store = CtxfsStore(tmp_path / "ctxfs")
     store.register_prefix("user-1", "writer-1", "local_files/root")
     store.submit(
@@ -753,9 +754,29 @@ def test_grep_pathological_regex_does_not_backtrack_indefinitely(tmp_path):
     elapsed = time.monotonic() - started
 
     assert matches.items == []
-    assert matches.complete is True
-    assert matches.stopped_by is None
+    assert matches.complete is False
+    assert matches.stopped_by == "timeout"
     assert elapsed < 1.0
+
+
+def test_put_update_removes_superseded_object(tmp_path):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+    path = "local_files/root/notes.md"
+
+    store.submit("user-1", "writer-1", [_put(path, "inode-1", "alpha")])
+    first = store.stat("user-1", path)
+    assert first is not None
+    first_object = store._object_path("user-1", first.object_id)
+    assert first_object.exists()
+
+    store.submit("user-1", "writer-1", [_put(path, "inode-1", "beta")])
+    second = store.stat("user-1", path)
+
+    assert second is not None
+    assert second.object_id != first.object_id
+    assert store._object_path("user-1", second.object_id).exists()
+    assert not first_object.exists()
 
 
 def test_grep_invalid_utf8_match_offsets_slice_returned_line(tmp_path):

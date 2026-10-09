@@ -867,6 +867,14 @@ class CtxfsStore:
                     undo_stack,
                     cleanup_stack,
                 )
+            if existing is not None:
+                old_object_path = self._object_path(user_id, existing.object_id)
+                cleanup_stack.append(
+                    lambda old_object_path=old_object_path: self._remove_object_entry(
+                        user_id,
+                        old_object_path,
+                    )
+                )
         created_at = existing.created_at if existing is not None else now
         self.connection.execute(
             """
@@ -1860,7 +1868,7 @@ def _python_grep_tree_path(
     match_limit: int,
 ) -> _GrepPathResult:
     if _may_backtrack_pathologically(pattern):
-        return _GrepPathResult([])
+        return _GrepPathResult([], stopped_by="timeout")
 
     compiled = re.compile(pattern)
     matches: list[GrepMatch] = []
