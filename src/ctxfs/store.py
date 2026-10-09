@@ -6,7 +6,9 @@ import hashlib
 import json
 import logging
 import os
+import re
 import selectors
+import shutil
 import sqlite3
 import subprocess
 import time
@@ -707,6 +709,13 @@ class CtxfsStore:
         )
 
     def _validate_grep_pattern(self, pattern: str) -> None:
+        if not _has_rg():
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError("invalid ctxfs grep pattern") from exc
+            return
+
         process = subprocess.run(
             _rg_command(pattern, Path(os.devnull)),
             capture_output=True,
@@ -730,6 +739,15 @@ class CtxfsStore:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError
+        if not _has_rg():
+            return _python_grep_tree_path(
+                pattern,
+                tree_path,
+                logical_path,
+                content_hash,
+                match_limit,
+            )
+
         process = subprocess.Popen(
             _rg_command(pattern, tree_path),
             env=_rg_env(),
@@ -1828,6 +1846,39 @@ def _rg_command(pattern: str, path: Path) -> list[str]:
         "--",
         str(path),
     ]
+
+
+def _has_rg() -> bool:
+    return shutil.which("rg", path=os.environ.get("PATH", "")) is not None
+
+
+def _python_grep_tree_path(
+    pattern: str,
+    tree_path: Path,
+    logical_path: str,
+    content_hash: str,
+    match_limit: int,
+) -> _GrepPathResult:
+    compiled = re.compile(pattern)
+    matches: list[GrepMatch] = []
+    for line_number, raw_line in enumerate(tree_path.read_bytes().splitlines(), 1):
+        line = raw_line.decode("utf-8", "replace")
+        match = compiled.search(line)
+        if match is None:
+            continue
+        matches.append(
+            GrepMatch(
+                path=logical_path,
+                line_number=line_number,
+                line=line,
+                match_start=match.start(),
+                match_end=match.end(),
+                content_hash=content_hash,
+            )
+        )
+        if len(matches) >= match_limit:
+            return _GrepPathResult(matches)
+    return _GrepPathResult(matches)
 
 
 def _rg_env() -> dict[str, str]:
