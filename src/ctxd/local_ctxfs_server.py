@@ -40,6 +40,7 @@ class CtxfsSubmissionBody(BaseModel):
 class CtxfsSubmissionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    user_id: str | None = None
     writer_id: str = Field(min_length=1)
     writer_prefix: str = Field(min_length=1)
     submission: CtxfsSubmissionBody

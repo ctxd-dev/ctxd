@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -79,6 +80,8 @@ def test_ensure_started_launches_service_when_unhealthy(tmp_path: Path) -> None:
     assert result["pid"] == 456
     assert result["healthy"] is True
     assert '"pid": 456' in paths.pid_file.read_text()
+    assert stat.S_IMODE(paths.local_home.stat().st_mode) == 0o700
+    assert stat.S_IMODE(paths.root.stat().st_mode) == 0o700
     command = popen.call_args.args[0]
     assert command[1:4] == ["-m", "ctxd.local_ctxfs_service", "serve"]
     assert str(paths.root) in command

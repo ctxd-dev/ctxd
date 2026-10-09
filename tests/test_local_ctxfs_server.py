@@ -11,6 +11,7 @@ def test_local_ctxfs_server_accepts_submission_and_reads_content(tmp_path) -> No
     response = client.post(
         "/api/ctxfs/submissions",
         json={
+            "user_id": "existing-bridge-user",
             "writer_id": "writer-1",
             "writer_prefix": "local-files/root",
             "submission": {

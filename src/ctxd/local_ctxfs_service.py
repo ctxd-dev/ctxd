@@ -87,8 +87,8 @@ def ensure_started(paths: LocalCtxfsPaths | None = None) -> dict[str, object]:
     if current["running"]:
         stop(paths)
 
-    paths.local_home.mkdir(parents=True, exist_ok=True)
-    paths.root.mkdir(parents=True, exist_ok=True)
+    _ensure_private_directory(paths.local_home)
+    _ensure_private_directory(paths.root)
 
     if paths.socket_path.exists():
         paths.socket_path.unlink()
@@ -156,9 +156,10 @@ def stop(paths: LocalCtxfsPaths | None = None) -> dict[str, object]:
 
 
 def serve(root: Path, *, socket_path: Path | None = None) -> None:
+    _ensure_private_directory(root)
     app = create_ctxfs_app(root)
     if socket_path is not None:
-        socket_path.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_private_directory(socket_path.parent)
         uvicorn.run(app, uds=str(socket_path), log_level="warning")
     else:
         uvicorn.run(
@@ -250,6 +251,11 @@ def _cleanup_runtime_files(paths: LocalCtxfsPaths) -> None:
             path.unlink()
         except FileNotFoundError:
             pass
+
+
+def _ensure_private_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.chmod(0o700)
 
 
 if __name__ == "__main__":
