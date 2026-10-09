@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+import traceback
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +40,13 @@ class TrackerPaths:
     state_file: Path
 
 
+@dataclass(frozen=True)
+class FolderScan:
+    current: dict[str, str]
+    operations: list[dict[str, Any]]
+    complete: bool
+
+
 def default_tracker_paths(local_home: Path | None = None) -> TrackerPaths:
     if local_home is None:
         local_home = Path.home() / ".ctxd" / "local"
@@ -58,33 +66,50 @@ def sync_once(
     resolved_endpoint = endpoint or resolve_ctxfs_endpoint()
     previous = _load_state(paths.state_file)
     current: dict[str, dict[str, str]] = {}
-    operations_by_folder: dict[str, list[dict[str, Any]]] = {}
+    submissions: list[tuple[str, str, list[dict[str, Any]]]] = []
+    current_prefixes = {folder.prefix for folder in folders}
 
     for folder in folders:
-        folder_current, operations = _scan_folder(folder)
+        scan = _scan_folder(folder)
+        previous_files = previous.get(folder.prefix, {})
+        folder_current = dict(previous_files) if not scan.complete else {}
+        folder_current.update(scan.current)
         current[folder.prefix] = folder_current
-        known_source_keys = set(folder_current)
-        for source_key, source_version in previous.get(folder.prefix, {}).items():
-            if source_key not in known_source_keys:
-                operations.append(
-                    {
-                        "kind": "delete",
-                        "source_key": source_key,
-                        "source_version": source_version,
-                    }
-                )
+        operations = list(scan.operations)
+        if scan.complete:
+            known_source_keys = set(scan.current)
+            for source_key, source_version in previous_files.items():
+                if source_key not in known_source_keys:
+                    operations.append(
+                        {
+                            "kind": "delete",
+                            "source_key": source_key,
+                            "source_version": source_version,
+                        }
+                    )
         if operations:
-            operations_by_folder[folder.name] = operations
+            submissions.append((folder.prefix, _writer_id(folder), operations))
+
+    for prefix, files in previous.items():
+        if prefix in current_prefixes:
+            continue
+        operations = [
+            {
+                "kind": "delete",
+                "source_key": source_key,
+                "source_version": source_version,
+            }
+            for source_key, source_version in files.items()
+        ]
+        if operations:
+            submissions.append((prefix, _writer_id_for_prefix(prefix), operations))
 
     submitted = 0
-    for folder in folders:
-        operations = operations_by_folder.get(folder.name)
-        if not operations:
-            continue
+    for writer_prefix, writer_id, operations in submissions:
         _submit_operations(
             resolved_endpoint,
-            writer_id=_writer_id(folder),
-            writer_prefix=folder.prefix,
+            writer_id=writer_id,
+            writer_prefix=writer_prefix,
             operations=operations,
         )
         submitted += len(operations)
@@ -98,16 +123,21 @@ def sync_once(
 
 def run_forever(interval_seconds: float = 10.0) -> None:
     while True:
-        sync_once()
+        try:
+            sync_once()
+        except Exception as exc:
+            print(f"ctxd tracker sync failed: {exc}", flush=True)
+            traceback.print_exception(type(exc), exc, exc.__traceback__)
         time.sleep(interval_seconds)
 
 
-def _scan_folder(folder: FolderConfig) -> tuple[dict[str, str], list[dict[str, Any]]]:
+def _scan_folder(folder: FolderConfig) -> FolderScan:
     root = Path(folder.path).expanduser()
     current: dict[str, str] = {}
     operations: list[dict[str, Any]] = []
-    if not root.exists():
-        return current, operations
+    complete = True
+    if not root.exists() or not root.is_dir():
+        return FolderScan(current=current, operations=operations, complete=False)
 
     for path in sorted(item for item in root.rglob("*") if item.is_file()):
         if path.name.startswith(".") or path.suffix.lower() not in TRACKED_SUFFIXES:
@@ -115,6 +145,7 @@ def _scan_folder(folder: FolderConfig) -> tuple[dict[str, str], list[dict[str, A
         try:
             stat = path.stat()
         except OSError:
+            complete = False
             continue
         if stat.st_size > MAX_TRACKED_FILE_BYTES:
             continue
@@ -122,6 +153,7 @@ def _scan_folder(folder: FolderConfig) -> tuple[dict[str, str], list[dict[str, A
             data = path.read_bytes()
             text = data.decode("utf-8")
         except (OSError, UnicodeDecodeError):
+            complete = False
             continue
 
         relative_path = path.relative_to(root).as_posix()
@@ -143,7 +175,7 @@ def _scan_folder(folder: FolderConfig) -> tuple[dict[str, str], list[dict[str, A
                 },
             }
         )
-    return current, operations
+    return FolderScan(current=current, operations=operations, complete=complete)
 
 
 def _source_key(folder: FolderConfig, stat) -> str:
@@ -155,7 +187,11 @@ def _source_version(data: bytes) -> str:
 
 
 def _writer_id(folder: FolderConfig) -> str:
-    return f"ctxd-tracker:{folder.name}"
+    return _writer_id_for_prefix(folder.prefix)
+
+
+def _writer_id_for_prefix(prefix: str) -> str:
+    return f"ctxd-tracker:{prefix}"
 
 
 def _submit_operations(

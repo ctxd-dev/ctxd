@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import signal
 import subprocess
@@ -16,6 +17,7 @@ from ctxd.tracker import run_forever, sync_once
 
 DEFAULT_LOCAL_HOME = Path.home() / ".ctxd" / "local"
 DEFAULT_PID_FILE_NAME = "tracker.pid"
+PROCESS_MARKER = "ctxd.tracker_service"
 
 
 @dataclass(frozen=True)
@@ -38,7 +40,7 @@ def status(paths: TrackerServicePaths | None = None) -> dict[str, object]:
     if paths is None:
         paths = default_paths()
     pid = _read_pid(paths.pid_file)
-    running = _pid_is_running(pid) if pid is not None else False
+    running = _pid_matches(pid, PROCESS_MARKER) if pid is not None else False
     return {
         "running": running,
         "pid": pid,
@@ -63,8 +65,7 @@ def start(paths: TrackerServicePaths | None = None) -> dict[str, object]:
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
-    paths.pid_file.write_text(f"{process.pid}\n")
-    paths.pid_file.chmod(0o600)
+    _write_pid(paths.pid_file, process.pid)
     return status(paths)
 
 
@@ -72,15 +73,21 @@ def stop(paths: TrackerServicePaths | None = None) -> dict[str, object]:
     if paths is None:
         paths = default_paths()
     pid = _read_pid(paths.pid_file)
-    if pid is not None and _pid_is_running(pid):
+    if pid is not None and _pid_matches(pid, PROCESS_MARKER):
         os.kill(pid, signal.SIGTERM)
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
-            if not _pid_is_running(pid):
+            if not _pid_matches(pid, PROCESS_MARKER):
                 break
             time.sleep(0.1)
-    if paths.pid_file.exists():
-        paths.pid_file.unlink()
+        if _pid_matches(pid, PROCESS_MARKER):
+            os.kill(pid, signal.SIGKILL)
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                if not _pid_matches(pid, PROCESS_MARKER):
+                    break
+                time.sleep(0.1)
+    _cleanup_runtime_files(paths)
     return status(paths)
 
 
@@ -105,9 +112,23 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _read_pid(path: Path) -> int | None:
     try:
-        return int(path.read_text().strip())
-    except (FileNotFoundError, ValueError):
+        raw = path.read_text().strip()
+    except (OSError, ValueError):
         return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        try:
+            return int(raw)
+        except ValueError:
+            return None
+    pid = payload.get("pid") if isinstance(payload, dict) else None
+    return pid if isinstance(pid, int) else None
+
+
+def _write_pid(path: Path, pid: int) -> None:
+    path.write_text(json.dumps({"pid": pid, "marker": PROCESS_MARKER}) + "\n")
+    path.chmod(0o600)
 
 
 def _pid_is_running(pid: int | None) -> bool:
@@ -120,6 +141,27 @@ def _pid_is_running(pid: int | None) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def _pid_matches(pid: int | None, marker: str) -> bool:
+    if not _pid_is_running(pid):
+        return False
+    try:
+        command = subprocess.check_output(
+            ["ps", "-p", str(pid), "-o", "command="],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    return marker in command
+
+
+def _cleanup_runtime_files(paths: TrackerServicePaths) -> None:
+    try:
+        paths.pid_file.unlink()
+    except FileNotFoundError:
+        pass
 
 
 if __name__ == "__main__":
