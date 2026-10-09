@@ -18,6 +18,7 @@ from ctxd.config import (
     save_api_key,
     save_backend,
 )
+from ctxd.local_ctxfs_service import ensure_started, status as ctxfs_service_status
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -414,15 +415,22 @@ def _handle_backend(args: argparse.Namespace) -> int:
         save_backend(backend)
         print(f"Backend set to {_display_backend(backend)}.")
         if backend == "ctxfs":
-            print("ctxfs service management is not installed in this package yet.")
+            service = ensure_started()
+            print(f"ctxfs endpoint: {service['endpoint']}")
+            print(f"ctxfs root: {service['root']}")
         return 0
 
     if args.backend_command == "status":
         backend = resolve_backend()
         print(f"Backend: {_display_backend(backend)}")
         if backend == "ctxfs":
-            profile = Client(backend="ctxfs").get_profile()
-            print(profile.integration_access)
+            service = ctxfs_service_status()
+            print(f"ctxfs running: {service['running']}")
+            print(f"ctxfs healthy: {service['healthy']}")
+            print(f"ctxfs endpoint: {service['endpoint']}")
+            print(f"ctxfs root: {service['root']}")
+            if service.get("error"):
+                print(f"ctxfs error: {service['error']}")
         else:
             print("Remote backend configured.")
         return 0
