@@ -20,7 +20,7 @@ from ctxfs import (
     Submission,
 )
 from fastapi import Depends, FastAPI, HTTPException, Query
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 LOCAL_CTXFS_USER_ID = "local"
 DEFAULT_CTXFS_HOST = "127.0.0.1"
@@ -183,16 +183,21 @@ def create_ctxfs_app(root: Path) -> FastAPI:
         _identity_guard: None = Depends(_reject_user_id_query),
     ) -> Submission:
         def submit(store: CtxfsStore) -> Submission:
-            store.register_prefix(
-                LOCAL_CTXFS_USER_ID,
-                payload.writer_id,
-                payload.writer_prefix,
-            )
-            operations = [
-                _operation_from_payload(operation)
-                for operation in payload.submission.operations
-            ]
-            return store.submit(LOCAL_CTXFS_USER_ID, payload.writer_id, operations)
+            try:
+                store.register_prefix(
+                    LOCAL_CTXFS_USER_ID,
+                    payload.writer_id,
+                    payload.writer_prefix,
+                )
+                operations = [
+                    _operation_from_payload(operation)
+                    for operation in payload.submission.operations
+                ]
+                return store.submit(LOCAL_CTXFS_USER_ID, payload.writer_id, operations)
+            except PermissionError as exc:
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
+            except (ValidationError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         return _with_store(root, submit)
 

@@ -38,6 +38,7 @@ def _paths(tmp_path: Path) -> LocalCtxfsPaths:
         root=tmp_path / "ctxfs",
         socket_path=tmp_path / "local" / "ctxfs.sock",
         pid_file=tmp_path / "local" / "ctxfs.pid",
+        lock_file=tmp_path / "local" / "ctxfs.lock",
     )
 
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import json
 import os
 import signal
@@ -24,6 +26,7 @@ from ctxd.local_ctxfs_server import (
 DEFAULT_LOCAL_HOME = Path.home() / ".ctxd" / "local"
 DEFAULT_CTXFS_SOCKET_NAME = "ctxfs.sock"
 DEFAULT_PID_FILE_NAME = "ctxfs.pid"
+DEFAULT_LOCK_FILE_NAME = "ctxfs.lock"
 PROCESS_MARKER = "ctxd.local_ctxfs_service"
 
 
@@ -33,6 +36,7 @@ class LocalCtxfsPaths:
     root: Path
     socket_path: Path
     pid_file: Path
+    lock_file: Path
 
     @property
     def endpoint(self) -> str:
@@ -48,6 +52,7 @@ def default_paths(local_home: Path | None = None) -> LocalCtxfsPaths:
         root=default_ctxfs_root(local_home),
         socket_path=local_home / DEFAULT_CTXFS_SOCKET_NAME,
         pid_file=local_home / DEFAULT_PID_FILE_NAME,
+        lock_file=local_home / DEFAULT_LOCK_FILE_NAME,
     )
 
 
@@ -81,54 +86,55 @@ def ensure_started(paths: LocalCtxfsPaths | None = None) -> dict[str, object]:
     if paths is None:
         paths = default_paths()
 
-    current = status(paths)
-    if current["healthy"]:
-        return current
-    if current["running"]:
-        stop(paths)
-
     _ensure_private_directory(paths.local_home)
-    _ensure_private_directory(paths.root)
+    with _exclusive_lock(paths.lock_file):
+        current = status(paths)
+        if current["healthy"]:
+            return current
+        if current["running"]:
+            stop(paths)
 
-    if paths.socket_path.exists():
-        paths.socket_path.unlink()
+        _ensure_private_directory(paths.root)
 
-    command = [
-        sys.executable,
-        "-m",
-        "ctxd.local_ctxfs_service",
-        "serve",
-        "--root",
-        str(paths.root),
-        "--socket",
-        str(paths.socket_path),
-    ]
-    process = subprocess.Popen(
-        command,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-    _write_pid(paths.pid_file, process.pid)
+        if paths.socket_path.exists():
+            paths.socket_path.unlink()
 
-    deadline = time.monotonic() + 5
-    last_error: Exception | None = None
-    while time.monotonic() < deadline:
-        if process.poll() is not None:
-            break
-        try:
-            CtxfsClient(endpoint=paths.endpoint, timeout=1.0).status()
-            return status(paths)
-        except Exception as exc:
-            last_error = exc
-            time.sleep(0.1)
+        command = [
+            sys.executable,
+            "-m",
+            "ctxd.local_ctxfs_service",
+            "serve",
+            "--root",
+            str(paths.root),
+            "--socket",
+            str(paths.socket_path),
+        ]
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        _write_pid(paths.pid_file, process.pid)
 
-    _terminate_process(process)
-    _cleanup_runtime_files(paths)
-    raise RuntimeError(
-        f"ctxfs service did not become healthy at {paths.endpoint}: {last_error}"
-    )
+        deadline = time.monotonic() + 5
+        last_error: Exception | None = None
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                break
+            try:
+                CtxfsClient(endpoint=paths.endpoint, timeout=1.0).status()
+                return status(paths)
+            except Exception as exc:
+                last_error = exc
+                time.sleep(0.1)
+
+        _terminate_process(process)
+        _cleanup_runtime_files(paths)
+        raise RuntimeError(
+            f"ctxfs service did not become healthy at {paths.endpoint}: {last_error}"
+        )
 
 
 def stop(paths: LocalCtxfsPaths | None = None) -> dict[str, object]:
@@ -256,6 +262,17 @@ def _cleanup_runtime_files(paths: LocalCtxfsPaths) -> None:
 def _ensure_private_directory(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     path.chmod(0o700)
+
+
+@contextlib.contextmanager
+def _exclusive_lock(path: Path):
+    with path.open("a+") as lock_file:
+        path.chmod(0o600)
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 if __name__ == "__main__":

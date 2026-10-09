@@ -56,3 +56,57 @@ def test_local_ctxfs_server_rejects_user_id_query(tmp_path) -> None:
     )
 
     assert response.status_code == 400
+
+
+def test_local_ctxfs_server_rejects_malformed_submission_operation(tmp_path) -> None:
+    client = TestClient(create_ctxfs_app(tmp_path / "ctxfs"))
+
+    response = client.post(
+        "/api/ctxfs/submissions",
+        json={
+            "writer_id": "writer-1",
+            "writer_prefix": "local-files/root",
+            "submission": {
+                "run_id": "run-1",
+                "sequence": 1,
+                "is_full_scan": True,
+                "operations": [{"kind": "unknown"}],
+            },
+        },
+    )
+
+    assert response.status_code == 400
+
+
+def test_local_ctxfs_server_rejects_overlapping_writer_prefix(tmp_path) -> None:
+    client = TestClient(create_ctxfs_app(tmp_path / "ctxfs"))
+    first = client.post(
+        "/api/ctxfs/submissions",
+        json={
+            "writer_id": "writer-1",
+            "writer_prefix": "local-files/root",
+            "submission": {
+                "run_id": "run-1",
+                "sequence": 1,
+                "is_full_scan": True,
+                "operations": [],
+            },
+        },
+    )
+
+    second = client.post(
+        "/api/ctxfs/submissions",
+        json={
+            "writer_id": "writer-2",
+            "writer_prefix": "local-files/root/nested",
+            "submission": {
+                "run_id": "run-2",
+                "sequence": 1,
+                "is_full_scan": True,
+                "operations": [],
+            },
+        },
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 403
