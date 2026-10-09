@@ -574,21 +574,73 @@ def test_cli_backend_get_prints_remote_for_hosted_alias(tmp_path: Path) -> None:
 
 def test_cli_backend_status_uses_ctxfs_profile() -> None:
     stdout = StringIO()
-    profile = ProfileResult(
-        integration_access="# Local ctxfs\n- Status: ok",
-        file_tree="",
-    )
+    service = {
+        "running": True,
+        "healthy": True,
+        "endpoint": "unix:///tmp/ctxfs.sock",
+        "root": "/tmp/ctxfs",
+        "error": None,
+    }
 
     with patch.dict("os.environ", {"CTXD_BACKEND": "ctxfs"}, clear=False), patch(
-        "ctxd.cli.Client.get_profile", return_value=profile
-    ) as get_profile, redirect_stdout(stdout):
+        "ctxd.cli.ctxfs_service_status", return_value=service
+    ) as service_status, redirect_stdout(stdout):
         exit_code = main(["backend", "status"])
 
     assert exit_code == 0
-    get_profile.assert_called_once_with()
+    service_status.assert_called_once_with()
     output = stdout.getvalue()
     assert "Backend: ctxfs" in output
-    assert "# Local ctxfs" in output
+    assert "ctxfs running: True" in output
+    assert "ctxfs healthy: True" in output
+
+
+def test_cli_backend_set_ctxfs_starts_service(tmp_path: Path) -> None:
+    stdout = StringIO()
+    config_path = tmp_path / "config.json"
+    service = {
+        "running": True,
+        "healthy": True,
+        "endpoint": "unix:///tmp/ctxfs.sock",
+        "root": "/tmp/ctxfs",
+        "error": None,
+    }
+
+    with patch.dict(
+        "os.environ",
+        {"CTXD_CONFIG_PATH": str(config_path)},
+        clear=False,
+    ), patch("ctxd.cli.ensure_started", return_value=service) as ensure, redirect_stdout(
+        stdout
+    ):
+        exit_code = main(["backend", "set", "ctxfs"])
+
+    assert exit_code == 0
+    ensure.assert_called_once_with()
+    output = stdout.getvalue()
+    assert "Backend set to ctxfs." in output
+    assert "ctxfs endpoint: unix:///tmp/ctxfs.sock" in output
+    assert '"backend": "ctxfs"' in config_path.read_text()
+
+
+def test_cli_backend_set_ctxfs_failure_does_not_save_backend(tmp_path: Path) -> None:
+    stderr = StringIO()
+    config_path = tmp_path / "config.json"
+
+    with patch.dict(
+        "os.environ",
+        {"CTXD_CONFIG_PATH": str(config_path)},
+        clear=False,
+    ), patch(
+        "ctxd.cli.ensure_started", side_effect=RuntimeError("service failed")
+    ), patch(
+        "sys.stderr", stderr
+    ):
+        exit_code = main(["backend", "set", "ctxfs"])
+
+    assert exit_code == 1
+    assert stderr.getvalue() == "service failed\n"
+    assert not config_path.exists()
 
 
 def test_cli_search_passes_ctxfs_options() -> None:
