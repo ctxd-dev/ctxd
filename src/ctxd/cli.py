@@ -194,6 +194,7 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         help="For ctxfs backend searches, limit grep matches.",
     )
+    _add_backend_override(search_parser)
 
     fetch_parser = subparsers.add_parser(
         "fetch",
@@ -206,6 +207,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the full document response as JSON.",
     )
+    _add_backend_override(fetch_parser)
 
     profile_parser = subparsers.add_parser(
         "profile",
@@ -217,12 +219,14 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the profile response as JSON.",
     )
+    _add_backend_override(profile_parser)
 
     files_parser = subparsers.add_parser(
         "files",
         help="Read path-oriented content from the active backend.",
         description="Read path-oriented content from the active backend.",
     )
+    _add_backend_override(files_parser)
     files_subparsers = files_parser.add_subparsers(
         dest="files_command",
         metavar="<files-command>",
@@ -233,18 +237,22 @@ def _build_parser() -> argparse.ArgumentParser:
     files_tree_parser.add_argument("prefix", nargs="?", default="")
     files_tree_parser.add_argument("--depth", type=int)
     files_tree_parser.add_argument("--limit", type=int)
+    _add_backend_override(files_tree_parser)
 
     files_ls_parser = files_subparsers.add_parser("ls", help="List a directory.")
     files_ls_parser.add_argument("path", nargs="?", default="")
     files_ls_parser.add_argument("--limit", type=int)
+    _add_backend_override(files_ls_parser)
 
     files_glob_parser = files_subparsers.add_parser("glob", help="Match paths by glob.")
     files_glob_parser.add_argument("pattern")
     files_glob_parser.add_argument("--prefix", default="")
     files_glob_parser.add_argument("--limit", type=int)
+    _add_backend_override(files_glob_parser)
 
     files_stat_parser = files_subparsers.add_parser("stat", help="Show path metadata.")
     files_stat_parser.add_argument("path")
+    _add_backend_override(files_stat_parser)
 
     files_read_lines_parser = files_subparsers.add_parser(
         "read-lines",
@@ -254,8 +262,18 @@ def _build_parser() -> argparse.ArgumentParser:
     files_read_lines_parser.add_argument("--start", type=int, required=True)
     files_read_lines_parser.add_argument("--end", type=int, required=True)
     files_read_lines_parser.add_argument("--json", action="store_true")
+    _add_backend_override(files_read_lines_parser)
 
     return parser
+
+
+def _add_backend_override(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--backend",
+        choices=("remote", "hosted", "ctxfs"),
+        default=argparse.SUPPRESS,
+        help="Backend to use for this command.",
+    )
 
 
 def _normalize_search_query(query_tokens: Sequence[str]) -> str:

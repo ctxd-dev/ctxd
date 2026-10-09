@@ -182,6 +182,8 @@ def _validate_backend(backend: str) -> str:
         raise ValueError(
             f"Unsupported ctxd backend `{backend}`. Supported: {supported}."
         )
+    if normalized == "hosted":
+        return "remote"
     return normalized
 
 

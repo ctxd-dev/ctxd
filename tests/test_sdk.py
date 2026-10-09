@@ -368,6 +368,11 @@ def test_backend_resolves_from_env(
     assert resolve_backend() == "ctxfs"
 
 
+def test_hosted_backend_alias_canonicalizes_to_remote() -> None:
+    assert resolve_backend("hosted") == "remote"
+    assert Client(backend="hosted", api_key="token").backend == "remote"
+
+
 def test_ctxfs_endpoint_prefers_socket_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CTXD_CTXFS_URL", raising=False)
     monkeypatch.setenv("CTXD_CTXFS_SOCKET", "/tmp/ctxfs.sock")

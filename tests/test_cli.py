@@ -626,6 +626,38 @@ def test_cli_search_passes_ctxfs_options() -> None:
     assert '"results": []' in stdout.getvalue()
 
 
+def test_cli_search_accepts_command_local_backend_override() -> None:
+    stdout = StringIO()
+
+    with patch(
+        "ctxd.cli.Client.search",
+        return_value=type(
+            "SearchResultLike",
+            (),
+            {
+                "model_dump": lambda self: {
+                    "results": [],
+                    "error": None,
+                    "dsl_parse_error": None,
+                }
+            },
+        )(),
+    ) as search, redirect_stdout(stdout):
+        exit_code = main(
+            [
+                "search",
+                "needle",
+                "--backend",
+                "ctxfs",
+                "--prefix",
+                "local-files/root",
+            ]
+        )
+
+    assert exit_code == 0
+    search.assert_called_once_with("needle", prefix="local-files/root")
+
+
 def test_cli_files_tree_outputs_json() -> None:
     stdout = StringIO()
     tree = CtxfsBounded[CtxfsDirectoryEntry](
@@ -637,7 +669,7 @@ def test_cli_files_tree_outputs_json() -> None:
     client = SimpleNamespace(files=SimpleNamespace(tree=lambda *args, **kwargs: tree))
 
     with patch("ctxd.cli.Client", return_value=client), redirect_stdout(stdout):
-        exit_code = main(["--backend", "ctxfs", "files", "tree", "local-files/root"])
+        exit_code = main(["files", "tree", "local-files/root", "--backend", "ctxfs"])
 
     assert exit_code == 0
     assert '"path": "local-files/root/README.md"' in stdout.getvalue()
