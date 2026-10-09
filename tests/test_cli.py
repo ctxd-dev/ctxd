@@ -787,6 +787,68 @@ def test_cli_folders_add_list_and_remove_persist_config(tmp_path: Path) -> None:
     assert '"folders": {}' in config_path.read_text()
 
 
+@pytest.mark.parametrize(
+    ("folder_name", "message"),
+    [
+        ("local-files", "Folder name `local-files` is reserved."),
+        ("Team/Docs", "Folder name cannot contain path separators."),
+    ],
+)
+def test_cli_folders_add_rejects_invalid_names(
+    tmp_path: Path, folder_name: str, message: str
+) -> None:
+    stderr = StringIO()
+    config_path = tmp_path / "config.json"
+    docs_path = tmp_path / "Docs"
+    docs_path.mkdir()
+
+    with patch.dict(
+        "os.environ",
+        {"CTXD_CONFIG_PATH": str(config_path)},
+        clear=False,
+    ), patch("sys.stderr", stderr):
+        exit_code = main(["folders", "add", str(docs_path), "--name", folder_name])
+
+    assert exit_code == 1
+    assert message in stderr.getvalue()
+    assert not config_path.exists()
+
+
+def test_cli_folders_add_rejects_missing_path(tmp_path: Path) -> None:
+    stderr = StringIO()
+    config_path = tmp_path / "config.json"
+    missing_path = tmp_path / "missing"
+
+    with patch.dict(
+        "os.environ",
+        {"CTXD_CONFIG_PATH": str(config_path)},
+        clear=False,
+    ), patch("sys.stderr", stderr):
+        exit_code = main(["folders", "add", str(missing_path), "--name", "Documents"])
+
+    assert exit_code == 1
+    assert f"Folder path `{missing_path}` does not exist." in stderr.getvalue()
+    assert not config_path.exists()
+
+
+def test_cli_folders_add_rejects_regular_file(tmp_path: Path) -> None:
+    stderr = StringIO()
+    config_path = tmp_path / "config.json"
+    file_path = tmp_path / "notes.md"
+    file_path.write_text("hello")
+
+    with patch.dict(
+        "os.environ",
+        {"CTXD_CONFIG_PATH": str(config_path)},
+        clear=False,
+    ), patch("sys.stderr", stderr):
+        exit_code = main(["folders", "add", str(file_path), "--name", "Documents"])
+
+    assert exit_code == 1
+    assert f"Folder path `{file_path}` is not a directory." in stderr.getvalue()
+    assert not config_path.exists()
+
+
 def test_cli_search_folder_maps_name_to_ctxfs_prefix(tmp_path: Path) -> None:
     stdout = StringIO()
     config_path = tmp_path / "config.json"

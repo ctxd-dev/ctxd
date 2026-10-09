@@ -7,6 +7,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ctxd.config import load_config, save_config
 
+RESERVED_FOLDER_NAMES = {"local-files"}
+
 
 class FolderConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -19,8 +21,11 @@ class FolderConfig(BaseModel):
 def add_folder(path: str, *, name: str | None = None) -> FolderConfig:
     folder_path = Path(path).expanduser().resolve()
     folder_name = name or folder_path.name
-    if not folder_name:
-        raise ValueError("Folder name is required.")
+    _validate_folder_name(folder_name)
+    if not folder_path.exists():
+        raise ValueError(f"Folder path `{folder_path}` does not exist.")
+    if not folder_path.is_dir():
+        raise ValueError(f"Folder path `{folder_path}` is not a directory.")
 
     config = load_config()
     folders = _folders_from_config(config)
@@ -104,3 +109,14 @@ def _folders_from_config(config: dict) -> dict[str, FolderConfig]:
             folder = FolderConfig.model_validate(value)
             folders[folder.name] = folder
     return folders
+
+
+def _validate_folder_name(name: str) -> None:
+    if not name:
+        raise ValueError("Folder name is required.")
+    if name in {".", ".."}:
+        raise ValueError("Folder name cannot be `.` or `..`.")
+    if "/" in name or "\\" in name:
+        raise ValueError("Folder name cannot contain path separators.")
+    if name in RESERVED_FOLDER_NAMES:
+        raise ValueError(f"Folder name `{name}` is reserved.")
