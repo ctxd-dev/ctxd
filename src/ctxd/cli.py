@@ -26,6 +26,11 @@ from ctxd.folders import (
     try_resolve_named_path,
 )
 from ctxd.local_ctxfs_service import ensure_started, status as ctxfs_service_status
+from ctxd.tracker_service import (
+    start as tracker_start,
+    status as tracker_status,
+    stop as tracker_stop,
+)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -47,6 +52,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _handle_config(args)
         if args.command == "folders":
             return _handle_folders(args)
+        if args.command == "tracker":
+            return _handle_tracker(args)
 
         client = Client(backend=getattr(args, "backend", None))
 
@@ -305,6 +312,20 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     folders_remove_parser.add_argument("name")
 
+    tracker_parser = subparsers.add_parser(
+        "tracker",
+        help="Control local folder tracking.",
+        description="Control local folder tracking.",
+    )
+    tracker_subparsers = tracker_parser.add_subparsers(
+        dest="tracker_command",
+        metavar="<tracker-command>",
+        required=True,
+    )
+    tracker_subparsers.add_parser("start", help="Start local folder tracking.")
+    tracker_subparsers.add_parser("stop", help="Stop local folder tracking.")
+    tracker_subparsers.add_parser("status", help="Show local tracker status.")
+
     return parser
 
 
@@ -466,6 +487,28 @@ def _handle_folders(args: argparse.Namespace) -> int:
         return 0
 
     raise ValueError("Unsupported folders command.")
+
+
+def _handle_tracker(args: argparse.Namespace) -> int:
+    if args.tracker_command == "start":
+        state = tracker_start()
+        print("Tracker started." if state["running"] else "Tracker not running.")
+        print(f"Folders: {state['folders']}")
+        return 0
+
+    if args.tracker_command == "stop":
+        state = tracker_stop()
+        print("Tracker stopped." if not state["running"] else "Tracker still running.")
+        return 0
+
+    if args.tracker_command == "status":
+        state = tracker_status()
+        print(f"tracker running: {state['running']}")
+        print(f"tracker pid: {state['pid']}")
+        print(f"folders: {state['folders']}")
+        return 0
+
+    raise ValueError("Unsupported tracker command.")
 
 
 def _handle_backend(args: argparse.Namespace) -> int:

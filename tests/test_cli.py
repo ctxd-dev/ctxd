@@ -983,3 +983,42 @@ def test_cli_files_read_resolves_folder_name_and_outputs_text(tmp_path: Path) ->
 
     assert exit_code == 0
     assert stdout.getvalue() == "hello\n"
+
+
+def test_cli_tracker_start_outputs_status() -> None:
+    stdout = StringIO()
+    state = {"running": True, "pid": 123, "folders": 1}
+
+    with patch("ctxd.cli.tracker_start", return_value=state) as start, redirect_stdout(
+        stdout
+    ):
+        exit_code = main(["tracker", "start"])
+
+    assert exit_code == 0
+    start.assert_called_once_with()
+    assert stdout.getvalue() == "Tracker started.\nFolders: 1\n"
+
+
+def test_cli_tracker_status_outputs_state() -> None:
+    stdout = StringIO()
+    state = {"running": True, "pid": 123, "folders": 2}
+
+    with patch("ctxd.cli.tracker_status", return_value=state), redirect_stdout(stdout):
+        exit_code = main(["tracker", "status"])
+
+    assert exit_code == 0
+    assert stdout.getvalue() == "tracker running: True\ntracker pid: 123\nfolders: 2\n"
+
+
+def test_cli_tracker_stop_outputs_status() -> None:
+    stdout = StringIO()
+    state = {"running": False, "pid": None, "folders": 1}
+
+    with patch("ctxd.cli.tracker_stop", return_value=state) as stop, redirect_stdout(
+        stdout
+    ):
+        exit_code = main(["tracker", "stop"])
+
+    assert exit_code == 0
+    stop.assert_called_once_with()
+    assert stdout.getvalue() == "Tracker stopped.\n"
