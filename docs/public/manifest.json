@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "files": [
+    "api.md",
+    "cli.md",
+    "ctxfs.md",
+    "local-tracker.md",
+    "overview.md",
+    "quickstart.md",
+    "security.md"
+  ]
+}

@@ -1,0 +1,39 @@
+name: Dispatch public docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/public/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dispatch-public-docs
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Create docs-sync installation token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.CTXD_DOCS_APP_ID }}
+          private-key: ${{ secrets.CTXD_DOCS_APP_PRIVATE_KEY }}
+          owner: ctxd-dev
+          repositories: ctxd-landing
+
+      - name: Trigger the pinned landing-page sync
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          CTXD_COMMIT: ${{ github.sha }}
+        run: |
+          gh workflow run sync-docs.yml \
+            --repo ctxd-dev/ctxd-landing \
+            --ref main \
+            -f ctxd_commit="$CTXD_COMMIT"
