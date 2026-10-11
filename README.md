@@ -8,101 +8,115 @@ Python SDK and CLI for the `ctxd` platform.
 
 ## Overview
 
-CTXD is cloud context infrastructure for AI agents. It connects to cloud files and data across apps such as Google Drive, Slack, GitHub, and Google Calendar, then parses, indexes, and syncs that content so it can be searched from the same permission-aware index through the Python SDK, CLI, MCP, or REST API.
+CTXD is a local-first context tool for AI agents. The `ctxd` command can act as
+a client CLI, start a local ctxfs service, and optionally run a local tracker
+daemon that syncs folders into a searchable local ctxfs store.
 
 For a fuller introduction, see the [CTXD docs overview](https://ctxd.dev/docs/overview/).
 
-Install:
+## Install
 
 ```bash
 pip install ctxd
 ```
 
-The SDK exposes sync and async clients:
+The package provides:
 
-- `Client`
-- `AsyncClient`
+- the `ctxd` CLI
+- the sync `Client`
+- the async `AsyncClient`
 
-Authentication:
+## Choose a Backend
 
-1. Preferred for headless and scripts: create a user-bound API key through [app.ctxd.dev](app.ctxd.dev)
-2. For CLI automation, set `CTXD_API_KEY`
-3. `ctxd login` prompts for an API key interactively and stores it in plaintext in the ctxd config directory for future CLI and SDK usage
-4. `ctxd status` checks whether an API key is available from the active authentication source
+### Local ctxfs
 
-CLI manual:
-
-```bash
-export CTXD_API_KEY=...       # Use env-based auth for this shell/session
-ctxd --version                # Print the installed ctxd version
-ctxd login                    # Prompt for an API key and store it
-ctxd status                   # Check whether an API key is configured
-ctxd install-app              # Open the app installation page
-ctxd search "text:deployment"
-ctxd search text:test application:slack
-ctxd fetch doc-123
-ctxd profile
-ctxd logout                   # Remove the stored API key
-```
-
-`CTXD_API_KEY` does not require `ctxd login`. Commands such as `ctxd search`, `ctxd fetch`, and `ctxd profile` use the environment variable directly when it is set.
-
-Example:
-
-```python
-from ctxd import Client
-
-client = Client(api_key="<api-key>")
-
-results = client.search("text:deployment application:slack")
-profile = client.get_profile()
-document = client.fetch_document("doc-123")
-```
-
-API key example:
-
-```python
-from ctxd import Client
-
-client = Client(api_key="<api-key>")
-results = client.search("text:deployment application:slack")
-```
-
-Async example:
-
-```python
-from ctxd import AsyncClient
-
-async with AsyncClient(api_key="<api-key>") as client:
-    results = await client.search("text:deployment")
-```
-
-## Local ctxfs backend
-
-The CLI can also point at a local ctxfs backend exposed by the local ctxd
-service:
+Use the local backend when you want ctxd to read from a local ctxfs store:
 
 ```bash
 ctxd backend set ctxfs
-ctxd search "deployment" --prefix local-files/<root-id> --limit 20
-ctxd fetch local-files/<root-id>/README.md
-ctxd files tree local-files/<root-id> --depth 2
-ctxd files read-lines local-files/<root-id>/README.md --start 1 --end 20
+ctxd backend status
+```
+
+Selecting `ctxfs` starts the local ctxfs service if it is not already running.
+It does not start the local tracker daemon.
+
+After that, query and read commands use the local backend by default:
+
+```bash
+ctxd search "deployment"
+ctxd files tree
+```
+
+### Remote API
+
+Use the remote backend when you want the client to call the hosted API:
+
+```bash
+ctxd backend set remote
+ctxd login
+ctxd search "deployment"
+```
+
+For scripts or headless use, set `CTXD_API_KEY` instead of running
+`ctxd login`:
+
+```bash
+export CTXD_API_KEY=...
+ctxd backend set remote
+ctxd search "deployment"
+```
+
+## Track a Local Folder
+
+Folder tracking is optional and explicit. Add a folder, then start the tracker:
+
+```bash
+ctxd folders add ~/Documents --name Documents
+ctxd tracker start
+ctxd tracker status
+```
+
+The tracker syncs accepted files from configured folders into the local ctxfs
+service. It is separate from `ctxd backend set ctxfs`, so choosing the local
+backend does not begin folder syncing by itself.
+
+## Query and Read Synced Content
+
+Once a folder has been tracked, use the folder name in search and read commands:
+
+```bash
+ctxd search "deployment" --folder Documents
+ctxd files tree Documents --depth 2
+ctxd files read Documents/README.md
+ctxd files read-lines Documents/README.md --start 1 --end 20
 ```
 
 Endpoint discovery uses `CTXD_CTXFS_URL`, `CTXD_CTXFS_SOCKET`, stored config, the
 local daemon config, `unix://~/.ctxd/local/ctxfs.sock` when present, then
 `http://127.0.0.1:8765`. Local ctxfs reads do not use `CTXD_API_KEY`.
 
-SDK example:
+## SDK Example
+
+SDK callers can select the same backend. Folder names such as `Documents` are a
+CLI convenience; SDK file methods use ctxfs paths returned by search or tree
+results.
 
 ```python
 from ctxd import Client
 
 client = Client(backend="ctxfs")
-matches = client.search("deployment", prefix="local-files/<root-id>", limit=20)
-document = client.fetch("local-files/<root-id>/README.md")
-tree = client.files.tree("local-files/<root-id>", depth=2)
+matches = client.search("deployment")
+if matches.results:
+    document = client.fetch(matches.results[0].url)
+```
+
+For remote API usage, pass an API key or set `CTXD_API_KEY`:
+
+```python
+from ctxd import Client
+
+client = Client(api_key="<api-key>", backend="remote")
+results = client.search("deployment")
 ```
 
 ## Contributing
