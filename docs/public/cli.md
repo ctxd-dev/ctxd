@@ -3,7 +3,7 @@ title: 'CLI'
 
 ---
 
-The `ctxd` CLI installs and manages the local tracker and ctxfs service. It does not connect remote applications.
+The `ctxd` CLI installs and manages the local tracker and ctxfs service.
 
 ## Install
 

@@ -5,10 +5,10 @@ title: 'Overview'
 
 ctxd turns folders on your computer into local, agent-readable context. It uses two pieces:
 
-- The **local tracker** watches only the folders you choose.
-- **ctxfs** presents the tracked content as a path-oriented filesystem with bounded read tools.
+1. The **local tracker** watches only the folders you choose.
+2. **ctxfs** presents the tracked content as a path-oriented filesystem with bounded read tools.
 
-ctxd does not connect to Google Drive, Slack, GitHub, Calendar, or other remote applications. Put the material you want an agent to use in a local folder, then track that folder.
+Put the material you want an agent to use in a local folder, then track that folder.
 
 ## How it works
 

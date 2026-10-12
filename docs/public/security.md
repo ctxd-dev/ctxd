@@ -8,8 +8,6 @@ ctxd is local-first. The tracker and ctxfs service run under your user account a
 ## Network boundary
 
 - Local ctxfs binds to loopback by default.
-- Local reads do not send a hosted ctxd API key.
-- The tracker does not connect to Google Drive, Slack, GitHub, Calendar, or another remote content provider.
 - Do not bind ctxfs to a public interface. The loopback API assumes the operating-system user boundary.
 
 ## What ctxd stores
@@ -20,7 +18,6 @@ Text files that need no transformation may be linked into the ctxfs tree instead
 
 ## What ctxd does not store
 
-- Credentials for remote content providers
 - Data from folders you did not add
 - A semantic-search embedding index
 
