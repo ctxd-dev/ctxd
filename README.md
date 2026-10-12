@@ -9,8 +9,7 @@ Local context infrastructure for AI agents.
 ## Overview
 
 ctxd tracks folders selected on your computer and exposes them through ctxfs as
-path-oriented, agent-readable context. It does not connect remote content
-providers.
+path-oriented, agent-readable context.
 
 The user documentation in [`docs/public`](docs/public/README.md) is the source of
 truth for [ctxd.dev/docs](https://ctxd.dev/docs/overview/):
