@@ -63,6 +63,21 @@ Listing and matching operations accept a `limit`. Read operations accept byte or
 
 File reads also include content identity information. An agent can use it to detect whether a cited file changed between reads.
 
+## MCP
+
+The running ctxfs service exposes the seven read operations through MCP at
+`/mcp` on its configured local endpoint. MCP calls use the same in-process read
+service as the REST API.
+
+For MCP clients that require stdio, configure the compatibility bridge:
+
+```text
+ctxd-mcp
+```
+
+The bridge resolves the configured local ctxfs endpoint itself. MCP tools do not
+accept endpoint, filesystem-root, or user-identity arguments.
+
 ## Local data
 
 The source folder remains authoritative. The tracker observes it and applies changes to ctxfs. Removing a tracked root does not delete the source folder.
