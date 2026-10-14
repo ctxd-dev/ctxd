@@ -11,14 +11,14 @@ Install ctxd from PyPI. The package includes the CLI, local tracker, and ctxfs:
 
 ```bash
 pip install ctxd
-ctxd version
+ctxd --version
 ```
 
 ## 2. Enable local ctxfs
 
 ```bash
 ctxd config set backend ctxfs
-ctxd config show
+ctxd config get backend
 ```
 
 This installs and starts the per-user service. It runs the folder tracker and local ctxfs server together. No API key is required.
@@ -39,16 +39,16 @@ local-files/<ROOT_ID>/
 ## 4. Verify the service
 
 ```bash
-ctxd service status
-ctxd status
+ctxd backend status
+ctxd tracker status
 ```
 
-Look for `Service running: yes`, `Backend: ctxfs`, and `ctxfs reachable: yes`.
+Look for `Backend: ctxfs` and `ctxfs healthy: True`.
 
-To request an immediate tracking pass:
+Start folder tracking:
 
 ```bash
-ctxd daemon run --once
+ctxd tracker start
 ```
 
 ## 5. Read from ctxfs
@@ -59,7 +59,7 @@ curl "http://127.0.0.1:8765/api/ctxfs/read?path=local-files/<ROOT_ID>/notes.md"
 curl "http://127.0.0.1:8765/api/ctxfs/grep?pattern=deployment&prefix=local-files/<ROOT_ID>&limit=20"
 ```
 
-Use the URL printed by `ctxd config show` if you changed the local host or port.
+Use the endpoint printed by `ctxd backend status` if you changed the local endpoint.
 
 Files are synchronized automatically while the service runs. You do not need to upload them or connect a remote application.
 

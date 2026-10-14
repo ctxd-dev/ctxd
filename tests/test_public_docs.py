@@ -28,3 +28,19 @@ def test_public_docs_have_starlight_frontmatter() -> None:
         text = (PUBLIC_DOCS / name).read_text()
         assert text.startswith("---\n"), name
         assert "\ntitle:" in text.split("---", 2)[1], name
+
+
+def test_public_docs_do_not_reference_removed_cli_commands() -> None:
+    removed_commands = (
+        "ctxd config show",
+        "ctxd daemon ",
+        "ctxd service ",
+        "ctxd status",
+        "ctxd folders repair-move",
+        "ctxd version",
+    )
+
+    for path in PUBLIC_DOCS.rglob("*.md"):
+        text = path.read_text()
+        for command in removed_commands:
+            assert command not in text, f"{path.name}: {command}"

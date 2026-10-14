@@ -11,7 +11,7 @@ ctxfs ships in the ctxd package. Install ctxd, then select the backend:
 ```bash
 pip install ctxd
 ctxd config set backend ctxfs
-ctxd config show
+ctxd backend status
 ```
 
 The default root is `~/.ctxd/ctxfs`, and the default HTTP endpoint is `http://127.0.0.1:8765`. The service manages both pieces; do not launch a second ctxfs process.
@@ -50,7 +50,7 @@ ctxfs deliberately exposes no shell and no arbitrary commands. `grep` is exact t
 
 ```bash
 ctxd folders list
-ctxd daemon run --once
+ctxd tracker start
 curl "http://127.0.0.1:8765/api/ctxfs/tree?prefix=local-files/<ROOT_ID>&limit=100"
 curl "http://127.0.0.1:8765/api/ctxfs/read?path=local-files/<ROOT_ID>/docs/runbook.md"
 ```
@@ -67,4 +67,4 @@ File reads also include content identity information. An agent can use it to det
 
 The source folder remains authoritative. The tracker observes it and applies changes to ctxfs. Removing a tracked root does not delete the source folder.
 
-Use `ctxd service uninstall --purge-state --clear-credentials` only when you intend to remove all ctxd-managed local state.
+Stop tracking with `ctxd tracker stop` before uninstalling the package.

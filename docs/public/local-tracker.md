@@ -16,7 +16,7 @@ Install ctxd from PyPI:
 
 ```bash
 pip install ctxd
-ctxd version
+ctxd --version
 ```
 
 The package includes the CLI, tracker, and ctxfs. ctxfs is not installed as a separate system service.
@@ -25,7 +25,8 @@ The package includes the CLI, tracker, and ctxfs. ctxfs is not installed as a se
 
 ```bash
 ctxd config set backend ctxfs
-ctxd service status
+ctxd tracker start
+ctxd backend status
 ```
 
 Selecting the `ctxfs` backend installs and starts the per-user service. The service starts again at login and restarts after failures.
@@ -40,36 +41,32 @@ ctxd folders list
 
 Each folder receives a stable `ROOT_ID`. Its ctxfs prefix is `local-files/<ROOT_ID>/`.
 
-Run an immediate pass if you do not want to wait for the next service tick:
-
-```bash
-ctxd daemon run --once
-```
-
 ## Monitor
 
 ```bash
-ctxd status
-ctxd service status
-tail -n 100 "$HOME/.ctxd/local/logs/daemon.jsonl"
+ctxd tracker status
+ctxd backend status
 ```
 
-A healthy local setup reports `Backend: ctxfs` and `ctxfs reachable: yes`.
+A healthy local setup reports `Backend: ctxfs`, `ctxfs healthy: True`, and a
+running tracker.
 
 ## Move a folder
 
-Repair the existing root so it keeps its identity:
+Remove the old registration and add the new path:
 
 ```bash
-ctxd folders repair-move <ROOT_ID> /new/path/to/folder --name Documents
+ctxd folders remove Documents
+ctxd folders add /new/path/to/folder --name Documents
 ```
 
-Do not remove and re-add a moved folder unless you intentionally want a new root identity.
+This creates a new root identity. Preserving a root identity across a move is
+not currently exposed by the CLI.
 
 ## Stop tracking a folder
 
 ```bash
-ctxd folders remove <ROOT_ID>
+ctxd folders remove Documents
 ```
 
 This removes the tracked root from ctxd. It does not delete the source folder.
@@ -79,8 +76,9 @@ This removes the tracked root from ctxd. It does not delete the source folder.
 Upgrade the package, then restart:
 
 ```bash
+ctxd tracker stop
 pip install --upgrade ctxd
-ctxd service restart
+ctxd tracker start
 ```
 
 Existing roots and local state are preserved.
@@ -88,14 +86,7 @@ Existing roots and local state are preserved.
 ## Uninstall
 
 ```bash
-ctxd service uninstall
-pip uninstall ctxd
-```
-
-To also remove local state and stored credentials:
-
-```bash
-ctxd service uninstall --purge-state --clear-credentials
+ctxd tracker stop
 pip uninstall ctxd
 ```
 
@@ -104,9 +95,10 @@ pip uninstall ctxd
 If ctxfs is unreachable:
 
 ```bash
-ctxd config show
-ctxd service restart
-ctxd service status
+ctxd config get backend
+ctxd backend status
+ctxd tracker status
 ```
 
-If a change has not appeared, run `ctxd daemon run --once` and inspect the daemon log. An unconfigured API key is expected in local-only ctxfs mode.
+If a change has not appeared, restart tracking with `ctxd tracker stop` followed
+by `ctxd tracker start`, then check `ctxd tracker status`.
