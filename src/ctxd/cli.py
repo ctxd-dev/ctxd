@@ -15,6 +15,7 @@ from ctxd.config import (
     clear_api_key,
     resolve_api_key,
     resolve_backend,
+    resolve_ctxfs_endpoint,
     save_api_key,
     save_backend,
 )
@@ -25,6 +26,7 @@ from ctxd.folders import (
     resolve_folder_prefix,
     try_resolve_named_path,
 )
+from ctxd.ctxfs_client import CtxfsClient
 from ctxd.local_ctxfs_service import ensure_started, status as ctxfs_service_status
 from ctxd.tracker_service import (
     start as tracker_start,
@@ -534,12 +536,20 @@ def _handle_backend(args: argparse.Namespace) -> int:
         print(f"Backend: {_display_backend(backend)}")
         if backend == "ctxfs":
             service = ctxfs_service_status()
+            endpoint = resolve_ctxfs_endpoint()
+            healthy = False
+            error = None
+            try:
+                CtxfsClient(endpoint=endpoint, timeout=2.0).status()
+                healthy = True
+            except Exception as exc:
+                error = str(exc)
             print(f"ctxfs running: {service['running']}")
-            print(f"ctxfs healthy: {service['healthy']}")
-            print(f"ctxfs endpoint: {service['endpoint']}")
+            print(f"ctxfs healthy: {healthy}")
+            print(f"ctxfs endpoint: {endpoint}")
             print(f"ctxfs root: {service['root']}")
-            if service.get("error"):
-                print(f"ctxfs error: {service['error']}")
+            if error:
+                print(f"ctxfs error: {error}")
         else:
             print("Remote backend configured.")
         return 0

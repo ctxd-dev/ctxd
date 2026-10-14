@@ -583,17 +583,26 @@ def test_cli_backend_status_uses_ctxfs_profile() -> None:
         "error": None,
     }
 
-    with patch.dict("os.environ", {"CTXD_BACKEND": "ctxfs"}, clear=False), patch(
+    with patch.dict(
+        "os.environ",
+        {"CTXD_BACKEND": "ctxfs", "CTXD_CTXFS_SOCKET": "/tmp/override.sock"},
+        clear=False,
+    ), patch(
         "ctxd.cli.ctxfs_service_status", return_value=service
-    ) as service_status, redirect_stdout(stdout):
+    ) as service_status, patch("ctxd.cli.CtxfsClient") as client, redirect_stdout(
+        stdout
+    ):
         exit_code = main(["backend", "status"])
 
     assert exit_code == 0
     service_status.assert_called_once_with()
+    client.assert_called_once_with(endpoint="unix:///tmp/override.sock", timeout=2.0)
+    client.return_value.status.assert_called_once_with()
     output = stdout.getvalue()
     assert "Backend: ctxfs" in output
     assert "ctxfs running: True" in output
     assert "ctxfs healthy: True" in output
+    assert "ctxfs endpoint: unix:///tmp/override.sock" in output
 
 
 def test_cli_backend_set_ctxfs_starts_service(tmp_path: Path) -> None:
