@@ -297,6 +297,9 @@ class AsyncFilesClient:
     async def glob(self, pattern: str, *, prefix: str = "", limit: int | None = None):
         return await self._ctxfs().glob(pattern, prefix=prefix, limit=limit)
 
+    async def grep(self, pattern: str, *, prefix: str = "", limit: int | None = None):
+        return await self._ctxfs().grep(pattern, prefix=prefix, limit=limit)
+
     async def read(self, path: str, *, max_bytes: int | None = None):
         return await self._ctxfs().read(path, max_bytes=max_bytes)
 

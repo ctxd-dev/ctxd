@@ -453,6 +453,42 @@ def test_ctxfs_search_uses_grep_without_hosted_auth(
     assert result.results[0].metadata["line_number"] == 3
 
 
+def test_synchronous_files_client_exposes_ctxfs_grep(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CTXD_CONFIG_PATH", str(tmp_path / "config.json"))
+    client = Client(backend="ctxfs", ctxfs_endpoint="http://127.0.0.1:8765")
+
+    async def mock_request(self, method, url, *, params=None, headers=None):
+        del self, headers
+        assert method == "GET"
+        assert url == "/api/ctxfs/grep"
+        assert params == {
+            "pattern": "needle",
+            "prefix": "local-files/root",
+            "limit": 5,
+        }
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "path": "local-files/root/README.md",
+                        "line_number": 3,
+                        "line": "needle here",
+                    }
+                ],
+                "complete": True,
+                "stopped_by": None,
+            },
+        )
+
+    with patch("httpx.AsyncClient.request", mock_request):
+        result = client.files.grep("needle", prefix="local-files/root", limit=5)
+
+    assert result.items[0].line == "needle here"
+
+
 def test_ctxfs_stat_accepts_numeric_timestamps(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

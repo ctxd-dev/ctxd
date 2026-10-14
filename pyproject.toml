@@ -1,6 +1,6 @@
 [project]
 name = "ctxd"
-version = "0.1.15"
+version = "0.1.16"
 description = "Local context CLI, folder tracker, ctxfs service, and Python SDK."
 readme = "README.md"
 license = "MIT"
@@ -35,7 +35,7 @@ sources = ["src"]
 include = ["src/ctxd", "src/ctxfs", "README.md"]
 
 [tool.bumpversion]
-current_version = "0.1.15"
+current_version = "0.1.16"
 parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"
 serialize = ["{major}.{minor}.{patch}"]
 commit = false
