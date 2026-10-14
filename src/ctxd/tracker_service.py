@@ -100,7 +100,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     if args.command == "run":
-        run_forever(interval_seconds=args.interval)
+        try:
+            run_forever(interval_seconds=args.interval)
+        except KeyboardInterrupt:
+            pass
         return 0
     if args.command == "sync-once":
         sync_once()
