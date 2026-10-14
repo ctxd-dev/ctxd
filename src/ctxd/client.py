@@ -131,6 +131,15 @@ class FilesClient:
             )
         )
 
+    def grep(self, pattern: str, *, prefix: str = "", limit: int | None = None):
+        return self._client._run(
+            self._client._async_client.files.grep(
+                pattern,
+                prefix=prefix,
+                limit=limit,
+            )
+        )
+
     def read(self, path: str, *, max_bytes: int | None = None):
         return self._client._run(
             self._client._async_client.files.read(path, max_bytes=max_bytes)
