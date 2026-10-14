@@ -453,6 +453,34 @@ def test_ctxfs_search_uses_grep_without_hosted_auth(
     assert result.results[0].metadata["line_number"] == 3
 
 
+def test_ctxfs_stat_accepts_numeric_timestamps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CTXD_CONFIG_PATH", str(tmp_path / "config.json"))
+    client = Client(backend="ctxfs", ctxfs_endpoint="http://127.0.0.1:8765")
+
+    async def mock_request(self, method, url, *, params=None, headers=None):
+        del self, headers
+        assert method == "GET"
+        assert url == "/api/ctxfs/stat"
+        assert params == {"path": "local-files/root/README.md"}
+        return httpx.Response(
+            200,
+            json={
+                "path": "local-files/root/README.md",
+                "kind": "file",
+                "created_at": 1_792_017_065.25,
+                "updated_at": 1_792_017_072.5,
+            },
+        )
+
+    with patch("httpx.AsyncClient.request", mock_request):
+        entry = client.files.stat("local-files/root/README.md")
+
+    assert entry.created_at == 1_792_017_065.25
+    assert entry.updated_at == 1_792_017_072.5
+
+
 def test_ctxfs_fetch_maps_read_to_document_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
