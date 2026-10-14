@@ -7,19 +7,19 @@ The local tracker watches folders you select and keeps their ctxfs representatio
 ## Requirements
 
 - A supported macOS, Linux, or Windows user environment
-- [`uv`](https://docs.astral.sh/uv/) for installing the supplied package bundle
+- Python 3.11 or 3.12 with `pip`
 - A local folder you want ctxd to track
 
 ## Install
 
-Obtain and unpack the local tracker bundle supplied by ctxd, then install from that directory:
+Install ctxd from PyPI:
 
 ```bash
-uv tool install --force --find-links /path/to/local-file-daemon-dist local-file-daemon
+pip install ctxd
 ctxd version
 ```
 
-The bundle includes the tracker and ctxfs dependencies. ctxfs is not installed as a separate system service.
+The package includes the CLI, tracker, and ctxfs. ctxfs is not installed as a separate system service.
 
 ## Start in ctxfs mode
 
@@ -76,10 +76,10 @@ This removes the tracked root from ctxd. It does not delete the source folder.
 
 ## Upgrade
 
-Install the newer bundle over the existing tool environment, then restart:
+Upgrade the package, then restart:
 
 ```bash
-uv tool install --force --find-links /path/to/local-file-daemon-dist local-file-daemon
+pip install --upgrade ctxd
 ctxd service restart
 ```
 
@@ -89,14 +89,14 @@ Existing roots and local state are preserved.
 
 ```bash
 ctxd service uninstall
-uv tool uninstall local-file-daemon
+pip uninstall ctxd
 ```
 
 To also remove local state and stored credentials:
 
 ```bash
 ctxd service uninstall --purge-state --clear-credentials
-uv tool uninstall local-file-daemon
+pip uninstall ctxd
 ```
 
 ## Troubleshooting

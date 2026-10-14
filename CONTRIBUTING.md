@@ -115,7 +115,8 @@ Review the resulting `pyproject.toml` change before committing it.
 ### Publishing
 
 Publishing is handled by GitHub Actions. Pull requests run tests and build the
-package, but do not publish to PyPI.
+package, install the built wheel in a clean environment, but do not publish to
+PyPI.
 
 After a PR is merged, a push to `main` runs the full test job. If the tests pass,
 the publish job checks whether the current version already exists on PyPI:
@@ -125,3 +126,15 @@ the publish job checks whether the current version already exists on PyPI:
 
 Do not push release tags to publish. Releases are published from `main` after
 the merge commit passes CI.
+
+PyPI authentication uses Trusted Publishing (OIDC), so the repository does not
+store a PyPI API token. Configure the publisher for the `ctxd` PyPI project with:
+
+- GitHub owner: `ctxd-dev`
+- Repository: `ctxd`
+- Workflow: `ci.yaml`
+- Environment: `pypi`
+
+The publish job needs `id-token: write`; it does not need any PyPI secret. Keep
+the GitHub `pypi` environment protected so only approved release branches and
+maintainers can publish.

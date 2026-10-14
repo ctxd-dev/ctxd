@@ -32,6 +32,14 @@ jobs:
       - name: Build Distributions
         run: uv build
 
+      - name: Smoke Test Built Wheel
+        run: |
+          python -m venv "$RUNNER_TEMP/ctxd-wheel-smoke"
+          "$RUNNER_TEMP/ctxd-wheel-smoke/bin/pip" install dist/*.whl
+          "$RUNNER_TEMP/ctxd-wheel-smoke/bin/ctxd" --version
+          "$RUNNER_TEMP/ctxd-wheel-smoke/bin/python" -c \
+            "import ctxd, ctxfs, ctxd.tracker, ctxd.local_ctxfs_service"
+
   publish:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     name: Publish to PyPI
