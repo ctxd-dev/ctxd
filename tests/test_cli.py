@@ -2,7 +2,7 @@ from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import httpx
 import pytest
@@ -13,6 +13,7 @@ from ctxd._metadata import SDK_VERSION
 from ctxd.models import (
     CtxfsBounded,
     CtxfsDirectoryEntry,
+    CtxfsGrepMatch,
     CtxfsReadLinesResult,
     CtxfsReadResult,
     DocumentResult,
@@ -583,17 +584,26 @@ def test_cli_backend_status_uses_ctxfs_profile() -> None:
         "error": None,
     }
 
-    with patch.dict("os.environ", {"CTXD_BACKEND": "ctxfs"}, clear=False), patch(
+    with patch.dict(
+        "os.environ",
+        {"CTXD_BACKEND": "ctxfs", "CTXD_CTXFS_SOCKET": "/tmp/override.sock"},
+        clear=False,
+    ), patch(
         "ctxd.cli.ctxfs_service_status", return_value=service
-    ) as service_status, redirect_stdout(stdout):
+    ) as service_status, patch("ctxd.cli.CtxfsClient") as client, redirect_stdout(
+        stdout
+    ):
         exit_code = main(["backend", "status"])
 
     assert exit_code == 0
     service_status.assert_called_once_with()
+    client.assert_called_once_with(endpoint="unix:///tmp/override.sock", timeout=2.0)
+    client.return_value.status.assert_called_once_with()
     output = stdout.getvalue()
     assert "Backend: ctxfs" in output
     assert "ctxfs running: True" in output
     assert "ctxfs healthy: True" in output
+    assert "ctxfs endpoint: unix:///tmp/override.sock" in output
 
 
 def test_cli_backend_set_ctxfs_starts_service(tmp_path: Path) -> None:
@@ -726,6 +736,39 @@ def test_cli_files_tree_outputs_json() -> None:
 
     assert exit_code == 0
     assert '"path": "local-files/root/README.md"' in stdout.getvalue()
+
+
+def test_cli_files_grep_outputs_bounded_matches() -> None:
+    stdout = StringIO()
+    matches = CtxfsBounded[CtxfsGrepMatch](
+        items=[
+            CtxfsGrepMatch(
+                path="local-files/root/README.md",
+                line_number=2,
+                line="needle here",
+            )
+        ],
+        complete=True,
+    )
+    client = SimpleNamespace(files=SimpleNamespace(grep=lambda *args, **kwargs: matches))
+
+    with patch("ctxd.cli.Client", return_value=client), redirect_stdout(stdout):
+        exit_code = main(
+            [
+                "files",
+                "grep",
+                "needle",
+                "--prefix",
+                "local-files/root",
+                "--limit",
+                "5",
+                "--backend",
+                "ctxfs",
+            ]
+        )
+
+    assert exit_code == 0
+    assert '"line": "needle here"' in stdout.getvalue()
 
 
 def test_cli_files_read_lines_outputs_text() -> None:
@@ -947,6 +990,56 @@ def test_cli_files_tree_resolves_folder_name(tmp_path: Path) -> None:
 
     assert exit_code == 0
     assert '"path": "local-files/folder-1/README.md"' in stdout.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected_pattern", "expected_prefix"),
+    [
+        (
+            ["files", "glob", "Documents/*.md", "--backend", "ctxfs"],
+            "local-files/folder-1/*.md",
+            "",
+        ),
+        (
+            [
+                "files",
+                "glob",
+                "*.md",
+                "--prefix",
+                "Documents",
+                "--backend",
+                "ctxfs",
+            ],
+            "local-files/folder-1/*.md",
+            "local-files/folder-1",
+        ),
+    ],
+)
+def test_cli_files_glob_resolves_folder_names(
+    tmp_path: Path,
+    arguments: list[str],
+    expected_pattern: str,
+    expected_prefix: str,
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        '{"folders":{"Documents":{"name":"Documents",'
+        '"path":"/tmp/Documents","prefix":"local-files/folder-1"}}}'
+    )
+    result = CtxfsBounded[CtxfsDirectoryEntry](items=[], complete=True)
+    glob = Mock(return_value=result)
+    client = SimpleNamespace(files=SimpleNamespace(glob=glob))
+
+    with patch.dict(
+        "os.environ", {"CTXD_CONFIG_PATH": str(config_path)}, clear=False
+    ), patch("ctxd.cli.Client", return_value=client):
+        assert main(arguments) == 0
+
+    glob.assert_called_once_with(
+        expected_pattern,
+        prefix=expected_prefix,
+        limit=None,
+    )
 
 
 def test_cli_files_read_resolves_folder_name_and_outputs_text(tmp_path: Path) -> None:

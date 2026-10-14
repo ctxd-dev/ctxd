@@ -40,3 +40,19 @@ def test_cli_docs_only_list_supported_local_environment_variables() -> None:
     assert "CTXD_LOCAL_HOME" not in text
     assert "CTXD_LOCAL_CTXFS_HOST" not in text
     assert "CTXD_LOCAL_CTXFS_PORT" not in text
+
+
+def test_public_docs_do_not_reference_removed_cli_commands() -> None:
+    removed_commands = (
+        "ctxd config show",
+        "ctxd daemon ",
+        "ctxd service ",
+        "ctxd status",
+        "ctxd folders repair-move",
+        "ctxd version",
+    )
+
+    for path in PUBLIC_DOCS.rglob("*.md"):
+        text = path.read_text()
+        for command in removed_commands:
+            assert command not in text, f"{path.name}: {command}"

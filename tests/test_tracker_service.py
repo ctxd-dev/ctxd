@@ -1,7 +1,7 @@
 from pathlib import Path
 from unittest.mock import patch
 
-from ctxd.tracker_service import TrackerServicePaths, start, status, stop
+from ctxd.tracker_service import TrackerServicePaths, main, start, status, stop
 
 
 class _Process:
@@ -65,3 +65,13 @@ def test_tracker_service_stop_does_not_signal_unrelated_pid(tmp_path: Path) -> N
     assert result["running"] is False
     assert not paths.pid_file.exists()
     kill.assert_not_called()
+
+
+def test_tracker_service_run_handles_keyboard_interrupt() -> None:
+    with patch(
+        "ctxd.tracker_service.run_forever", side_effect=KeyboardInterrupt
+    ) as run_forever:
+        exit_code = main(["run", "--interval", "0.5"])
+
+    assert exit_code == 0
+    run_forever.assert_called_once_with(interval_seconds=0.5)

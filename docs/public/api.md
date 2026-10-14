@@ -8,7 +8,7 @@ The local ctxfs API is served by the per-user `ctxd` service. Its default base U
 Check the active URL with:
 
 ```bash
-ctxd config show
+ctxd backend status
 ```
 
 Loopback requests do not require a ctxd API key. Do not expose this service on a public interface.
@@ -46,4 +46,4 @@ Directory, tree, glob, and grep responses are bounded by `limit`. Check the resp
 
 - `400` — invalid path, range, pattern, or limit
 - `404` — requested path does not exist
-- `503` — ctxfs is unavailable; check `ctxd service status`
+- `503` — ctxfs is unavailable; check `ctxd backend status`

@@ -67,8 +67,8 @@ class CtxfsEntry(BaseModel):
     line_count: int | None = None
     object_id: str | None = None
     provenance: dict[str, Any] = Field(default_factory=dict)
-    created_at: str | None = None
-    updated_at: str | None = None
+    created_at: float | None = None
+    updated_at: float | None = None
 
 
 class CtxfsDirectoryEntry(BaseModel):

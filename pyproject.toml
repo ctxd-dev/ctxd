@@ -21,6 +21,7 @@ dev = [
 
 [project.scripts]
 ctxd = "ctxd.cli:main"
+ctxd-mcp = "ctxd.mcp_server:main"
 
 [build-system]
 requires = ["hatchling"]

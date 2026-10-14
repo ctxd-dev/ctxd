@@ -15,6 +15,7 @@ from ctxd.config import (
     clear_api_key,
     resolve_api_key,
     resolve_backend,
+    resolve_ctxfs_endpoint,
     save_api_key,
     save_backend,
 )
@@ -25,6 +26,7 @@ from ctxd.folders import (
     resolve_folder_prefix,
     try_resolve_named_path,
 )
+from ctxd.ctxfs_client import CtxfsClient
 from ctxd.local_ctxfs_service import ensure_started, status as ctxfs_service_status
 from ctxd.tracker_service import (
     start as tracker_start,
@@ -270,6 +272,14 @@ def _build_parser() -> argparse.ArgumentParser:
     files_glob_parser.add_argument("--prefix", default="")
     files_glob_parser.add_argument("--limit", type=int)
     _add_backend_override(files_glob_parser)
+
+    files_grep_parser = files_subparsers.add_parser(
+        "grep", help="Search file contents."
+    )
+    files_grep_parser.add_argument("pattern")
+    files_grep_parser.add_argument("--prefix", default="")
+    files_grep_parser.add_argument("--limit", type=int)
+    _add_backend_override(files_grep_parser)
 
     files_stat_parser = files_subparsers.add_parser("stat", help="Show path metadata.")
     files_stat_parser.add_argument("path")
@@ -534,12 +544,20 @@ def _handle_backend(args: argparse.Namespace) -> int:
         print(f"Backend: {_display_backend(backend)}")
         if backend == "ctxfs":
             service = ctxfs_service_status()
+            endpoint = resolve_ctxfs_endpoint()
+            healthy = False
+            error = None
+            try:
+                CtxfsClient(endpoint=endpoint, timeout=2.0).status()
+                healthy = True
+            except Exception as exc:
+                error = str(exc)
             print(f"ctxfs running: {service['running']}")
-            print(f"ctxfs healthy: {service['healthy']}")
-            print(f"ctxfs endpoint: {service['endpoint']}")
+            print(f"ctxfs healthy: {healthy}")
+            print(f"ctxfs endpoint: {endpoint}")
             print(f"ctxfs root: {service['root']}")
-            if service.get("error"):
-                print(f"ctxfs error: {service['error']}")
+            if error:
+                print(f"ctxfs error: {error}")
         else:
             print("Remote backend configured.")
         return 0
@@ -580,7 +598,18 @@ def _handle_files(args: argparse.Namespace, client: Client) -> int:
         result = client.files.ls(try_resolve_named_path(args.path), limit=args.limit)
         return _emit_json_model(result)
     if args.files_command == "glob":
+        prefix = try_resolve_named_path(args.prefix) if args.prefix else ""
+        pattern = try_resolve_named_path(args.pattern)
+        if prefix and pattern == args.pattern:
+            pattern = f"{prefix.rstrip('/')}/{pattern.lstrip('/')}"
         result = client.files.glob(
+            pattern,
+            prefix=prefix,
+            limit=args.limit,
+        )
+        return _emit_json_model(result)
+    if args.files_command == "grep":
+        result = client.files.grep(
             args.pattern,
             prefix=try_resolve_named_path(args.prefix) if args.prefix else "",
             limit=args.limit,

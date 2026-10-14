@@ -19,8 +19,11 @@ from ctxfs import (
     ReadResult,
     Submission,
 )
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from ctxd.mcp_server import handle_message
 
 LOCAL_CTXFS_USER_ID = "local"
 DEFAULT_CTXFS_HOST = "127.0.0.1"
@@ -59,6 +62,16 @@ def create_ctxfs_app(root: Path) -> FastAPI:
     def health() -> dict[str, Any]:
         store_root = _with_store(root, lambda store: str(store.root))
         return {"ok": True, "root": store_root}
+
+    @app.post("/mcp")
+    def ctxfs_mcp(message: dict[str, Any]) -> Response:
+        response = handle_message(
+            message,
+            lambda name, arguments: _execute_ctxfs_tool(root, name, arguments),
+        )
+        if response is None:
+            return Response(status_code=202)
+        return JSONResponse(response)
 
     @app.get("/api/ctxfs/stat", response_model=Entry)
     def stat_ctxfs_path(
@@ -226,6 +239,64 @@ def _stat_or_404(store: CtxfsStore, user_id: str, path: str) -> Entry:
     if entry is None:
         raise HTTPException(status_code=404, detail="ctxfs path not found")
     return entry
+
+
+def _execute_ctxfs_tool(
+    root: Path, name: str, arguments: dict[str, Any]
+) -> dict[str, Any]:
+    def execute(store: CtxfsStore) -> Any:
+        if name == "ls":
+            return _call_store(
+                store.ls,
+                LOCAL_CTXFS_USER_ID,
+                arguments.get("path", ""),
+                limit=arguments.get("limit", 1000),
+            )
+        if name == "tree":
+            return _call_store(
+                store.tree,
+                LOCAL_CTXFS_USER_ID,
+                arguments.get("prefix", ""),
+                depth=arguments.get("depth"),
+                limit=arguments.get("limit", 1000),
+            )
+        if name == "glob":
+            return _call_store(
+                store.glob,
+                LOCAL_CTXFS_USER_ID,
+                arguments["pattern"],
+                prefix=arguments.get("prefix", ""),
+                limit=arguments.get("limit", 1000),
+            )
+        if name == "stat":
+            return _stat_or_404(store, LOCAL_CTXFS_USER_ID, arguments["path"])
+        if name == "read":
+            return _call_store(
+                store.read,
+                LOCAL_CTXFS_USER_ID,
+                arguments["path"],
+                max_bytes=arguments.get("max_bytes", 1_000_000),
+            )
+        if name == "read_lines":
+            return _call_store(
+                store.read_lines,
+                LOCAL_CTXFS_USER_ID,
+                arguments["path"],
+                arguments["start_line"],
+                arguments["end_line"],
+            )
+        if name == "grep":
+            return _call_store(
+                store.grep,
+                LOCAL_CTXFS_USER_ID,
+                arguments["pattern"],
+                prefix=arguments.get("prefix", ""),
+                limit=arguments.get("limit", 1000),
+            )
+        raise ValueError(f"Unknown ctxfs tool: {name}")
+
+    value = _with_store(root, execute)
+    return value.model_dump(mode="json")
 
 
 def _reject_user_id_query(user_id: str | None = Query(default=None)) -> None:
