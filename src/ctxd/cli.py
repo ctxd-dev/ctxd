@@ -580,9 +580,13 @@ def _handle_files(args: argparse.Namespace, client: Client) -> int:
         result = client.files.ls(try_resolve_named_path(args.path), limit=args.limit)
         return _emit_json_model(result)
     if args.files_command == "glob":
+        prefix = try_resolve_named_path(args.prefix) if args.prefix else ""
+        pattern = try_resolve_named_path(args.pattern)
+        if prefix and pattern == args.pattern:
+            pattern = f"{prefix.rstrip('/')}/{pattern.lstrip('/')}"
         result = client.files.glob(
-            args.pattern,
-            prefix=try_resolve_named_path(args.prefix) if args.prefix else "",
+            pattern,
+            prefix=prefix,
             limit=args.limit,
         )
         return _emit_json_model(result)
