@@ -36,7 +36,8 @@ ctxd folders remove <ROOT_ID>
 Remove the service and all local daemon state:
 
 ```bash
-ctxd service uninstall --purge-state --clear-credentials
+ctxd tracker stop
+pip uninstall ctxd
 ```
 
 Review the paths before using the purge options. This action removes ctxd-managed local state, not your tracked source folders.

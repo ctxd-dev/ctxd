@@ -9,14 +9,15 @@ The `ctxd` CLI installs and manages the local tracker and ctxfs service.
 
 ```bash
 pip install ctxd
-ctxd version
+ctxd --version
 ```
 
 ## Configuration
 
 ```bash
 ctxd config set backend ctxfs
-ctxd config show
+ctxd config get backend
+ctxd backend status
 ```
 
 Selecting `ctxfs` installs and starts the local service when needed. Local operation does not require `CTXD_API_KEY` or `ctxd auth set-key`.
@@ -26,8 +27,7 @@ Selecting `ctxfs` installs and starts the local service when needed. Local opera
 ```bash
 ctxd folders add ~/Documents --name Documents
 ctxd folders list
-ctxd folders repair-move <ROOT_ID> /new/path/to/Documents --name Documents
-ctxd folders remove <ROOT_ID>
+ctxd folders remove Documents
 ```
 
 Removing a root stops tracking it. It does not delete the source folder.
@@ -35,28 +35,17 @@ Removing a root stops tracking it. It does not delete the source folder.
 ## Tracker
 
 ```bash
-ctxd daemon run --once
-ctxd daemon run --interval-seconds 60
-ctxd status
+ctxd tracker start
+ctxd tracker status
+ctxd tracker stop
 ```
 
-Use `--once` to apply changes immediately while diagnosing a folder.
+The tracker synchronizes configured folders while it is running.
 
-## Service
+## ctxfs
 
-```bash
-ctxd service status
-ctxd service stop
-ctxd service start
-ctxd service restart
-ctxd service uninstall
-```
-
-To remove local state and credentials as well as the service registration:
-
-```bash
-ctxd service uninstall --purge-state --clear-credentials
-```
+`ctxd config set backend ctxfs` starts ctxfs when needed. Use
+`ctxd backend status` to check the active backend and ctxfs endpoint.
 
 ## Environment
 
