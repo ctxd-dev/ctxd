@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Callable
 from typing import Any, TextIO
 
 from ctxd.ctxfs_client import CtxfsClient
@@ -37,7 +38,12 @@ def tool_descriptions() -> list[dict[str, Any]]:
     ]
 
 
-def handle_message(message: dict[str, Any], client: CtxfsClient) -> dict[str, Any] | None:
+ToolExecutor = Callable[[str, dict[str, Any]], dict[str, Any]]
+
+
+def handle_message(
+    message: dict[str, Any], execute_tool: ToolExecutor
+) -> dict[str, Any] | None:
     request_id = message.get("id")
     method = message.get("method")
     if request_id is None:
@@ -55,7 +61,7 @@ def handle_message(message: dict[str, Any], client: CtxfsClient) -> dict[str, An
     if method == "tools/call":
         params = message.get("params") or {}
         try:
-            payload = _call_tool(client, params.get("name"), params.get("arguments") or {})
+            payload = execute_tool(params.get("name"), params.get("arguments") or {})
             return _result(request_id, {
                 "content": [{"type": "text", "text": json.dumps(payload)}],
                 "structuredContent": payload,
@@ -68,7 +74,9 @@ def handle_message(message: dict[str, Any], client: CtxfsClient) -> dict[str, An
     return _error(request_id, -32601, f"Method not found: {method}")
 
 
-def _call_tool(client: CtxfsClient, name: Any, arguments: dict[str, Any]) -> dict[str, Any]:
+def execute_client_tool(
+    client: CtxfsClient, name: str, arguments: dict[str, Any]
+) -> dict[str, Any]:
     files = client.files
     if name == "ls":
         value = files.ls(arguments.get("path", ""), limit=arguments.get("limit"))
@@ -102,7 +110,10 @@ def serve(stdin: TextIO = sys.stdin, stdout: TextIO = sys.stdout) -> None:
     for line in stdin:
         try:
             message = json.loads(line)
-            response = handle_message(message, client)
+            response = handle_message(
+                message,
+                lambda name, arguments: execute_client_tool(client, name, arguments),
+            )
         except Exception as exc:
             response = _error(None, -32700, f"Parse error: {exc}")
         if response is not None:

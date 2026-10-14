@@ -65,14 +65,17 @@ File reads also include content identity information. An agent can use it to det
 
 ## MCP
 
-The package includes a local stdio MCP server that exposes the seven ctxfs read
-operations. Configure an MCP client to launch:
+The running ctxfs service exposes the seven read operations through MCP at
+`/mcp` on its configured local endpoint. MCP calls use the same in-process read
+service as the REST API.
+
+For MCP clients that require stdio, configure the compatibility bridge:
 
 ```text
 ctxd-mcp
 ```
 
-The server resolves the configured local ctxfs endpoint itself. Its tools do not
+The bridge resolves the configured local ctxfs endpoint itself. MCP tools do not
 accept endpoint, filesystem-root, or user-identity arguments.
 
 ## Local data

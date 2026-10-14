@@ -121,3 +121,74 @@ def test_local_ctxfs_server_rejects_overlapping_writer_prefix(tmp_path) -> None:
 
     assert first.status_code == 200
     assert second.status_code == 403
+
+
+def test_local_ctxfs_server_exposes_mcp_tool_discovery(tmp_path) -> None:
+    client = TestClient(create_ctxfs_app(tmp_path / "ctxfs"))
+
+    response = client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+    )
+
+    assert response.status_code == 200
+    tools = response.json()["result"]["tools"]
+    assert [tool["name"] for tool in tools] == [
+        "ls",
+        "tree",
+        "glob",
+        "stat",
+        "read",
+        "read_lines",
+        "grep",
+    ]
+
+
+def test_local_ctxfs_mcp_reads_in_process(tmp_path) -> None:
+    client = TestClient(create_ctxfs_app(tmp_path / "ctxfs"))
+    submission = client.post(
+        "/api/ctxfs/submissions",
+        json={
+            "writer_id": "writer-1",
+            "writer_prefix": "local-files/root",
+            "submission": {
+                "run_id": "run-1",
+                "sequence": 1,
+                "is_full_scan": True,
+                "operations": [
+                    {
+                        "kind": "put",
+                        "path": "local-files/root/notes.md",
+                        "source_key": "file-1",
+                        "source_version": "v1",
+                        "doc_class": "editable",
+                        "file_format": "text/markdown",
+                        "text": "hello ctxfs\n",
+                        "provenance": {
+                            "producer": "test",
+                            "producer_version": "1",
+                        },
+                    }
+                ],
+            },
+        },
+    )
+    assert submission.status_code == 200
+
+    response = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "read",
+                "arguments": {"path": "local-files/root/notes.md"},
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    result = response.json()["result"]
+    assert result["structuredContent"]["text"] == "hello ctxfs\n"
+    assert result.get("isError") is None

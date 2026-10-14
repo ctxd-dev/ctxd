@@ -1,7 +1,12 @@
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from ctxd.mcp_server import PROTOCOL_VERSION, handle_message, tool_descriptions
+from ctxd.mcp_server import (
+    PROTOCOL_VERSION,
+    execute_client_tool,
+    handle_message,
+    tool_descriptions,
+)
 
 
 def test_local_mcp_lists_all_ctxfs_tools_without_connection_arguments() -> None:
@@ -38,7 +43,7 @@ def test_local_mcp_initializes_and_calls_bounded_tree() -> None:
                 "arguments": {"prefix": "local-files/root", "depth": 2, "limit": 10},
             },
         },
-        client,
+        lambda name, arguments: execute_client_tool(client, name, arguments),
     )
 
     tree.assert_called_once_with("local-files/root", depth=2, limit=10)
@@ -54,7 +59,7 @@ def test_local_mcp_returns_tool_errors_without_terminating_server() -> None:
             "method": "tools/call",
             "params": {"name": "stat", "arguments": {"path": "missing"}},
         },
-        client,
+        lambda name, arguments: execute_client_tool(client, name, arguments),
     )
 
     assert response["result"]["isError"] is True
