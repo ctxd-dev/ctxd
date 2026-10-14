@@ -273,6 +273,14 @@ def _build_parser() -> argparse.ArgumentParser:
     files_glob_parser.add_argument("--limit", type=int)
     _add_backend_override(files_glob_parser)
 
+    files_grep_parser = files_subparsers.add_parser(
+        "grep", help="Search file contents."
+    )
+    files_grep_parser.add_argument("pattern")
+    files_grep_parser.add_argument("--prefix", default="")
+    files_grep_parser.add_argument("--limit", type=int)
+    _add_backend_override(files_grep_parser)
+
     files_stat_parser = files_subparsers.add_parser("stat", help="Show path metadata.")
     files_stat_parser.add_argument("path")
     _add_backend_override(files_stat_parser)
@@ -597,6 +605,13 @@ def _handle_files(args: argparse.Namespace, client: Client) -> int:
         result = client.files.glob(
             pattern,
             prefix=prefix,
+            limit=args.limit,
+        )
+        return _emit_json_model(result)
+    if args.files_command == "grep":
+        result = client.files.grep(
+            args.pattern,
+            prefix=try_resolve_named_path(args.prefix) if args.prefix else "",
             limit=args.limit,
         )
         return _emit_json_model(result)

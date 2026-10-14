@@ -13,6 +13,7 @@ from ctxd._metadata import SDK_VERSION
 from ctxd.models import (
     CtxfsBounded,
     CtxfsDirectoryEntry,
+    CtxfsGrepMatch,
     CtxfsReadLinesResult,
     CtxfsReadResult,
     DocumentResult,
@@ -735,6 +736,39 @@ def test_cli_files_tree_outputs_json() -> None:
 
     assert exit_code == 0
     assert '"path": "local-files/root/README.md"' in stdout.getvalue()
+
+
+def test_cli_files_grep_outputs_bounded_matches() -> None:
+    stdout = StringIO()
+    matches = CtxfsBounded[CtxfsGrepMatch](
+        items=[
+            CtxfsGrepMatch(
+                path="local-files/root/README.md",
+                line_number=2,
+                line="needle here",
+            )
+        ],
+        complete=True,
+    )
+    client = SimpleNamespace(files=SimpleNamespace(grep=lambda *args, **kwargs: matches))
+
+    with patch("ctxd.cli.Client", return_value=client), redirect_stdout(stdout):
+        exit_code = main(
+            [
+                "files",
+                "grep",
+                "needle",
+                "--prefix",
+                "local-files/root",
+                "--limit",
+                "5",
+                "--backend",
+                "ctxfs",
+            ]
+        )
+
+    assert exit_code == 0
+    assert '"line": "needle here"' in stdout.getvalue()
 
 
 def test_cli_files_read_lines_outputs_text() -> None:
