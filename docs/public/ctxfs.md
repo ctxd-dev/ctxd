@@ -2,14 +2,14 @@
 title: 'ctxfs'
 ---
 
-ctxfs presents tracked local content as a filesystem-shaped tree that agents can inspect with explicit, bounded operations. It runs locally with the tracker and does not require a remote integration or semantic-search index.
+ctxfs presents tracked local content as a filesystem-shaped tree that agents can inspect with explicit, bounded operations. It runs locally with the tracker and uses exact, path-oriented reads.
 
 ## Install and start
 
-ctxfs ships in the local tracker bundle. Install the bundle, then select the backend:
+ctxfs ships in the ctxd package. Install ctxd, then select the backend:
 
 ```bash
-uv tool install --force --find-links /path/to/local-file-daemon-dist local-file-daemon
+pip install ctxd
 ctxd config set backend ctxfs
 ctxd config show
 ```

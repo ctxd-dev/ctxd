@@ -7,10 +7,10 @@ Track a local folder and read it through ctxfs.
 
 ## 1. Install
 
-Install the local tracker bundle supplied by ctxd. Replace the example path with the directory containing the package artifacts:
+Install ctxd from PyPI. The package includes the CLI, local tracker, and ctxfs:
 
 ```bash
-uv tool install --force --find-links /path/to/local-file-daemon-dist local-file-daemon
+pip install ctxd
 ctxd version
 ```
 

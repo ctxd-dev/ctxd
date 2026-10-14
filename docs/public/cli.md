@@ -8,7 +8,7 @@ The `ctxd` CLI installs and manages the local tracker and ctxfs service.
 ## Install
 
 ```bash
-uv tool install --force --find-links /path/to/local-file-daemon-dist local-file-daemon
+pip install ctxd
 ctxd version
 ```
 
