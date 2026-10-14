@@ -30,6 +30,18 @@ def test_public_docs_have_starlight_frontmatter() -> None:
         assert "\ntitle:" in text.split("---", 2)[1], name
 
 
+def test_cli_docs_only_list_supported_local_environment_variables() -> None:
+    text = (PUBLIC_DOCS / "cli.md").read_text()
+
+    assert "CTXD_CONFIG_PATH" in text
+    assert "CTXD_BACKEND" in text
+    assert "CTXD_CTXFS_SOCKET" in text
+    assert "CTXD_CTXFS_URL" in text
+    assert "CTXD_LOCAL_HOME" not in text
+    assert "CTXD_LOCAL_CTXFS_HOST" not in text
+    assert "CTXD_LOCAL_CTXFS_PORT" not in text
+
+
 def test_public_docs_do_not_reference_removed_cli_commands() -> None:
     removed_commands = (
         "ctxd config show",

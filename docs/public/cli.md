@@ -51,6 +51,7 @@ The tracker synchronizes configured folders while it is running.
 
 | Variable | Purpose |
 | --- | --- |
-| `CTXD_LOCAL_HOME` | Override daemon state and log directory |
-| `CTXD_LOCAL_CTXFS_HOST` | Override the local ctxfs host |
-| `CTXD_LOCAL_CTXFS_PORT` | Override the local ctxfs port |
+| `CTXD_CONFIG_PATH` | Override the CLI configuration file |
+| `CTXD_BACKEND` | Override the active backend (`ctxfs` or `remote`) |
+| `CTXD_CTXFS_SOCKET` | Use ctxfs through the selected Unix socket |
+| `CTXD_CTXFS_URL` | Use ctxfs through the selected HTTP URL |
