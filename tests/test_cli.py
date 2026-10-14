@@ -2,7 +2,7 @@ from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import httpx
 import pytest
@@ -947,6 +947,56 @@ def test_cli_files_tree_resolves_folder_name(tmp_path: Path) -> None:
 
     assert exit_code == 0
     assert '"path": "local-files/folder-1/README.md"' in stdout.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected_pattern", "expected_prefix"),
+    [
+        (
+            ["files", "glob", "Documents/*.md", "--backend", "ctxfs"],
+            "local-files/folder-1/*.md",
+            "",
+        ),
+        (
+            [
+                "files",
+                "glob",
+                "*.md",
+                "--prefix",
+                "Documents",
+                "--backend",
+                "ctxfs",
+            ],
+            "local-files/folder-1/*.md",
+            "local-files/folder-1",
+        ),
+    ],
+)
+def test_cli_files_glob_resolves_folder_names(
+    tmp_path: Path,
+    arguments: list[str],
+    expected_pattern: str,
+    expected_prefix: str,
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        '{"folders":{"Documents":{"name":"Documents",'
+        '"path":"/tmp/Documents","prefix":"local-files/folder-1"}}}'
+    )
+    result = CtxfsBounded[CtxfsDirectoryEntry](items=[], complete=True)
+    glob = Mock(return_value=result)
+    client = SimpleNamespace(files=SimpleNamespace(glob=glob))
+
+    with patch.dict(
+        "os.environ", {"CTXD_CONFIG_PATH": str(config_path)}, clear=False
+    ), patch("ctxd.cli.Client", return_value=client):
+        assert main(arguments) == 0
+
+    glob.assert_called_once_with(
+        expected_pattern,
+        prefix=expected_prefix,
+        limit=None,
+    )
 
 
 def test_cli_files_read_resolves_folder_name_and_outputs_text(tmp_path: Path) -> None:
