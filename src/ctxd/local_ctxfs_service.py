@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import ipaddress
 import json
 import os
 import signal
@@ -11,6 +12,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
+from urllib.parse import urlparse
 
 import uvicorn
 
@@ -161,23 +163,101 @@ def stop(paths: LocalCtxfsPaths | None = None) -> dict[str, object]:
     return status(paths)
 
 
-def serve(root: Path, *, socket_path: Path | None = None) -> None:
+def serve(
+    root: Path,
+    *,
+    socket_path: Path | None = None,
+    host: str = DEFAULT_CTXFS_HOST,
+    port: int = DEFAULT_CTXFS_PORT,
+    allow_network: bool = False,
+    tls_cert: Path | None = None,
+    tls_key: Path | None = None,
+    credential_root: Path | None = None,
+    advertised_url: str | None = None,
+) -> None:
+    """Serve ctxfs in the foreground using an explicitly safe transport policy."""
+    if socket_path is not None and host != DEFAULT_CTXFS_HOST:
+        raise ValueError("--socket and --host cannot be used together")
+    if socket_path is not None and (tls_cert is not None or tls_key is not None):
+        raise ValueError("TLS options cannot be used with a Unix socket")
+    if socket_path is not None and allow_network:
+        raise ValueError("--allow-network cannot be used with a Unix socket")
+    if not 1 <= port <= 65535:
+        raise ValueError("port must be between 1 and 65535")
+
+    is_loopback = _is_loopback_host(host)
+    if socket_path is None and not is_loopback:
+        if not allow_network:
+            raise ValueError(
+                "non-loopback ctxfs serving requires explicit --allow-network"
+            )
+        if tls_cert is None or tls_key is None:
+            raise ValueError("non-loopback ctxfs serving requires --tls-cert and --tls-key")
+    if (tls_cert is None) != (tls_key is None):
+        raise ValueError("--tls-cert and --tls-key must be provided together")
+    if tls_cert is not None and tls_key is not None:
+        _validate_tls_file(tls_cert, "TLS certificate")
+        _validate_tls_file(tls_key, "TLS private key")
+
+    if advertised_url is not None:
+        _validate_advertised_url(
+            advertised_url, socket_path=socket_path, tls_enabled=tls_cert is not None
+        )
+
     _ensure_private_directory(root)
     # Trust is a property of the private managed Unix socket, never of TCP.
     auth_mode = (
         CtxfsAuthMode.TRUSTED_LOCAL if socket_path is not None else CtxfsAuthMode.BEARER
     )
-    app = create_ctxfs_app(root, auth_mode=auth_mode)
+    if credential_root is None:
+        app = create_ctxfs_app(root, auth_mode=auth_mode)
+    else:
+        app = create_ctxfs_app(
+            root, auth_mode=auth_mode, credential_root=credential_root
+        )
+    if advertised_url is not None:
+        app.state.ctxfs_advertised_url = advertised_url
     if socket_path is not None:
         _ensure_private_directory(socket_path.parent)
         uvicorn.run(app, uds=str(socket_path), log_level="warning")
     else:
-        uvicorn.run(
-            app,
-            host=DEFAULT_CTXFS_HOST,
-            port=DEFAULT_CTXFS_PORT,
-            log_level="warning",
-        )
+        run_kwargs: dict[str, object] = {
+            "host": host,
+            "port": port,
+            "log_level": "warning",
+        }
+        if tls_cert is not None and tls_key is not None:
+            run_kwargs.update(ssl_certfile=str(tls_cert), ssl_keyfile=str(tls_key))
+        uvicorn.run(app, **run_kwargs)
+
+
+def _is_loopback_host(host: str) -> bool:
+    normalized = host.strip().lower().rstrip(".")
+    if normalized == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def _validate_tls_file(path: Path, label: str) -> None:
+    expanded = path.expanduser()
+    if not expanded.is_file() or not os.access(expanded, os.R_OK):
+        raise ValueError(f"{label} must be a readable regular file: {expanded}")
+
+
+def _validate_advertised_url(
+    value: str, *, socket_path: Path | None, tls_enabled: bool
+) -> None:
+    parsed = urlparse(value)
+    if socket_path is not None:
+        if parsed.scheme != "unix":
+            raise ValueError("a Unix-socket server must advertise a unix:// URL")
+        return
+    expected_scheme = "https" if tls_enabled else "http"
+    if parsed.scheme != expected_scheme or not parsed.netloc:
+        raise ValueError(f"TCP server advertised URL must use {expected_scheme}://")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -186,11 +266,29 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     serve_parser = subparsers.add_parser("serve")
     serve_parser.add_argument("--root", type=Path, required=True)
-    serve_parser.add_argument("--socket", type=Path)
+    listener = serve_parser.add_mutually_exclusive_group()
+    listener.add_argument("--socket", type=Path)
+    listener.add_argument("--host", default=DEFAULT_CTXFS_HOST)
+    serve_parser.add_argument("--port", type=int, default=DEFAULT_CTXFS_PORT)
+    serve_parser.add_argument("--allow-network", action="store_true")
+    serve_parser.add_argument("--tls-cert", type=Path)
+    serve_parser.add_argument("--tls-key", type=Path)
+    serve_parser.add_argument("--credential-root", type=Path)
+    serve_parser.add_argument("--advertised-url")
 
     args = parser.parse_args(argv)
     if args.command == "serve":
-        serve(args.root, socket_path=args.socket)
+        serve(
+            args.root,
+            socket_path=args.socket,
+            host=args.host,
+            port=args.port,
+            allow_network=args.allow_network,
+            tls_cert=args.tls_cert,
+            tls_key=args.tls_key,
+            credential_root=args.credential_root,
+            advertised_url=args.advertised_url,
+        )
         return 0
 
     parser.error(f"Unknown command: {args.command}")

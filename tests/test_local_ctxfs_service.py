@@ -7,7 +7,13 @@ from unittest.mock import patch
 import pytest
 
 from ctxd.local_ctxfs_server import CtxfsAuthMode
-from ctxd.local_ctxfs_service import LocalCtxfsPaths, ensure_started, serve, status
+from ctxd.local_ctxfs_service import (
+    LocalCtxfsPaths,
+    _is_loopback_host,
+    ensure_started,
+    serve,
+    status,
+)
 
 
 class _Process:
@@ -167,3 +173,67 @@ def test_serve_selects_auth_policy_from_transport(tmp_path: Path) -> None:
             port=8765,
             log_level="warning",
         )
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "127.2.3.4", "::1", "localhost"])
+def test_loopback_host_classification(host: str) -> None:
+    assert _is_loopback_host(host) is True
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.168.1.2", "ctxfs.local"])
+def test_network_host_classification(host: str) -> None:
+    assert _is_loopback_host(host) is False
+
+
+def test_serve_rejects_remote_bind_without_opt_in_and_tls(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="--allow-network"):
+        serve(tmp_path / "root", host="0.0.0.0")
+    with pytest.raises(ValueError, match="requires --tls-cert and --tls-key"):
+        serve(tmp_path / "root", host="0.0.0.0", allow_network=True)
+
+
+def test_serve_rejects_missing_or_non_regular_tls_files(tmp_path: Path) -> None:
+    cert = tmp_path / "cert.pem"
+    cert.write_text("certificate")
+    with pytest.raises(ValueError, match="TLS private key"):
+        serve(
+            tmp_path / "root",
+            host="::",
+            allow_network=True,
+            tls_cert=cert,
+            tls_key=tmp_path / "missing-key.pem",
+        )
+
+
+def test_serve_remote_uses_bearer_auth_and_direct_tls(tmp_path: Path) -> None:
+    app = object()
+    cert = tmp_path / "cert.pem"
+    key = tmp_path / "key.pem"
+    cert.write_text("certificate")
+    key.write_text("private key")
+    credentials = tmp_path / "credentials"
+    with patch(
+        "ctxd.local_ctxfs_service.create_ctxfs_app", return_value=app
+    ) as create_app, patch("ctxd.local_ctxfs_service.uvicorn.run") as run:
+        serve(
+            tmp_path / "root",
+            host="::",
+            port=9443,
+            allow_network=True,
+            tls_cert=cert,
+            tls_key=key,
+            credential_root=credentials,
+        )
+    create_app.assert_called_once_with(
+        tmp_path / "root",
+        auth_mode=CtxfsAuthMode.BEARER,
+        credential_root=credentials,
+    )
+    run.assert_called_once_with(
+        app,
+        host="::",
+        port=9443,
+        log_level="warning",
+        ssl_certfile=str(cert),
+        ssl_keyfile=str(key),
+    )

@@ -32,7 +32,8 @@ from ctxd.folders import (
     try_resolve_named_path,
 )
 from ctxd.ctxfs_client import CtxfsClient
-from ctxd.local_ctxfs_service import ensure_started, status as ctxfs_service_status
+from ctxd.local_ctxfs_service import ensure_started, serve as ctxfs_serve
+from ctxd.local_ctxfs_service import status as ctxfs_service_status
 from ctxd.local_ctxfs_service import default_paths as default_ctxfs_paths
 from ctxd.tracker_service import (
     start as tracker_start,
@@ -66,6 +67,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _handle_tracker(args)
         if args.command == "keys":
             return _handle_keys(args)
+        if args.command == "server":
+            return _handle_server(args)
 
         client = Client(backend=getattr(args, "backend", None))
 
@@ -392,7 +395,49 @@ def _build_parser() -> argparse.ArgumentParser:
     keys_rotate.add_argument("key_id")
     keys_rotate.add_argument("--json", action="store_true")
 
+    server_parser = subparsers.add_parser(
+        "server",
+        help="Run a standalone ctxfs server.",
+        description="Run a standalone ctxfs server with safe transport defaults.",
+    )
+    server_subparsers = server_parser.add_subparsers(
+        dest="server_command", metavar="<server-command>", required=True
+    )
+    server_serve = server_subparsers.add_parser(
+        "serve", help="Serve ctxfs in the foreground."
+    )
+    server_serve.add_argument("--root", type=Path, default=default_ctxfs_paths().root)
+    listener = server_serve.add_mutually_exclusive_group()
+    listener.add_argument("--socket", type=Path)
+    listener.add_argument("--host")
+    server_serve.add_argument("--port", type=int, default=8765)
+    server_serve.add_argument("--allow-network", action="store_true")
+    server_serve.add_argument("--tls-cert", type=Path)
+    server_serve.add_argument("--tls-key", type=Path)
+    server_serve.add_argument("--credential-root", type=Path)
+    server_serve.add_argument("--advertised-url")
+
     return parser
+
+
+def _handle_server(args: argparse.Namespace) -> int:
+    if args.server_command != "serve":
+        raise ValueError(f"Unknown server command: {args.server_command}")
+    socket_path = args.socket
+    if socket_path is None and args.host is None:
+        socket_path = default_ctxfs_paths().socket_path
+    ctxfs_serve(
+        args.root,
+        socket_path=socket_path,
+        host=args.host or "127.0.0.1",
+        port=args.port,
+        allow_network=args.allow_network,
+        tls_cert=args.tls_cert,
+        tls_key=args.tls_key,
+        credential_root=args.credential_root,
+        advertised_url=args.advertised_url,
+    )
+    return 0
 
 
 def _handle_keys(args: argparse.Namespace) -> int:
