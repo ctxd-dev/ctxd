@@ -10,11 +10,13 @@ ctxfs ships in the ctxd package. Install ctxd, then select the backend:
 
 ```bash
 pip install ctxd
-ctxd config set backend ctxfs
+ctxd backend set ctxfs
 ctxd backend status
 ```
 
-The default root is `~/.ctxd/ctxfs`, and the default HTTP endpoint is `http://127.0.0.1:8765`. The service manages both pieces; do not launch a second ctxfs process.
+The default data root is `~/.ctxd/ctxfs`. The managed server listens through the
+Unix socket `~/.ctxd/local/ctxfs.sock`; `ctxd backend status` prints the effective
+endpoint. Do not launch a second server against the same data root.
 
 ## Path model
 
@@ -30,7 +32,8 @@ For example, if root `abc123` tracks `~/Projects/example`, then `~/Projects/exam
 local-files/abc123/docs/runbook.md
 ```
 
-Find root IDs with `ctxd folders list`.
+The CLI resolves configured folder names to these prefixes, so agents can use a
+path such as `Example/docs/runbook.md` without knowing the generated root ID.
 
 ## Read operations
 
@@ -51,8 +54,8 @@ ctxfs deliberately exposes no shell and no arbitrary commands. `grep` is exact t
 ```bash
 ctxd folders list
 ctxd tracker start
-curl "http://127.0.0.1:8765/api/ctxfs/tree?prefix=local-files/<ROOT_ID>&limit=100"
-curl "http://127.0.0.1:8765/api/ctxfs/read?path=local-files/<ROOT_ID>/docs/runbook.md"
+ctxd files tree Example --depth 2 --limit 100
+ctxd files read Example/docs/runbook.md
 ```
 
 See the [local API reference](/docs/api) for every endpoint and parameter.
@@ -66,13 +69,20 @@ File reads also include content identity information. An agent can use it to det
 ## MCP
 
 The running ctxfs service exposes the seven read operations through MCP at
-`/mcp` on its configured local endpoint. MCP calls use the same in-process read
+`POST /mcp` on its configured endpoint. MCP calls use the same in-process read
 service as the REST API.
 
-For MCP clients that require stdio, configure the compatibility bridge:
+The managed endpoint is a Unix socket, so the simplest MCP client configuration
+is the stdio bridge installed by the same `ctxd` package:
 
-```text
-ctxd-mcp
+```json
+{
+  "mcpServers": {
+    "ctxfs": {
+      "command": "ctxd-mcp"
+    }
+  }
+}
 ```
 
 The bridge resolves the configured local ctxfs endpoint itself. MCP tools do not

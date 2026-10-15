@@ -17,11 +17,11 @@ ctxd --version
 ## 2. Enable local ctxfs
 
 ```bash
-ctxd config set backend ctxfs
+ctxd backend set ctxfs
 ctxd config get backend
 ```
 
-This installs and starts the per-user service. It runs the folder tracker and local ctxfs server together. No API key is required.
+This saves the backend and starts the local ctxfs server. No API key is required.
 
 ## 3. Track a folder
 
@@ -30,11 +30,8 @@ ctxd folders add ~/Documents --name Documents
 ctxd folders list
 ```
 
-Keep the `ROOT_ID` shown by `ctxd folders list`. Files from the folder appear beneath:
-
-```text
-local-files/<ROOT_ID>/
-```
+The name `Documents` is also its CLI path alias. Nothing outside folders you
+add is tracked.
 
 ## 4. Verify the service
 
@@ -45,7 +42,7 @@ ctxd tracker status
 
 Look for `Backend: ctxfs` and `ctxfs healthy: True`.
 
-Start folder tracking:
+Start the separate folder-tracker process:
 
 ```bash
 ctxd tracker start
@@ -54,12 +51,10 @@ ctxd tracker start
 ## 5. Read from ctxfs
 
 ```bash
-curl "http://127.0.0.1:8765/api/ctxfs/tree?prefix=local-files/<ROOT_ID>&limit=100"
-curl "http://127.0.0.1:8765/api/ctxfs/read?path=local-files/<ROOT_ID>/notes.md"
-curl "http://127.0.0.1:8765/api/ctxfs/grep?pattern=deployment&prefix=local-files/<ROOT_ID>&limit=20"
+ctxd files tree Documents --depth 2 --limit 100
+ctxd files read Documents/notes.md
+ctxd files grep "deployment" --prefix Documents --limit 20
 ```
-
-Use the endpoint printed by `ctxd backend status` if you changed the local endpoint.
 
 Files are synchronized automatically while the service runs. You do not need to upload them or connect a remote application.
 

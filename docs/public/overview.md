@@ -21,12 +21,14 @@ Put the material you want an agent to use in a local folder, then track that fol
 
 | Component | Role | Default location |
 | --- | --- | --- |
-| [Local tracker](/docs/local-tracker) | Watches selected folders and applies changes | Per-user background service |
+| [Local tracker](/docs/local-tracker) | Watches selected folders and applies changes | Per-user background process |
 | [ctxfs](/docs/ctxfs) | Stores and exposes the local context tree | `~/.ctxd/ctxfs` |
-| [CLI](/docs/cli) | Configures folders and manages the service | `ctxd` |
-| [Local API](/docs/api) | Provides the seven ctxfs read operations | `http://127.0.0.1:8765` |
+| [CLI](/docs/cli) | Configures folders and reads ctxfs | `ctxd` |
+| [Local API](/docs/api) | Provides REST and MCP access | `~/.ctxd/local/ctxfs.sock` |
 
-The tracker and ctxfs server run together as one per-user `ctxd` service. Local ctxfs reads do not require a ctxd API key.
+The tracker and ctxfs server are separate per-user processes. Starting the
+tracker ensures the ctxfs server is running. Local reads do not require an API
+key.
 
 ## What agents can do
 

@@ -15,12 +15,13 @@ ctxd --version
 ## Configuration
 
 ```bash
-ctxd config set backend ctxfs
+ctxd backend set ctxfs
 ctxd config get backend
 ctxd backend status
 ```
 
-Selecting `ctxfs` installs and starts the local service when needed. Local operation does not require `CTXD_API_KEY` or `ctxd auth set-key`.
+`backend set` saves the selection and starts ctxfs. Local operation does not
+require an API key.
 
 ## Folders
 
@@ -42,10 +43,39 @@ ctxd tracker stop
 
 The tracker synchronizes configured folders while it is running.
 
+## Files
+
+Use a configured folder name as the first path segment:
+
+```bash
+ctxd files tree Documents --depth 2 --limit 100
+ctxd files ls Documents
+ctxd files glob "Documents/**/*.md" --limit 100
+ctxd files stat Documents/notes.md
+ctxd files read Documents/notes.md --max-bytes 100000
+ctxd files read-lines Documents/notes.md --start 20 --end 40
+ctxd files grep "deployment" --prefix Documents --limit 20
+```
+
+Every listing and matching command is bounded. Inspect `complete` and
+`stopped_by` in JSON output before treating a result as exhaustive.
+
 ## ctxfs
 
-`ctxd config set backend ctxfs` starts ctxfs when needed. Use
+`ctxd backend set ctxfs` starts ctxfs when needed. Use
 `ctxd backend status` to check the active backend and ctxfs endpoint.
+
+## MCP
+
+For the default Unix-socket installation, configure MCP clients to launch the
+stdio bridge:
+
+```text
+ctxd-mcp
+```
+
+The ctxfs server also accepts MCP JSON-RPC requests over HTTP at `POST /mcp` on
+its configured endpoint.
 
 ## Environment
 
