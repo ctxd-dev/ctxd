@@ -284,6 +284,10 @@ clients.
    TCP always uses bearer authentication; non-loopback and wildcard binds also
    require explicit network opt-in and direct TLS.**
 7. Add multi-process end-to-end, abuse, rotation, and recovery tests.
+   **Implemented in PR 7 with isolated server, tracker/writer, and reader
+   subprocess environments. Coverage includes empty startup, scoped submission
+   and reads, REST/MCP parity, credential abuse and rotation, duplicate
+   submission idempotency, restart persistence, and non-loopback TLS safety.**
 8. Update public docs and declare the authenticated network topology supported.
 
 Network deployment should not be documented as supported until steps 1 through
