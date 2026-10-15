@@ -257,8 +257,8 @@ clients.
 ## Suggested delivery sequence
 
 1. Separate managed-local process startup from endpoint selection. **Implemented
-   on `ctxfs/network-endpoint-selection`; targeted local verification passed;
-   PR review and CI pending.**
+   in [PR #34](https://github.com/ctxd-dev/ctxd/pull/34); independent review and
+   targeted local verification passed; CI triggered.**
 2. Define the single-tenant principal, scope, and prefix authorization model.
 3. Implement server-side credential storage and administration.
 4. Add REST and MCP authentication/authorization middleware.
