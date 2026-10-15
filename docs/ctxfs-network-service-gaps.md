@@ -260,6 +260,9 @@ clients.
    in [PR #34](https://github.com/ctxd-dev/ctxd/pull/34); independent review and
    targeted local verification passed; CI triggered.**
 2. Define the single-tenant principal, scope, and prefix authorization model.
+   **Implemented in [PR #35](https://github.com/ctxd-dev/ctxd/pull/35);
+   independent review and targeted local verification passed; CI triggered.
+   Runtime credential and middleware integration remain in later items.**
 3. Implement server-side credential storage and administration.
 4. Add REST and MCP authentication/authorization middleware.
 5. Add endpoint-scoped client credentials and authenticated CLI/SDK transport.
