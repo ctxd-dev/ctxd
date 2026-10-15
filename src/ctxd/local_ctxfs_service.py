@@ -6,6 +6,7 @@ import ipaddress
 import json
 import os
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -176,12 +177,26 @@ def serve(
     advertised_url: str | None = None,
 ) -> None:
     """Serve ctxfs in the foreground using an explicitly safe transport policy."""
+    root = root.expanduser()
+    socket_path = (
+        socket_path.expanduser().resolve() if socket_path is not None else None
+    )
+    tls_cert = tls_cert.expanduser() if tls_cert is not None else None
+    tls_key = tls_key.expanduser() if tls_key is not None else None
+    credential_root = (
+        credential_root.expanduser() if credential_root is not None else None
+    )
+    host = host.strip()
+    if not host:
+        raise ValueError("host must not be empty")
     if socket_path is not None and host != DEFAULT_CTXFS_HOST:
         raise ValueError("--socket and --host cannot be used together")
     if socket_path is not None and (tls_cert is not None or tls_key is not None):
         raise ValueError("TLS options cannot be used with a Unix socket")
     if socket_path is not None and allow_network:
         raise ValueError("--allow-network cannot be used with a Unix socket")
+    if socket_path is not None and credential_root is not None:
+        raise ValueError("--credential-root cannot be used with a trusted Unix socket")
     if not 1 <= port <= 65535:
         raise ValueError("port must be between 1 and 65535")
 
@@ -192,16 +207,21 @@ def serve(
                 "non-loopback ctxfs serving requires explicit --allow-network"
             )
         if tls_cert is None or tls_key is None:
-            raise ValueError("non-loopback ctxfs serving requires --tls-cert and --tls-key")
+            raise ValueError(
+                "non-loopback ctxfs serving requires --tls-cert and --tls-key"
+            )
     if (tls_cert is None) != (tls_key is None):
         raise ValueError("--tls-cert and --tls-key must be provided together")
     if tls_cert is not None and tls_key is not None:
         _validate_tls_file(tls_cert, "TLS certificate")
-        _validate_tls_file(tls_key, "TLS private key")
+        _validate_tls_file(tls_key, "TLS private key", private=True)
 
     if advertised_url is not None:
         _validate_advertised_url(
-            advertised_url, socket_path=socket_path, tls_enabled=tls_cert is not None
+            advertised_url,
+            socket_path=socket_path,
+            tls_enabled=tls_cert is not None,
+            port=port,
         )
 
     _ensure_private_directory(root)
@@ -218,13 +238,21 @@ def serve(
     if advertised_url is not None:
         app.state.ctxfs_advertised_url = advertised_url
     if socket_path is not None:
-        _ensure_private_directory(socket_path.parent)
-        uvicorn.run(app, uds=str(socket_path), log_level="warning")
+        _ensure_private_socket_directory(socket_path.parent)
+        _validate_socket_target(socket_path)
+        with _private_umask():
+            uvicorn.run(
+                app,
+                uds=str(socket_path),
+                log_level="warning",
+                proxy_headers=False,
+            )
     else:
         run_kwargs: dict[str, object] = {
             "host": host,
             "port": port,
             "log_level": "warning",
+            "proxy_headers": False,
         }
         if tls_cert is not None and tls_key is not None:
             run_kwargs.update(ssl_certfile=str(tls_cert), ssl_keyfile=str(tls_key))
@@ -241,23 +269,81 @@ def _is_loopback_host(host: str) -> bool:
         return False
 
 
-def _validate_tls_file(path: Path, label: str) -> None:
-    expanded = path.expanduser()
-    if not expanded.is_file() or not os.access(expanded, os.R_OK):
-        raise ValueError(f"{label} must be a readable regular file: {expanded}")
+def _validate_tls_file(path: Path, label: str, *, private: bool = False) -> None:
+    if not path.is_file() or not os.access(path, os.R_OK):
+        raise ValueError(f"{label} must be a readable regular file: {path}")
+    if private and stat.S_IMODE(path.stat().st_mode) & 0o077:
+        raise ValueError(
+            f"{label} must not be accessible by group or other users: {path}"
+        )
 
 
 def _validate_advertised_url(
-    value: str, *, socket_path: Path | None, tls_enabled: bool
+    value: str, *, socket_path: Path | None, tls_enabled: bool, port: int
 ) -> None:
     parsed = urlparse(value)
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("advertised URL must not contain credentials")
+    if parsed.query or parsed.fragment or parsed.params:
+        raise ValueError(
+            "advertised URL must not contain parameters, a query, or a fragment"
+        )
     if socket_path is not None:
-        if parsed.scheme != "unix":
-            raise ValueError("a Unix-socket server must advertise a unix:// URL")
+        if parsed.scheme != "unix" or parsed.netloc or Path(parsed.path) != socket_path:
+            raise ValueError(
+                "a Unix-socket server must advertise its exact unix:// path"
+            )
         return
     expected_scheme = "https" if tls_enabled else "http"
-    if parsed.scheme != expected_scheme or not parsed.netloc:
+    if parsed.scheme != expected_scheme or parsed.hostname is None:
         raise ValueError(f"TCP server advertised URL must use {expected_scheme}://")
+    try:
+        advertised_port = parsed.port
+    except ValueError as exc:
+        raise ValueError("advertised URL contains an invalid port") from exc
+    effective_port = advertised_port
+    if effective_port is None:
+        effective_port = 443 if expected_scheme == "https" else 80
+    if effective_port != port:
+        raise ValueError(f"advertised URL must use the listening port {port}")
+    if parsed.path not in {"", "/"}:
+        raise ValueError("advertised URL must not contain a path")
+    if not tls_enabled and not _is_loopback_host(parsed.hostname):
+        raise ValueError("a plaintext server may advertise only a loopback URL")
+
+
+def _validate_socket_target(path: Path) -> None:
+    """Never replace an existing filesystem object or live socket implicitly."""
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return
+    kind = "Unix socket" if stat.S_ISSOCK(mode) else "filesystem object"
+    raise ValueError(f"refusing to replace existing {kind}: {path}")
+
+
+def _ensure_private_socket_directory(path: Path) -> None:
+    """Create a private parent, but never chmod a caller-owned directory."""
+    try:
+        mode = path.stat().st_mode
+    except FileNotFoundError:
+        path.mkdir(parents=True, mode=0o700)
+        return
+    if not stat.S_ISDIR(mode):
+        raise ValueError(f"Unix-socket parent must be a directory: {path}")
+    if stat.S_IMODE(mode) & 0o077:
+        raise ValueError(
+            f"Unix-socket parent must not be accessible by group or other users: {path}"
+        )
+
+
+@contextlib.contextmanager
+def _private_umask():
+    previous = os.umask(0o177)
+    try:
+        yield
+    finally:
+        os.umask(previous)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

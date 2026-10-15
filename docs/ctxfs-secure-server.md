@@ -9,7 +9,9 @@ ctxd server serve --root ~/.ctxd/ctxfs
 ```
 
 Choose `--socket PATH` for another trusted local socket. Unix-socket access is
-an explicit local trust boundary and does not accept bearer credentials.
+an explicit local trust boundary and does not accept bearer credentials. Its
+parent directory must be private to the current user; ctxd creates a missing
+parent privately but never changes permissions on an existing parent.
 
 An explicit TCP listener always uses the credential store for bearer
 authentication, including loopback listeners:
@@ -34,7 +36,8 @@ ctxd server serve \
   --advertised-url https://ctxfs.example.test:8443
 ```
 
-The certificate and private key must be readable regular files. Wildcard,
+The certificate and private key must be readable regular files, and the private
+key must not be accessible by group or other users. Wildcard,
 private-network, public, and hostname binds are all treated as network binds.
 `localhost`, IPv4 loopback addresses, and IPv6 `::1` are treated as loopback.
 Reverse-proxy TLS is not inferred and plaintext remote binds are rejected.
