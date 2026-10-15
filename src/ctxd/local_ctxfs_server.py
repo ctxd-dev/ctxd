@@ -25,7 +25,7 @@ from ctxfs import (
     authorize,
     local_socket_principal,
 )
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -83,18 +83,31 @@ def create_ctxfs_app(
     credential_root = root if credential_root is None else credential_root
     app = FastAPI(title="ctxd local ctxfs")
 
+    @app.middleware("http")
+    async def authenticate_request(request: Request, call_next: Callable[..., Any]):
+        """Authenticate before routing or request-body validation.
+
+        Keeping authentication at the application boundary makes bearer mode
+        fail closed for generated routes, unknown paths, and malformed bodies
+        as well as for the explicitly declared REST and MCP handlers.
+        """
+        if auth_mode is CtxfsAuthMode.TRUSTED_LOCAL:
+            principal = local_socket_principal(LocalSocketTrust.TRUSTED_ADMIN)
+        else:
+            token = _bearer_token(request.headers.get("authorization"))
+            if token is None:
+                return _auth_response("missing or invalid bearer credential")
+            with CredentialStore(credential_root) as credentials:
+                grant = credentials.verify(token)
+            principal = grant.principal() if grant is not None else None
+        if principal is None:
+            return _auth_response("missing or invalid bearer credential")
+        request.state.ctxfs_principal = principal
+        return await call_next(request)
+
     def require(scope: Scope) -> Callable[..., Principal]:
-        def dependency(authorization: str | None = Header(default=None)) -> Principal:
-            principal: Principal | None
-            if auth_mode is CtxfsAuthMode.TRUSTED_LOCAL:
-                principal = local_socket_principal(LocalSocketTrust.TRUSTED_ADMIN)
-            else:
-                token = _bearer_token(authorization)
-                if token is None:
-                    raise _auth_error(401, "missing or invalid bearer credential")
-                with CredentialStore(credential_root) as credentials:
-                    grant = credentials.verify(token)
-                principal = grant.principal() if grant is not None else None
+        def dependency(request: Request) -> Principal:
+            principal: Principal = request.state.ctxfs_principal
             # Submission prefix authorization is repeated against the actual
             # server-parsed payload below. Here, establish only that the
             # principal has at least one usable submit grant (or is admin).
@@ -126,13 +139,11 @@ def create_ctxfs_app(
     @app.post("/mcp")
     def ctxfs_mcp(
         message: dict[str, Any],
-        authorization: str | None = Header(default=None),
+        request: Request,
     ) -> Response:
         _authenticate_mcp(
             message,
-            auth_mode=auth_mode,
-            credential_root=credential_root,
-            authorization=authorization,
+            principal=request.state.ctxfs_principal,
         )
         response = handle_message(
             message,
@@ -288,11 +299,12 @@ def create_ctxfs_app(
                 # A credential can own multiple disjoint roots. Derive a stable
                 # server-side writer per granted root without trusting the
                 # caller's writer identifier.
-                writer_id = f"{principal.key_id or principal.principal_id}:{payload.writer_prefix}"
+                granted_prefix = _submission_prefix(principal, payload.writer_prefix)
+                writer_id = f"{principal.key_id or principal.principal_id}:{granted_prefix}"
                 store.register_prefix(
                     LOCAL_CTXFS_USER_ID,
                     writer_id,
-                    payload.writer_prefix,
+                    granted_prefix,
                 )
                 operations = [
                     _operation_from_payload(operation)
@@ -415,25 +427,25 @@ def _auth_error(status_code: int, detail: str) -> HTTPException:
     return HTTPException(status_code=status_code, detail=detail, headers=headers)
 
 
+def _auth_response(detail: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=401,
+        content={"detail": detail},
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
 def _authenticate_mcp(
     message: dict[str, Any],
     *,
-    auth_mode: CtxfsAuthMode,
-    credential_root: Path,
-    authorization: str | None,
+    principal: Principal,
 ) -> Principal:
-    if auth_mode is CtxfsAuthMode.TRUSTED_LOCAL:
-        principal = local_socket_principal(LocalSocketTrust.TRUSTED_ADMIN)
-    else:
-        token = _bearer_token(authorization)
-        if token is None:
-            raise _auth_error(401, "missing or invalid bearer credential")
-        with CredentialStore(credential_root) as credentials:
-            grant = credentials.verify(token)
-        principal = grant.principal() if grant is not None else None
-
     method = message.get("method")
-    required_scope = Scope.STATUS if method in {"initialize", "ping"} else Scope.READ
+    required_scope = (
+        Scope.STATUS
+        if method in {"initialize", "ping", "notifications/initialized"}
+        else Scope.READ
+    )
     decision = authorize(principal, required_scope)
     if not decision.allowed:
         raise _auth_error(
@@ -442,6 +454,19 @@ def _authenticate_mcp(
         )
     assert principal is not None
     return principal
+
+
+def _submission_prefix(principal: Principal, claimed_prefix: str) -> str:
+    """Resolve a request claim to the most-specific server-owned prefix grant."""
+    if Scope.ADMIN in principal.scopes:
+        return claimed_prefix
+    matches = [
+        prefix
+        for prefix in principal.prefixes
+        if claimed_prefix == prefix or claimed_prefix.startswith(f"{prefix}/")
+    ]
+    # Authorization has already established that at least one match exists.
+    return max(matches, key=len)
 
 
 def _operation_from_payload(payload: dict[str, Any]) -> CtxfsOperation:
