@@ -21,6 +21,7 @@ class AsyncClient:
         backend: str | None = None,
         ctxfs_endpoint: str | None = None,
         ctxfs_socket: str | None = None,
+        ctxfs_api_key: str | None = None,
         timeout: float = 30.0,
     ) -> None:
         self._backend = resolve_backend(backend)
@@ -36,6 +37,7 @@ class AsyncClient:
             AsyncCtxfsClient(
                 endpoint=ctxfs_endpoint,
                 socket_path=ctxfs_socket,
+                api_key=ctxfs_api_key,
                 timeout=timeout,
             )
             if self._backend == "ctxfs"
@@ -143,8 +145,8 @@ class AsyncClient:
         return await self.get_profile()
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        if self._backend == "ctxfs":
-            raise CtxdError("MCP tools are only available for the remote backend.")
+        if self._ctxfs_client is not None:
+            return await self._ctxfs_client.call_tool(name, arguments)
 
         request_body = {
             "jsonrpc": "2.0",

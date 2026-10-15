@@ -17,6 +17,7 @@ class Client:
         backend: str | None = None,
         ctxfs_endpoint: str | None = None,
         ctxfs_socket: str | None = None,
+        ctxfs_api_key: str | None = None,
         timeout: float = 30.0,
     ) -> None:
         self._async_client = AsyncClient(
@@ -25,6 +26,7 @@ class Client:
             backend=backend,
             ctxfs_endpoint=ctxfs_endpoint,
             ctxfs_socket=ctxfs_socket,
+            ctxfs_api_key=ctxfs_api_key,
             timeout=timeout,
         )
         self.files = FilesClient(self)
@@ -103,9 +105,7 @@ class FilesClient:
         return self._client._run(self._client._async_client.files.stat(path))
 
     def ls(self, path: str = "", *, limit: int | None = None):
-        return self._client._run(
-            self._client._async_client.files.ls(path, limit=limit)
-        )
+        return self._client._run(self._client._async_client.files.ls(path, limit=limit))
 
     def tree(
         self,

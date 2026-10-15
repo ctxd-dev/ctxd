@@ -1,14 +1,18 @@
 import json
 import os
 import tempfile
+from urllib.parse import urlsplit, urlunsplit
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from ctxd.secure_store import (
+    clear_ctxfs_api_key as clear_stored_ctxfs_api_key,
     clear_secret_bundle,
+    load_ctxfs_api_key,
     load_secret_bundle,
     save_secret_bundle,
+    save_ctxfs_api_key as save_stored_ctxfs_api_key,
 )
 
 DEFAULT_BASE_URL = "https://mcp.ctxd.dev"
@@ -106,6 +110,67 @@ def save_backend(backend: str) -> Path:
     return save_config(config)
 
 
+def save_ctxfs_endpoint(endpoint: str) -> Path:
+    normalized = normalize_ctxfs_endpoint(endpoint)
+    config = load_config()
+    config.pop("ctxfs_socket", None)
+    config["ctxfs_url"] = normalized
+    return save_config(config)
+
+
+def normalize_ctxfs_endpoint(endpoint: str) -> str:
+    value = endpoint.strip()
+    if not value:
+        raise ValueError("ctxfs endpoint cannot be empty")
+    if value.startswith("unix://"):
+        return _socket_endpoint(value.removeprefix("unix://"))
+    if "://" not in value:
+        raise ValueError("ctxfs endpoint must be an HTTP(S) URL or unix:// socket")
+    parsed = urlsplit(value)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("ctxfs endpoint must be an HTTP(S) URL or unix:// socket")
+    host = parsed.hostname.lower()
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    port = parsed.port
+    if port and not (
+        (parsed.scheme.lower() == "http" and port == 80)
+        or (parsed.scheme.lower() == "https" and port == 443)
+    ):
+        host = f"{host}:{port}"
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError(
+            "ctxfs endpoint must not contain credentials, query, or fragment"
+        )
+    return urlunsplit((parsed.scheme.lower(), host, parsed.path.rstrip("/"), "", ""))
+
+
+def resolve_ctxfs_api_key(
+    api_key: str | None = None, *, endpoint: str | None = None
+) -> str | None:
+    resolved_endpoint = normalize_ctxfs_endpoint(endpoint or resolve_ctxfs_endpoint())
+    if resolved_endpoint.startswith("unix://"):
+        return None
+    if api_key and api_key.strip():
+        return api_key.strip()
+    env_api_key = os.getenv("CTXD_CTXFS_API_KEY")
+    if env_api_key and env_api_key.strip():
+        return env_api_key.strip()
+    return load_ctxfs_api_key(endpoint=resolved_endpoint)
+
+
+def save_ctxfs_api_key(api_key: str, *, endpoint: str | None = None) -> None:
+    resolved_endpoint = normalize_ctxfs_endpoint(endpoint or resolve_ctxfs_endpoint())
+    if resolved_endpoint.startswith("unix://"):
+        raise ValueError("ctxfs API keys are not stored for trusted Unix sockets")
+    save_stored_ctxfs_api_key(endpoint=resolved_endpoint, api_key=api_key)
+
+
+def clear_ctxfs_api_key(*, endpoint: str | None = None) -> None:
+    resolved_endpoint = normalize_ctxfs_endpoint(endpoint or resolve_ctxfs_endpoint())
+    clear_stored_ctxfs_api_key(endpoint=resolved_endpoint)
+
+
 def resolve_ctxfs_endpoint(
     *,
     url: str | None = None,
@@ -120,7 +185,9 @@ def resolve_ctxfs_endpoint_details(
     socket_path: str | None = None,
 ) -> CtxfsEndpointResolution:
     if url and url.strip():
-        return CtxfsEndpointResolution(url.strip(), "argument-url", False)
+        return CtxfsEndpointResolution(
+            normalize_ctxfs_endpoint(url), "argument-url", False
+        )
     if socket_path and socket_path.strip():
         return CtxfsEndpointResolution(
             _socket_endpoint(socket_path.strip()), "argument-socket", False
@@ -128,7 +195,9 @@ def resolve_ctxfs_endpoint_details(
 
     env_url = os.getenv("CTXD_CTXFS_URL")
     if env_url and env_url.strip():
-        return CtxfsEndpointResolution(env_url.strip(), "environment-url", False)
+        return CtxfsEndpointResolution(
+            normalize_ctxfs_endpoint(env_url), "environment-url", False
+        )
 
     env_socket = os.getenv("CTXD_CTXFS_SOCKET")
     if env_socket and env_socket.strip():
@@ -139,7 +208,9 @@ def resolve_ctxfs_endpoint_details(
     config = load_config()
     config_url = config.get("ctxfs_url")
     if isinstance(config_url, str) and config_url.strip():
-        return CtxfsEndpointResolution(config_url.strip(), "config-url", False)
+        return CtxfsEndpointResolution(
+            normalize_ctxfs_endpoint(config_url), "config-url", False
+        )
 
     config_socket = config.get("ctxfs_socket")
     if isinstance(config_socket, str) and config_socket.strip():
@@ -161,8 +232,10 @@ def save_api_key(api_key: str, *, base_url: str | None = None) -> Path:
     resolved_base_url = resolve_base_url(base_url)
     config = load_config()
     config["base_url"] = resolved_base_url
+    bundle = load_secret_bundle(base_url=resolved_base_url, client_id=None)
+    bundle["api_key"] = api_key.strip()
     save_secret_bundle(
-        {"api_key": api_key.strip()},
+        bundle,
         base_url=resolved_base_url,
         client_id=None,
     )

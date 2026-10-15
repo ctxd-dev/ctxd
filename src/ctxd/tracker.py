@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 
-from ctxd.config import resolve_ctxfs_endpoint
+from ctxd.config import resolve_ctxfs_api_key, resolve_ctxfs_endpoint
 from ctxd.folders import FolderConfig, list_folders
 
 MAX_TRACKED_FILE_BYTES = 5_000_000
@@ -211,6 +211,8 @@ def _submit_operations(
             "operations": operations,
         },
     }
+    api_key = resolve_ctxfs_api_key(endpoint=endpoint)
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
     if endpoint.startswith("unix://"):
         socket_path = endpoint.removeprefix("unix://")
         transport = httpx.HTTPTransport(uds=socket_path)
@@ -219,10 +221,14 @@ def _submit_operations(
             transport=transport,
             timeout=30.0,
         ) as client:
-            response = client.post("/api/ctxfs/submissions", json=payload)
+            response = client.post(
+                "/api/ctxfs/submissions", json=payload, headers=headers
+            )
     else:
         with httpx.Client(base_url=endpoint.rstrip("/"), timeout=30.0) as client:
-            response = client.post("/api/ctxfs/submissions", json=payload)
+            response = client.post(
+                "/api/ctxfs/submissions", json=payload, headers=headers
+            )
     response.raise_for_status()
 
 

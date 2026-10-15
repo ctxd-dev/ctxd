@@ -274,6 +274,10 @@ clients.
    bearer credentials. Client credential transport and supported TLS serving
    remain in later items.**
 5. Add endpoint-scoped client credentials and authenticated CLI/SDK transport.
+   **Implemented in this change: HTTP endpoints resolve isolated credentials by
+   normalized endpoint, the CLI validates credentials before saving them, and
+   SDK reads, tracker submissions, and the stdio MCP bridge share authenticated
+   ctxfs transport. Trusted Unix sockets deliberately omit bearer credentials.**
 6. Add explicit network serving with TLS requirements and safe defaults.
 7. Add multi-process end-to-end, abuse, rotation, and recovery tests.
 8. Update public docs and declare the authenticated network topology supported.
