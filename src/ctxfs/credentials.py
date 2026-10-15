@@ -5,9 +5,12 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import os
+import re
 import secrets
 import sqlite3
+import stat
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +20,9 @@ from ctxfs.auth import CredentialGrant, Scope
 
 
 TOKEN_PREFIX = "ctxfs"
+KEY_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{16}$")
+SECRET_PATTERN = re.compile(r"^[A-Za-z0-9_-]{43}$")
+MAX_NAME_LENGTH = 128
 SCRYPT_N = 2**14
 SCRYPT_R = 8
 SCRYPT_P = 1
@@ -67,12 +73,27 @@ class CredentialStore:
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.root, 0o700)
         self.path = self.root / "credentials.sqlite3"
+        self._secure_database_file()
         self.connection = sqlite3.connect(self.path, timeout=10)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA journal_mode=WAL")
         self.connection.execute("PRAGMA busy_timeout=10000")
         self._migrate()
         os.chmod(self.path, 0o600)
+
+    def _secure_database_file(self) -> None:
+        """Create/open the database without an initial world-readable window."""
+
+        flags = os.O_CREAT | os.O_RDWR
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(self.path, flags, 0o600)
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise ValueError("credential database must be a regular file")
+            os.fchmod(descriptor, 0o600)
+        finally:
+            os.close(descriptor)
 
     def __enter__(self) -> CredentialStore:
         return self
@@ -128,9 +149,19 @@ class CredentialStore:
         clean_name = name.strip()
         if not clean_name:
             raise ValueError("credential name must be non-empty")
+        if len(clean_name) > MAX_NAME_LENGTH:
+            raise ValueError(
+                f"credential name must be at most {MAX_NAME_LENGTH} characters"
+            )
+        if any(
+            ord(character) < 32 or ord(character) == 127 for character in clean_name
+        ):
+            raise ValueError("credential name cannot contain control characters")
         normalized_scopes = frozenset(
             scope if isinstance(scope, Scope) else Scope(scope) for scope in scopes
         )
+        if not normalized_scopes:
+            raise ValueError("credential must have at least one scope")
         key_id = secrets.token_urlsafe(12)
         # 32 random bytes provides 256 bits of secret material.
         secret = secrets.token_urlsafe(32)
@@ -142,8 +173,10 @@ class CredentialStore:
             prefixes=tuple(prefixes),
         )
         now = time.time()
-        if expires_at is not None and expires_at <= now:
-            raise ValueError("credential expiry must be in the future")
+        if expires_at is not None and (
+            not math.isfinite(expires_at) or expires_at <= now
+        ):
+            raise ValueError("credential expiry must be a finite time in the future")
         salt = secrets.token_bytes(16)
         verifier = _derive(token, salt)
         credential = Credential(
@@ -185,6 +218,7 @@ class CredentialStore:
         return [_credential(row) for row in rows]
 
     def get(self, key_id: str) -> Credential:
+        _validate_key_id(key_id)
         row = self.connection.execute(
             "SELECT * FROM credentials WHERE key_id = ?", (key_id,)
         ).fetchone()
@@ -218,6 +252,7 @@ class CredentialStore:
         )
 
     def revoke(self, key_id: str) -> Credential:
+        _validate_key_id(key_id)
         now = time.time()
         with self.connection:
             cursor = self.connection.execute(
@@ -261,9 +296,19 @@ def _derive(token: str, salt: bytes) -> bytes:
 
 def _parse_token(token: str) -> str | None:
     parts = token.split(".")
-    if len(parts) != 3 or parts[0] != TOKEN_PREFIX or not parts[1] or not parts[2]:
+    if (
+        len(parts) != 3
+        or parts[0] != TOKEN_PREFIX
+        or KEY_ID_PATTERN.fullmatch(parts[1]) is None
+        or SECRET_PATTERN.fullmatch(parts[2]) is None
+    ):
         return None
     return parts[1]
+
+
+def _validate_key_id(key_id: str) -> None:
+    if KEY_ID_PATTERN.fullmatch(key_id) is None:
+        raise ValueError("invalid credential key ID")
 
 
 def _credential(row: sqlite3.Row) -> Credential:

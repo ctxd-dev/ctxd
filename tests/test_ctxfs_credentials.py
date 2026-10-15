@@ -65,17 +65,47 @@ def test_store_persists_metadata_across_connections(tmp_path) -> None:
 
 def test_scope_and_prefix_contract_is_enforced(tmp_path) -> None:
     with CredentialStore(tmp_path) as store:
+        with pytest.raises(ValueError, match="at least one scope"):
+            store.create(name="bad", scopes=[])
         with pytest.raises(ValueError, match="submit scope"):
             store.create(name="bad", scopes=["read"], prefixes=["Laptop"])
         with pytest.raises(ValueError, match="stand alone"):
             store.create(name="bad", scopes=["admin", "read"])
 
 
+def test_untrusted_metadata_and_malformed_tokens_are_rejected(tmp_path) -> None:
+    with CredentialStore(tmp_path) as store:
+        with pytest.raises(ValueError, match="control characters"):
+            store.create(name="unsafe\nname", scopes=["read"])
+        with pytest.raises(ValueError, match="finite time"):
+            store.create(name="reader", scopes=["read"], expires_at=float("nan"))
+        issued = store.create(name="reader", scopes=["read"])
+        key_id = issued.credential.key_id
+        assert store.verify(f"ctxfs.{key_id}.{'x' * 42}") is None
+        assert store.verify(f"ctxfs.{key_id}.{'x' * 44}") is None
+        assert store.verify(f"ctxfs.{'x' * 10000}.secret") is None
+        with pytest.raises(ValueError, match="invalid credential key ID"):
+            store.get("../credentials")
+
+
+def test_existing_database_permissions_are_tightened_before_use(tmp_path) -> None:
+    root = tmp_path / "server"
+    root.mkdir()
+    database = root / "credentials.sqlite3"
+    database.touch(mode=0o644)
+
+    with CredentialStore(root):
+        assert os.stat(database).st_mode & 0o777 == 0o600
+
+
 def test_cli_create_lists_and_revokes_without_redisplaying_token(
     tmp_path, capsys
 ) -> None:
     root_args = ["keys", "--root", str(tmp_path)]
-    assert main([*root_args, "create", "--name", "reader", "--scope", "read", "--json"]) == 0
+    assert (
+        main([*root_args, "create", "--name", "reader", "--scope", "read", "--json"])
+        == 0
+    )
     created = json.loads(capsys.readouterr().out)
     assert created["token"].startswith(f"ctxfs.{created['key_id']}.")
 
@@ -99,7 +129,9 @@ def test_two_store_connections_can_create_credentials(tmp_path) -> None:
             one.credential.key_id,
             two.credential.key_id,
         }
-        rows = sqlite3.connect(first.path).execute(
-            "SELECT COUNT(*) FROM credentials"
-        ).fetchone()
+        rows = (
+            sqlite3.connect(first.path)
+            .execute("SELECT COUNT(*) FROM credentials")
+            .fetchone()
+        )
         assert rows == (2,)
