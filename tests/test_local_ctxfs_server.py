@@ -2,11 +2,54 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from ctxd.local_ctxfs_server import create_ctxfs_app
+from ctxd.local_ctxfs_server import CtxfsAuthMode, create_ctxfs_app
+from ctxfs import CtxfsStore
+from ctxfs.credentials import CredentialStore
+
+
+def _bearer_client(tmp_path, *, scopes, prefixes=()):
+    root = tmp_path / "ctxfs"
+    with CredentialStore(root) as store:
+        issued = store.create(name="test", scopes=scopes, prefixes=prefixes)
+    client = TestClient(create_ctxfs_app(root, auth_mode=CtxfsAuthMode.BEARER))
+    return client, issued
+
+
+def _auth(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _submission(prefix: str, path: str | None = None) -> dict:
+    operations = []
+    if path is not None:
+        operations.append(
+            {
+                "kind": "put",
+                "path": path,
+                "source_key": f"source:{path}",
+                "source_version": "v1",
+                "doc_class": "editable",
+                "file_format": "text/plain",
+                "text": "secret",
+                "provenance": {"producer": "test", "producer_version": "1"},
+            }
+        )
+    return {
+        "writer_id": "caller-controlled-and-ignored",
+        "writer_prefix": prefix,
+        "submission": {
+            "run_id": "run-1",
+            "sequence": 1,
+            "is_full_scan": True,
+            "operations": operations,
+        },
+    }
 
 
 def test_local_ctxfs_server_accepts_submission_and_reads_content(tmp_path) -> None:
-    client = TestClient(create_ctxfs_app(tmp_path / "ctxfs"))
+    client = TestClient(
+        create_ctxfs_app(tmp_path / "ctxfs", auth_mode=CtxfsAuthMode.TRUSTED_LOCAL)
+    )
 
     response = client.post(
         "/api/ctxfs/submissions",
@@ -48,7 +91,9 @@ def test_local_ctxfs_server_accepts_submission_and_reads_content(tmp_path) -> No
 
 
 def test_local_ctxfs_server_rejects_user_id_query(tmp_path) -> None:
-    client = TestClient(create_ctxfs_app(tmp_path / "ctxfs"))
+    client = TestClient(
+        create_ctxfs_app(tmp_path / "ctxfs", auth_mode=CtxfsAuthMode.TRUSTED_LOCAL)
+    )
 
     response = client.get(
         "/api/ctxfs/tree",
@@ -59,7 +104,9 @@ def test_local_ctxfs_server_rejects_user_id_query(tmp_path) -> None:
 
 
 def test_local_ctxfs_server_returns_404_for_missing_stat_path(tmp_path) -> None:
-    client = TestClient(create_ctxfs_app(tmp_path / "ctxfs"))
+    client = TestClient(
+        create_ctxfs_app(tmp_path / "ctxfs", auth_mode=CtxfsAuthMode.TRUSTED_LOCAL)
+    )
 
     response = client.get(
         "/api/ctxfs/stat",
@@ -70,7 +117,9 @@ def test_local_ctxfs_server_returns_404_for_missing_stat_path(tmp_path) -> None:
 
 
 def test_local_ctxfs_server_rejects_malformed_submission_operation(tmp_path) -> None:
-    client = TestClient(create_ctxfs_app(tmp_path / "ctxfs"))
+    client = TestClient(
+        create_ctxfs_app(tmp_path / "ctxfs", auth_mode=CtxfsAuthMode.TRUSTED_LOCAL)
+    )
 
     response = client.post(
         "/api/ctxfs/submissions",
@@ -90,7 +139,9 @@ def test_local_ctxfs_server_rejects_malformed_submission_operation(tmp_path) -> 
 
 
 def test_local_ctxfs_server_rejects_overlapping_writer_prefix(tmp_path) -> None:
-    client = TestClient(create_ctxfs_app(tmp_path / "ctxfs"))
+    client = TestClient(
+        create_ctxfs_app(tmp_path / "ctxfs", auth_mode=CtxfsAuthMode.TRUSTED_LOCAL)
+    )
     first = client.post(
         "/api/ctxfs/submissions",
         json={
@@ -124,7 +175,9 @@ def test_local_ctxfs_server_rejects_overlapping_writer_prefix(tmp_path) -> None:
 
 
 def test_local_ctxfs_server_exposes_mcp_tool_discovery(tmp_path) -> None:
-    client = TestClient(create_ctxfs_app(tmp_path / "ctxfs"))
+    client = TestClient(
+        create_ctxfs_app(tmp_path / "ctxfs", auth_mode=CtxfsAuthMode.TRUSTED_LOCAL)
+    )
 
     response = client.post(
         "/mcp",
@@ -145,7 +198,9 @@ def test_local_ctxfs_server_exposes_mcp_tool_discovery(tmp_path) -> None:
 
 
 def test_local_ctxfs_mcp_reads_in_process(tmp_path) -> None:
-    client = TestClient(create_ctxfs_app(tmp_path / "ctxfs"))
+    client = TestClient(
+        create_ctxfs_app(tmp_path / "ctxfs", auth_mode=CtxfsAuthMode.TRUSTED_LOCAL)
+    )
     submission = client.post(
         "/api/ctxfs/submissions",
         json={
@@ -192,3 +247,186 @@ def test_local_ctxfs_mcp_reads_in_process(tmp_path) -> None:
     result = response.json()["result"]
     assert result["structuredContent"]["text"] == "hello ctxfs\n"
     assert result.get("isError") is None
+
+
+def test_bearer_mode_rejects_missing_malformed_invalid_and_revoked_keys(
+    tmp_path,
+) -> None:
+    client, issued = _bearer_client(tmp_path, scopes=["read"])
+
+    for headers in (
+        {},
+        {"Authorization": issued.token},
+        {"Authorization": "Basic abc"},
+        {"Authorization": "Bearer invalid"},
+    ):
+        response = client.get("/api/ctxfs/tree", headers=headers)
+        assert response.status_code == 401
+        assert response.headers["www-authenticate"] == "Bearer"
+
+    with CredentialStore(tmp_path / "ctxfs") as store:
+        store.revoke(issued.credential.key_id)
+    assert client.get("/api/ctxfs/tree", headers=_auth(issued.token)).status_code == 401
+
+
+def test_bearer_authentication_is_fail_closed_before_routing_and_validation(
+    tmp_path,
+) -> None:
+    client, issued = _bearer_client(tmp_path, scopes=["read"])
+
+    for path in ("/openapi.json", "/docs", "/not-a-route"):
+        response = client.get(path)
+        assert response.status_code == 401
+        assert response.headers["www-authenticate"] == "Bearer"
+
+    malformed = client.post(
+        "/mcp",
+        content="not-json",
+        headers={"Content-Type": "application/json"},
+    )
+    assert malformed.status_code == 401
+    assert malformed.headers["www-authenticate"] == "Bearer"
+
+    assert client.get("/not-a-route", headers=_auth(issued.token)).status_code == 404
+
+
+def test_bearer_mode_rejects_expired_key(tmp_path) -> None:
+    client, issued = _bearer_client(tmp_path, scopes=["read"])
+    with CredentialStore(tmp_path / "ctxfs") as store, store.connection:
+        store.connection.execute(
+            "UPDATE credentials SET expires_at = 0 WHERE key_id = ?",
+            (issued.credential.key_id,),
+        )
+    assert client.get("/api/ctxfs/tree", headers=_auth(issued.token)).status_code == 401
+
+
+def test_rest_scopes_are_enforced_without_query_or_body_bypass(tmp_path) -> None:
+    reader, read_key = _bearer_client(tmp_path, scopes=["read"])
+    assert (
+        reader.get("/api/ctxfs/tree", headers=_auth(read_key.token)).status_code == 200
+    )
+    assert reader.get("/health", headers=_auth(read_key.token)).status_code == 403
+    assert (
+        reader.post(
+            "/api/ctxfs/submissions?user_id=local",
+            headers=_auth(read_key.token),
+            json=_submission("Allowed"),
+        ).status_code
+        == 403
+    )
+
+    status_client, status_key = _bearer_client(tmp_path / "status", scopes=["status"])
+    assert (
+        status_client.get("/health", headers=_auth(status_key.token)).status_code == 200
+    )
+    assert (
+        status_client.get(
+            "/api/ctxfs/tree?user_id=local", headers=_auth(status_key.token)
+        ).status_code
+        == 403
+    )
+
+
+def test_submission_authority_comes_from_key_and_granted_prefix(tmp_path) -> None:
+    client, issued = _bearer_client(tmp_path, scopes=["submit"], prefixes=["Allowed"])
+    headers = _auth(issued.token)
+
+    accepted = client.post(
+        "/api/ctxfs/submissions",
+        headers=headers,
+        json={**_submission("Allowed", "Allowed/note.txt"), "user_id": "admin"},
+    )
+    assert accepted.status_code == 200
+
+    wrong_prefix = client.post(
+        "/api/ctxfs/submissions",
+        headers=headers,
+        json=_submission("Forbidden", "Forbidden/note.txt"),
+    )
+    assert wrong_prefix.status_code == 403
+    assert wrong_prefix.json()["detail"] == "prefix_not_granted"
+
+    path_escape = client.post(
+        "/api/ctxfs/submissions",
+        headers=headers,
+        json=_submission("Allowed", "AllowedElsewhere/note.txt"),
+    )
+    assert path_escape.status_code == 403
+
+
+def test_submission_writer_uses_server_grant_not_claimed_subprefix(tmp_path) -> None:
+    client, issued = _bearer_client(tmp_path, scopes=["submit"], prefixes=["Allowed"])
+
+    accepted = client.post(
+        "/api/ctxfs/submissions",
+        headers=_auth(issued.token),
+        json=_submission("Allowed/subdir", "Allowed/subdir/note.txt"),
+    )
+    assert accepted.status_code == 200
+
+    # The registered writer and ownership root come from the credential grant,
+    # rather than allowing request metadata to mint arbitrary writer roots.
+    store = CtxfsStore(tmp_path / "ctxfs")
+    try:
+        rows = store.connection.execute(
+            "SELECT writer_id, prefix FROM writer_prefixes"
+        ).fetchall()
+    finally:
+        store.close()
+    assert [(row["writer_id"], row["prefix"]) for row in rows] == [
+        (f"{issued.credential.key_id}:Allowed", "Allowed")
+    ]
+
+
+def test_mcp_and_rest_have_matching_authentication_and_scope_denials(tmp_path) -> None:
+    client, status_key = _bearer_client(tmp_path, scopes=["status"])
+    list_message = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+
+    assert client.get("/api/ctxfs/tree").status_code == 401
+    assert client.post("/mcp", json=list_message).status_code == 401
+    assert (
+        client.get("/api/ctxfs/tree", headers=_auth(status_key.token)).status_code
+        == 403
+    )
+    assert (
+        client.post(
+            "/mcp", headers=_auth(status_key.token), json=list_message
+        ).status_code
+        == 403
+    )
+
+    initialize = {"jsonrpc": "2.0", "id": 2, "method": "initialize"}
+    assert (
+        client.post(
+            "/mcp", headers=_auth(status_key.token), json=initialize
+        ).status_code
+        == 200
+    )
+    initialized = {
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized",
+    }
+    assert (
+        client.post(
+            "/mcp", headers=_auth(status_key.token), json=initialized
+        ).status_code
+        == 202
+    )
+
+    with CredentialStore(tmp_path / "ctxfs") as store:
+        read_key = store.create(name="reader", scopes=["read"])
+    call = {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {"name": "tree", "arguments": {}},
+    }
+    assert (
+        client.post(
+            "/mcp", headers=_auth(read_key.token), json=list_message
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post("/mcp", headers=_auth(read_key.token), json=call).status_code == 200
+    )
