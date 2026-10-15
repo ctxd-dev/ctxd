@@ -3,14 +3,15 @@ title: 'Local tracker'
 ---
 
 The local tracker watches folders you select and keeps their ctxfs representation
-current. The tracker and ctxfs server are separate per-user processes; starting
-the tracker ensures ctxfs is running first.
+current. The tracker and ctxfs server are separate processes. Starting the
+tracker starts ctxfs only when the effective endpoint is the default managed
+local socket; an explicitly configured endpoint is checked instead.
 
 ## Requirements
 
 - macOS or Linux
 - Python 3.11 or 3.12 with `pip`
-- A local folder you want ctxd to track
+- A local folder if this machine will contribute content
 
 ## Install
 
@@ -31,9 +32,14 @@ ctxd tracker start
 ctxd backend status
 ```
 
-Selecting the backend starts ctxfs. `tracker start` launches the tracker as a
-detached process for the current user. Start it again after a reboot; automatic
-login registration is not currently installed.
+With the default endpoint, selecting the backend starts ctxfs. `tracker start`
+launches the tracker as a detached process for the current user. Both commands
+check an explicitly configured `CTXD_CTXFS_URL` or `CTXD_CTXFS_SOCKET` without
+starting another server. Start the tracker again after a reboot; automatic login
+registration is not currently installed.
+
+The tracker can run with zero configured folders. Add folders only on machines
+that should contribute local content.
 
 ## Add folders
 

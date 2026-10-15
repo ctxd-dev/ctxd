@@ -15,7 +15,7 @@ from ctxd.config import (
     clear_api_key,
     resolve_api_key,
     resolve_backend,
-    resolve_ctxfs_endpoint,
+    resolve_ctxfs_endpoint_details,
     save_api_key,
     save_backend,
 )
@@ -529,11 +529,19 @@ def _handle_backend(args: argparse.Namespace) -> int:
     if args.backend_command == "set":
         backend = resolve_backend(args.backend)
         if backend == "ctxfs":
-            service = ensure_started()
+            resolution = resolve_ctxfs_endpoint_details()
+            if resolution.managed_local:
+                service = ensure_started()
+            else:
+                CtxfsClient(endpoint=resolution.endpoint, timeout=2.0).status()
+                service = None
             save_backend(backend)
             print(f"Backend set to {_display_backend(backend)}.")
-            print(f"ctxfs endpoint: {service['endpoint']}")
-            print(f"ctxfs root: {service['root']}")
+            print(f"ctxfs endpoint: {resolution.endpoint}")
+            print(f"ctxfs endpoint source: {resolution.source}")
+            print(f"ctxfs managed locally: {resolution.managed_local}")
+            if service is not None:
+                print(f"ctxfs root: {service['root']}")
         else:
             save_backend(backend)
             print(f"Backend set to {_display_backend(backend)}.")
@@ -543,8 +551,9 @@ def _handle_backend(args: argparse.Namespace) -> int:
         backend = resolve_backend()
         print(f"Backend: {_display_backend(backend)}")
         if backend == "ctxfs":
-            service = ctxfs_service_status()
-            endpoint = resolve_ctxfs_endpoint()
+            resolution = resolve_ctxfs_endpoint_details()
+            endpoint = resolution.endpoint
+            service = ctxfs_service_status() if resolution.managed_local else None
             healthy = False
             error = None
             try:
@@ -552,10 +561,16 @@ def _handle_backend(args: argparse.Namespace) -> int:
                 healthy = True
             except Exception as exc:
                 error = str(exc)
-            print(f"ctxfs running: {service['running']}")
+            print(f"ctxfs managed locally: {resolution.managed_local}")
+            print(f"ctxfs endpoint source: {resolution.source}")
+            if resolution.managed_local:
+                assert service is not None
+                print(f"ctxfs running: {service['running']}")
             print(f"ctxfs healthy: {healthy}")
             print(f"ctxfs endpoint: {endpoint}")
-            print(f"ctxfs root: {service['root']}")
+            if resolution.managed_local:
+                assert service is not None
+                print(f"ctxfs root: {service['root']}")
             if error:
                 print(f"ctxfs error: {error}")
         else:
