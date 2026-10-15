@@ -13,7 +13,7 @@ Check the active URL with:
 ctxd backend status
 ```
 
-The managed Unix socket uses local peer trust. Every HTTP request requires
+The managed Unix socket uses local peer trust. Every TCP HTTP request requires
 `Authorization: Bearer <token>`, including loopback. Network clients must use
 HTTPS with a certificate they trust. REST and HTTP MCP use the same
 authentication and authorization policy.
@@ -29,10 +29,12 @@ authentication and authorization policy.
 | Read a file | `GET /api/ctxfs/read` | `path`, `max_bytes` |
 | Read line range | `GET /api/ctxfs/read-lines` | `path`, `start_line`, `end_line` |
 | Match exact text | `GET /api/ctxfs/grep` | `pattern`, `prefix`, `limit` |
+| Submit tracker changes | `POST /api/ctxfs/submissions` | Tracker-managed submission payload |
 | MCP JSON-RPC | `POST /mcp` | MCP `initialize`, `ping`, `tools/list`, `tools/call` |
 
 REST and MCP paths use canonical ctxfs paths beneath `local-files/<ROOT_ID>/`.
-The CLI resolves human-readable folder aliases before calling these interfaces.
+The CLI resolves human-readable aliases only for folders configured on that
+client. Other clients use canonical paths.
 
 ## Examples
 
@@ -47,7 +49,11 @@ Use these CLI commands for normal access. They handle the effective local or
 network endpoint, endpoint-scoped bearer credential, and folder aliases.
 
 For MCP, configure `ctxd-mcp` as described in the [ctxfs guide](/docs/ctxfs), or
-connect an HTTP-capable MCP client to `/mcp` on the effective endpoint.
+connect an HTTP-capable MCP client to `/mcp` on the effective endpoint. HTTP MCP
+clients need `status` for initialization and ping and `read` for tool discovery
+and calls. The submission endpoint requires `submit` and enforces the
+credential's prefix grants; it is used by the tracker rather than as a general
+write API.
 
 ## Bounds and identity
 

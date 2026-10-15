@@ -131,10 +131,14 @@ def test_public_docs_describe_supported_authenticated_network_topology() -> None
         "multi-tenant isolation is supported",
         "installs a background supervisor",
         "Loopback requests do not require",
+        "shown by `ctxd folders list`",
     )
     for claim in unsafe_or_unsupported:
         assert claim not in public_text
     assert "Do not disable\ncertificate verification" in public_text
+    assert "`ctxd folders list` does not\nprint generated prefixes" in public_text
+    assert "Other clients use canonical paths" in public_text
+    assert "MCP reader therefore normally\nneeds both `read` and `status`" in public_text
 
 
 def test_documented_network_command_groups_exist_in_cli_help() -> None:

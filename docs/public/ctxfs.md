@@ -70,9 +70,11 @@ ctxd keys --root /srv/ctxfs create --name writer --scope submit --scope status \
 ctxd keys --root /srv/ctxfs list
 ```
 
-The token is shown once. Use the actual prefix from `ctxd folders list`; repeat
-`--prefix` when a writer may submit multiple roots. On a reader or writer
-client:
+The token is shown once. On the writer client, `ctxd folders add` records each
+folder's generated `prefix` in `~/.ctxd/config.json` (or the file selected by
+`CTXD_CONFIG_PATH`). Give the server administrator the exact prefix; repeat
+`--prefix` when a writer may submit multiple roots. `ctxd folders list` does not
+print generated prefixes. On a reader or writer client:
 
 ```bash
 ctxd login --endpoint https://ctxfs.example.net:8443
@@ -81,10 +83,12 @@ ctxd status --endpoint https://ctxfs.example.net:8443
 ctxd backend status
 ```
 
-`read` permits REST reads and MCP tools. `submit` permits changes only beneath
-its server-assigned prefix grants. `status` permits health checks, and `admin`
-grants every capability. Unix sockets use explicit local peer trust; every TCP
-request requires a bearer credential, including loopback.
+`read` permits REST reads plus MCP tool discovery and calls. `submit` permits
+changes only beneath its server-assigned prefix grants. `status` permits health
+checks and MCP initialization and ping; an HTTP MCP reader therefore normally
+needs both `read` and `status`. `admin` grants every capability. Unix sockets
+use explicit local peer trust; every TCP request requires a bearer credential,
+including loopback.
 
 To rotate a credential, run `ctxd keys --root /srv/ctxfs rotate KEY_ID`.
 Rotation revokes the old key immediately and prints the replacement once. On
@@ -106,8 +110,10 @@ For example, if root `abc123` tracks `~/Projects/example`, then `~/Projects/exam
 local-files/abc123/docs/runbook.md
 ```
 
-The CLI resolves configured folder names to these prefixes, so agents can use a
-path such as `Example/docs/runbook.md` without knowing the generated root ID.
+The CLI resolves folder names configured on that client to these prefixes, so a
+writer can use a path such as `Example/docs/runbook.md`. A separate reader that
+does not have that local folder configuration uses the canonical
+`local-files/<ROOT_ID>/docs/runbook.md` path instead.
 
 ## Read operations
 

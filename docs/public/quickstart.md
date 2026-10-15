@@ -61,7 +61,9 @@ ctxd files grep "deployment" --prefix Documents --limit 20
 ```
 
 Tracked files are synchronized while the tracker runs. The same commands read
-from a configured authenticated network endpoint.
+from a configured authenticated network endpoint when the client has the same
+folder alias. A separate reader uses canonical paths such as
+`local-files/<ROOT_ID>/notes.md`.
 
 ## Next steps
 

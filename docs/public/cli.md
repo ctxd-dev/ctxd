@@ -119,7 +119,10 @@ ctxd keys --root /srv/ctxfs revoke KEY_ID
 Creation and rotation print a bearer token once. Transfer it securely; only a
 verifier is retained. `admin` grants all capabilities and cannot be combined
 with other scopes. Prefix grants apply to `submit` credentials; grant each
-`local-files/ROOT_ID` shown by `ctxd folders list` that the tracker may update.
+`local-files/ROOT_ID` stored as the folder's `prefix` in the writer client's
+`~/.ctxd/config.json` that the tracker may update. If `CTXD_CONFIG_PATH` is set,
+inspect that file instead. `ctxd folders list` prints names and source paths,
+not generated prefixes.
 
 ## MCP
 
