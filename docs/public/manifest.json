@@ -1,12 +1,12 @@
 {
-  "schemaVersion": 1,
-  "files": [
-    "api.md",
-    "cli.md",
-    "ctxfs.md",
-    "local-tracker.md",
-    "overview.md",
-    "quickstart.md",
-    "security.md"
+  "schemaVersion": 2,
+  "documents": [
+    { "file": "overview.md", "slug": "overview", "title": "Overview", "group": "Getting Started", "order": 10 },
+    { "file": "quickstart.md", "slug": "quickstart", "title": "Quickstart", "group": "Getting Started", "order": 20 },
+    { "file": "local-tracker.md", "slug": "local-tracker", "title": "Local tracker", "group": "Guides", "order": 30 },
+    { "file": "ctxfs.md", "slug": "ctxfs", "title": "ctxfs", "group": "Guides", "order": 40 },
+    { "file": "cli.md", "slug": "cli", "title": "CLI", "group": "Guides", "order": 50 },
+    { "file": "api.md", "slug": "api", "title": "Local API", "group": "Reference", "order": 60 },
+    { "file": "security.md", "slug": "security", "title": "Security and data", "group": "Reference", "order": 70 }
   ]
 }

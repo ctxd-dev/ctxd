@@ -12,6 +12,8 @@ A scheduled reconciliation in `ctxd-landing` catches missed dispatches.
 Do not edit the generated copies in `ctxd-landing/src/content/docs/docs` directly.
 The sync process replaces that directory from this one.
 
-`manifest.json` is an allowlist. Add or remove a page there in the same change as
-the Markdown file. Navigation and route changes in `ctxd-landing` still require a
-coordinated landing change.
+`manifest.json` is the schema-v2 publication and navigation catalog. Each entry
+declares its source file, public slug, navigation title, group, and reading
+order. Add or remove a page there in the same change as the Markdown file.
+Public route changes in `ctxd-landing` still require a coordinated landing
+change; catalog discovery alone never authorizes a route.
