@@ -263,7 +263,10 @@ clients.
    **Implemented in [PR #35](https://github.com/ctxd-dev/ctxd/pull/35);
    independent review and targeted local verification passed; CI triggered.
    Runtime credential and middleware integration remain in later items.**
-3. Implement server-side credential storage and administration.
+3. Implement server-side credential storage and administration. **Implemented
+   in [PR #36](https://github.com/ctxd-dev/ctxd/pull/36); independent review and
+   targeted local verification passed; CI triggered. HTTP middleware and client
+   credential transport remain in later items.**
 4. Add REST and MCP authentication/authorization middleware.
 5. Add endpoint-scoped client credentials and authenticated CLI/SDK transport.
 6. Add explicit network serving with TLS requirements and safe defaults.

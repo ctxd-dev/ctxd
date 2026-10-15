@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import webbrowser
+from pathlib import Path
 from typing import Sequence
 
 from ctxd import Client, CtxdError
@@ -28,11 +29,14 @@ from ctxd.folders import (
 )
 from ctxd.ctxfs_client import CtxfsClient
 from ctxd.local_ctxfs_service import ensure_started, status as ctxfs_service_status
+from ctxd.local_ctxfs_service import default_paths as default_ctxfs_paths
 from ctxd.tracker_service import (
     start as tracker_start,
     status as tracker_status,
     stop as tracker_stop,
 )
+from ctxfs.auth import Scope
+from ctxfs.credentials import CredentialStore, IssuedCredential
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -56,6 +60,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _handle_folders(args)
         if args.command == "tracker":
             return _handle_tracker(args)
+        if args.command == "keys":
+            return _handle_keys(args)
 
         client = Client(backend=getattr(args, "backend", None))
 
@@ -336,7 +342,92 @@ def _build_parser() -> argparse.ArgumentParser:
     tracker_subparsers.add_parser("stop", help="Stop local folder tracking.")
     tracker_subparsers.add_parser("status", help="Show local tracker status.")
 
+    keys_parser = subparsers.add_parser(
+        "keys",
+        help="Administer credentials in a local ctxfs server data root.",
+        description="Administer credentials in a local ctxfs server data root.",
+    )
+    keys_parser.add_argument(
+        "--root",
+        type=Path,
+        default=default_ctxfs_paths().root,
+        help="ctxfs server data root (defaults to the managed local server root).",
+    )
+    keys_subparsers = keys_parser.add_subparsers(
+        dest="keys_command", metavar="<keys-command>", required=True
+    )
+    keys_create = keys_subparsers.add_parser("create", help="Create a credential.")
+    keys_create.add_argument("--name", required=True)
+    keys_create.add_argument(
+        "--scope", action="append", required=True, choices=tuple(scope.value for scope in Scope)
+    )
+    keys_create.add_argument("--prefix", action="append", default=[])
+    keys_create.add_argument("--expires-at", type=float)
+    keys_create.add_argument("--json", action="store_true")
+    keys_list = keys_subparsers.add_parser("list", help="List credential metadata.")
+    keys_list.add_argument("--json", action="store_true")
+    keys_revoke = keys_subparsers.add_parser("revoke", help="Revoke a credential.")
+    keys_revoke.add_argument("key_id")
+    keys_revoke.add_argument("--json", action="store_true")
+    keys_rotate = keys_subparsers.add_parser("rotate", help="Rotate a credential.")
+    keys_rotate.add_argument("key_id")
+    keys_rotate.add_argument("--json", action="store_true")
+
     return parser
+
+
+def _handle_keys(args: argparse.Namespace) -> int:
+    with CredentialStore(args.root) as store:
+        if args.keys_command == "create":
+            issued = store.create(
+                name=args.name,
+                scopes=args.scope,
+                prefixes=args.prefix,
+                expires_at=args.expires_at,
+            )
+            return _emit_issued_credential(issued, as_json=args.json)
+        if args.keys_command == "list":
+            records = [credential.as_dict() for credential in store.list()]
+            if args.json:
+                print(json.dumps(records, sort_keys=True))
+            elif not records:
+                print("No ctxfs credentials.")
+            else:
+                for record in records:
+                    scopes = ",".join(record["scopes"])
+                    state = "active" if record["active"] else "inactive"
+                    print(f"{record['key_id']}\t{record['name']}\t{scopes}\t{state}")
+            return 0
+        if args.keys_command == "revoke":
+            credential = store.revoke(args.key_id)
+            return _emit_key_metadata(credential.as_dict(), as_json=args.json)
+        if args.keys_command == "rotate":
+            issued = store.rotate(args.key_id)
+            return _emit_issued_credential(issued, as_json=args.json)
+    raise ValueError(f"Unknown keys command: {args.keys_command}")
+
+
+def _emit_issued_credential(issued: IssuedCredential, *, as_json: bool) -> int:
+    credential = issued.credential
+    payload = {**credential.as_dict(), "token": issued.token}
+    if as_json:
+        print(json.dumps(payload, sort_keys=True))
+    else:
+        print(f"key id: {credential.key_id}")
+        print(f"name: {credential.name}")
+        print(f"token: {issued.token}")
+        print("Store this token now. It will not be shown again.")
+    return 0
+
+
+def _emit_key_metadata(payload: dict[str, object], *, as_json: bool) -> int:
+    if as_json:
+        print(json.dumps(payload, sort_keys=True))
+    else:
+        print(f"key id: {payload['key_id']}")
+        print(f"name: {payload['name']}")
+        print(f"active: {str(payload['active']).lower()}")
+    return 0
 
 
 def _add_backend_override(parser: argparse.ArgumentParser) -> None:
