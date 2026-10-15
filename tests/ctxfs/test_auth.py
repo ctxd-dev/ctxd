@@ -28,7 +28,7 @@ def test_matching_scope_allows_non_mutating_capability(scope):
     decision = authorize(_grant(scope), scope)
 
     assert decision.allowed
-    assert decision.http_status == 200
+    assert decision.http_status is None
     assert decision.principal_id == "client-1"
     assert decision.key_id == "key-1"
 
@@ -72,6 +72,11 @@ def test_local_socket_trust_is_explicit_and_maps_to_admin():
     assert authorize(principal, Scope.ADMIN).allowed
 
 
+def test_unknown_local_socket_policy_cannot_grant_admin():
+    with pytest.raises(ValueError, match="LocalSocketTrust"):
+        local_socket_principal("unknown")  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize(
     ("scopes", "prefixes", "message"),
     [
@@ -97,3 +102,43 @@ def test_request_metadata_cannot_expand_server_derived_grants():
 
     assert not decision.allowed
     assert decision.denial_reason is DenialReason.PREFIX_NOT_GRANTED
+
+
+def test_direct_principal_construction_cannot_bypass_grant_invariants():
+    with pytest.raises(ValueError, match="require the submit scope"):
+        Principal(
+            principal_id="client-1",
+            key_id="key-1",
+            kind=PrincipalKind.API_KEY,
+            scopes=frozenset({Scope.READ}),
+            prefixes=("writer/root",),
+        )
+
+    with pytest.raises(ValueError, match="Scope values"):
+        Principal(
+            principal_id="client-1",
+            key_id="key-1",
+            kind=PrincipalKind.API_KEY,
+            scopes=frozenset({"read"}),  # type: ignore[arg-type]
+        )
+
+    with pytest.raises(ValueError, match="PrincipalKind"):
+        Principal(
+            principal_id="client-1",
+            key_id="key-1",
+            kind="api_key",  # type: ignore[arg-type]
+            scopes=frozenset({Scope.READ}),
+        )
+
+
+def test_authorize_requires_a_declared_scope_value():
+    with pytest.raises(ValueError, match="required_scope"):
+        authorize(_grant(Scope.READ), "read")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("path", ["C:/ctxfs", "safe/line\nbreak", "safe/\x7fbreak"])
+def test_authorization_rejects_paths_that_ctxfs_storage_rejects(path):
+    writer = _grant(Scope.SUBMIT, prefixes=("safe",))
+
+    with pytest.raises(ValueError, match="normalized relative ctxfs paths"):
+        authorize(writer, Scope.SUBMIT, path=path)

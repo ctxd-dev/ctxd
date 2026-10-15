@@ -11,6 +11,9 @@ from dataclasses import dataclass
 from enum import Enum
 
 
+_ASCII_LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
 class Scope(str, Enum):
     STATUS = "status"
     READ = "read"
@@ -49,13 +52,7 @@ class CredentialGrant:
     def __post_init__(self) -> None:
         _require_identifier(self.principal_id, "principal_id")
         _require_identifier(self.key_id, "key_id")
-        normalized = tuple(_normalize_prefix(prefix) for prefix in self.prefixes)
-        if len(set(normalized)) != len(normalized):
-            raise ValueError("prefix grants must be unique")
-        if normalized and Scope.SUBMIT not in self.scopes:
-            raise ValueError("prefix grants require the submit scope")
-        if Scope.ADMIN in self.scopes and len(self.scopes) != 1:
-            raise ValueError("admin is an all-capability scope and must stand alone")
+        normalized = _validate_grants(self.scopes, self.prefixes)
         object.__setattr__(self, "prefixes", normalized)
 
     def principal(self) -> Principal:
@@ -80,10 +77,16 @@ class Principal:
 
     def __post_init__(self) -> None:
         _require_identifier(self.principal_id, "principal_id")
+        if not isinstance(self.kind, PrincipalKind):
+            raise ValueError("kind must be a PrincipalKind value")
         if self.kind is PrincipalKind.API_KEY and not self.key_id:
             raise ValueError("API-key principals require a key_id")
         if self.kind is PrincipalKind.LOCAL_SOCKET and self.key_id is not None:
             raise ValueError("local-socket principals cannot have a key_id")
+        if self.key_id is not None:
+            _require_identifier(self.key_id, "key_id")
+        normalized = _validate_grants(self.scopes, self.prefixes)
+        object.__setattr__(self, "prefixes", normalized)
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,9 +98,11 @@ class AuthorizationDecision:
     denial_reason: DenialReason | None = None
 
     @property
-    def http_status(self) -> int:
+    def http_status(self) -> int | None:
+        """Return a denial response status, or ``None`` when routing may continue."""
+
         if self.allowed:
-            return 200
+            return None
         if self.denial_reason is DenialReason.UNAUTHENTICATED:
             return 401
         return 403
@@ -106,6 +111,8 @@ class AuthorizationDecision:
 def local_socket_principal(policy: LocalSocketTrust) -> Principal | None:
     """Return the trusted local principal selected by an explicit server policy."""
 
+    if not isinstance(policy, LocalSocketTrust):
+        raise ValueError("policy must be a LocalSocketTrust value")
     if policy is LocalSocketTrust.DISABLED:
         return None
     return Principal(
@@ -128,6 +135,8 @@ def authorize(
     such as ``writer_id`` and ``writer_prefix`` are intentionally absent.
     """
 
+    if not isinstance(required_scope, Scope):
+        raise ValueError("required_scope must be a Scope value")
     if principal is None:
         return _denied(required_scope, DenialReason.UNAUTHENTICATED)
     if Scope.ADMIN in principal.scopes:
@@ -167,6 +176,21 @@ def _require_identifier(value: str, field: str) -> None:
         raise ValueError(f"{field} must be a non-empty, trimmed string")
 
 
+def _validate_grants(
+    scopes: frozenset[Scope], prefixes: tuple[str, ...]
+) -> tuple[str, ...]:
+    if any(not isinstance(scope, Scope) for scope in scopes):
+        raise ValueError("scopes must contain Scope values")
+    normalized = tuple(_normalize_prefix(prefix) for prefix in prefixes)
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("prefix grants must be unique")
+    if normalized and Scope.SUBMIT not in scopes:
+        raise ValueError("prefix grants require the submit scope")
+    if Scope.ADMIN in scopes and len(scopes) != 1:
+        raise ValueError("admin is an all-capability scope and must stand alone")
+    return normalized
+
+
 def _normalize_prefix(prefix: str) -> str:
     normalized = _normalize_path(prefix)
     if not normalized:
@@ -175,14 +199,24 @@ def _normalize_prefix(prefix: str) -> str:
 
 
 def _normalize_path(path: str) -> str:
-    if not path or path.startswith("/") or path.endswith("/"):
+    if (
+        not path
+        or path.startswith("/")
+        or path.endswith("/")
+        or _has_control_character(path)
+        or path.startswith(tuple(f"{letter}:" for letter in _ASCII_LETTERS))
+    ):
         raise ValueError(
-            "paths must be non-empty relative paths without a trailing slash"
+            "paths must be normalized relative ctxfs paths"
         )
     parts = path.split("/")
     if any(part in {"", ".", ".."} for part in parts):
         raise ValueError("paths must be normalized relative paths")
     return "/".join(parts)
+
+
+def _has_control_character(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
 
 
 def _within(path: str, prefix: str) -> bool:
