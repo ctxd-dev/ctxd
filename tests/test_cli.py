@@ -1242,3 +1242,52 @@ def test_cli_tracker_stop_outputs_status() -> None:
     assert exit_code == 0
     stop.assert_called_once_with()
     assert stdout.getvalue() == "Tracker stopped.\n"
+
+
+def test_cli_server_serve_defaults_to_managed_unix_socket() -> None:
+    with patch("ctxd.cli.ctxfs_serve") as serve, patch(
+        "ctxd.cli.default_ctxfs_paths"
+    ) as paths:
+        paths.return_value.root = Path("/tmp/ctxfs-root")
+        paths.return_value.socket_path = Path("/tmp/ctxfs.sock")
+        exit_code = main(["server", "serve"])
+
+    assert exit_code == 0
+    serve.assert_called_once_with(
+        Path("/tmp/ctxfs-root"),
+        socket_path=Path("/tmp/ctxfs.sock"),
+        host="127.0.0.1",
+        port=8765,
+        allow_network=False,
+        tls_cert=None,
+        tls_key=None,
+        credential_root=None,
+        advertised_url=None,
+    )
+
+
+def test_cli_server_serve_passes_explicit_network_configuration(tmp_path: Path) -> None:
+    cert = tmp_path / "cert.pem"
+    key = tmp_path / "key.pem"
+    with patch("ctxd.cli.ctxfs_serve") as serve:
+        exit_code = main(
+            [
+                "server",
+                "serve",
+                "--root",
+                str(tmp_path / "data"),
+                "--host",
+                "::",
+                "--port",
+                "9443",
+                "--allow-network",
+                "--tls-cert",
+                str(cert),
+                "--tls-key",
+                str(key),
+            ]
+        )
+    assert exit_code == 0
+    assert serve.call_args.kwargs["host"] == "::"
+    assert serve.call_args.kwargs["allow_network"] is True
+    assert serve.call_args.kwargs["tls_cert"] == cert
