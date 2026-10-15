@@ -3,8 +3,8 @@ title: 'Overview'
 
 ---
 
-ctxd makes indexed content available as agent-readable context. It uses two
-pieces:
+ctxd makes indexed content available as agent-readable context. A deployment
+can use two pieces:
 
 1. The optional **local tracker** watches only the folders you choose and sends
    their content to ctxfs.
@@ -22,21 +22,23 @@ can run and serve its existing store without a local tracker or tracked folder.
 3. **Keep contributed folders current.** The tracker detects file changes and
    updates ctxfs.
 4. **Read through the ctxd CLI** with `ls`, `tree`, `glob`, `stat`, `read`,
-   `read-lines`, and `grep` operations.
+   `read-lines`, and `grep` operations. The CLI uses the configured local or
+   network ctxfs endpoint.
 
-## Local architecture
+## Architecture
 
 | Component | Role | Default location |
 | --- | --- | --- |
 | [Local tracker](/docs/local-tracker) | Watches selected folders and applies changes | Per-user background process |
 | [ctxfs](/docs/ctxfs) | Stores indexed content and exposes filesystem-shaped paths | `~/.ctxd/ctxfs` |
 | [CLI](/docs/cli) | Configures folders and reads ctxfs | `ctxd` |
-| [Local API](/docs/api) | Provides REST and MCP access | `~/.ctxd/local/ctxfs.sock` |
+| [ctxfs API](/docs/api) | Provides REST and MCP access | Unix socket or HTTPS endpoint |
 
 The tracker and ctxfs server are separate processes. With the default managed
 local endpoint, starting the tracker ensures ctxfs is running. An explicitly
-configured endpoint is checked without starting another server. The supported
-managed-local workflow does not require an API key.
+configured endpoint is checked without starting another server. The managed
+local Unix socket uses operating-system peer trust; HTTP endpoints require a
+scoped API key, and non-loopback serving requires HTTPS.
 
 ## What agents can do
 

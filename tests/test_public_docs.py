@@ -1,5 +1,7 @@
 import json
 from pathlib import Path
+import subprocess
+import sys
 
 
 PUBLIC_DOCS = Path(__file__).parents[1] / "docs" / "public"
@@ -45,6 +47,7 @@ def test_public_docs_have_starlight_frontmatter() -> None:
         text = (PUBLIC_DOCS / name).read_text()
         assert text.startswith("---\n"), name
         assert "\ntitle:" in text.split("---", 2)[1], name
+        assert f"title: '{document['title']}'" in text.split("---", 2)[1], name
 
 
 def test_cli_docs_only_list_supported_local_environment_variables() -> None:
@@ -64,7 +67,6 @@ def test_public_docs_do_not_reference_removed_cli_commands() -> None:
         "ctxd config show",
         "ctxd daemon ",
         "ctxd service ",
-        "ctxd status",
         "ctxd folders repair-move",
         "ctxd version",
     )
@@ -100,3 +102,70 @@ def test_overview_describes_optional_tracker_and_endpoint_ownership() -> None:
     assert "ctxfs server\ncan run and serve its existing store" in text
     assert "Read through the ctxd CLI" in text
     assert "Starting the tracker ensures the ctxfs server is running" not in text
+
+
+def test_public_docs_describe_supported_authenticated_network_topology() -> None:
+    public_text = "\n".join(path.read_text() for path in PUBLIC_DOCS.rglob("*.md"))
+
+    required = (
+        "ctxd server serve --root",
+        "--allow-network --tls-cert",
+        "ctxd keys --root /srv/ctxfs create",
+        "--scope read",
+        "--scope submit",
+        "ctxd keys --root /srv/ctxfs rotate KEY_ID",
+        "ctxd keys --root /srv/ctxfs revoke KEY_ID",
+        "ctxd backend set ctxfs --endpoint https://",
+        "ctxd login --endpoint https://",
+        "ctxd status --endpoint https://",
+        "ctxd logout --endpoint",
+        "CTXD_CTXFS_API_KEY",
+        "REST and MCP",
+        "single ctxfs namespace",
+    )
+    for claim in required:
+        assert claim in public_text
+
+    unsafe_or_unsupported = (
+        "Certificate verification is optional",
+        "multi-tenant isolation is supported",
+        "installs a background supervisor",
+        "Loopback requests do not require",
+        "shown by `ctxd folders list`",
+    )
+    for claim in unsafe_or_unsupported:
+        assert claim not in public_text
+    assert "Do not disable\ncertificate verification" in public_text
+    assert "`ctxd folders list` does not\nprint generated prefixes" in public_text
+    assert "Other clients use canonical paths" in public_text
+    assert "MCP reader therefore normally\nneeds both `read` and `status`" in public_text
+
+
+def test_documented_network_command_groups_exist_in_cli_help() -> None:
+    commands = (
+        ("server", "serve"),
+        ("keys", "create"),
+        ("keys", "list"),
+        ("keys", "rotate"),
+        ("keys", "revoke"),
+        ("backend", "set"),
+        ("backend", "status"),
+        ("login",),
+        ("status",),
+        ("logout",),
+    )
+    for command in commands:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from ctxd.cli import main; raise SystemExit(main())",
+                *command,
+                "--help",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, (command, result.stderr)
+        assert f"ctxd {' '.join(command)}" in result.stdout

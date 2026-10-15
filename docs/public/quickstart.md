@@ -3,7 +3,8 @@ title: 'Quickstart'
 
 ---
 
-Track a local folder and read it through ctxfs.
+Start with managed local ctxfs, optionally track a folder, and read it through
+the CLI. See the [ctxfs guide](/docs/ctxfs) for a network deployment.
 
 ## 1. Install
 
@@ -25,15 +26,16 @@ This saves the backend and starts ctxfs at the default managed local endpoint.
 If you explicitly configured an endpoint, the command checks that server
 instead. The managed-local workflow does not require an API key.
 
-## 3. Track a folder
+## 3. Optionally track a folder
 
 ```bash
 ctxd folders add ~/Documents --name Documents
 ctxd folders list
 ```
 
-The name `Documents` is also its CLI path alias. Nothing outside folders you
-add is tracked.
+Do this only when this machine should contribute content. The name `Documents`
+is also its CLI path alias. A server can instead run with an empty store or
+serve content submitted by other authorized tracker clients.
 
 ## 4. Verify the service
 
@@ -58,10 +60,13 @@ ctxd files read Documents/notes.md
 ctxd files grep "deployment" --prefix Documents --limit 20
 ```
 
-Files are synchronized automatically while the service runs. You do not need to upload them or connect a remote application.
+Tracked files are synchronized while the tracker runs. The same commands read
+from a configured authenticated network endpoint when the client has the same
+folder alias. A separate reader uses canonical paths such as
+`local-files/<ROOT_ID>/notes.md`.
 
 ## Next steps
 
 - [Local tracker](/docs/local-tracker) for upgrades, moves, logs, and removal
 - [ctxfs](/docs/ctxfs) for the filesystem model and all seven reads
-- [Local API](/docs/api) for endpoint parameters
+- [ctxfs API](/docs/api) for endpoint parameters and authentication
