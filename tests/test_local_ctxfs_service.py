@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import stat
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-from ctxd.local_ctxfs_service import LocalCtxfsPaths, ensure_started, status
+from ctxd.local_ctxfs_server import CtxfsAuthMode
+from ctxd.local_ctxfs_service import LocalCtxfsPaths, ensure_started, serve, status
 
 
 class _Process:
@@ -117,9 +117,7 @@ def test_ensure_started_raises_when_process_never_becomes_healthy(
         "ctxd.local_ctxfs_service.CtxfsClient"
     ) as client_class, patch(
         "ctxd.local_ctxfs_service.subprocess.Popen", return_value=process
-    ), patch(
-        "ctxd.local_ctxfs_service.time.monotonic", side_effect=[0, 0, 6]
-    ):
+    ), patch("ctxd.local_ctxfs_service.time.monotonic", side_effect=[0, 0, 6]):
         client_class.return_value.status.side_effect = RuntimeError("not ready")
         with pytest.raises(RuntimeError, match="did not become healthy"):
             ensure_started(paths)
@@ -142,3 +140,30 @@ def test_status_ignores_stale_or_unrelated_pid(tmp_path: Path) -> None:
     assert result["running"] is False
     assert result["healthy"] is False
     client_class.assert_not_called()
+
+
+def test_serve_selects_auth_policy_from_transport(tmp_path: Path) -> None:
+    app = object()
+    socket_path = tmp_path / "run" / "ctxfs.sock"
+    with patch(
+        "ctxd.local_ctxfs_service.create_ctxfs_app", return_value=app
+    ) as create_app, patch("ctxd.local_ctxfs_service.uvicorn.run") as run:
+        serve(tmp_path / "unix-root", socket_path=socket_path)
+        create_app.assert_called_once_with(
+            tmp_path / "unix-root", auth_mode=CtxfsAuthMode.TRUSTED_LOCAL
+        )
+        run.assert_called_once_with(app, uds=str(socket_path), log_level="warning")
+
+    with patch(
+        "ctxd.local_ctxfs_service.create_ctxfs_app", return_value=app
+    ) as create_app, patch("ctxd.local_ctxfs_service.uvicorn.run") as run:
+        serve(tmp_path / "tcp-root")
+        create_app.assert_called_once_with(
+            tmp_path / "tcp-root", auth_mode=CtxfsAuthMode.BEARER
+        )
+        run.assert_called_once_with(
+            app,
+            host="127.0.0.1",
+            port=8765,
+            log_level="warning",
+        )

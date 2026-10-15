@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from enum import Enum
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -18,10 +19,17 @@ from ctxfs import (
     ReadLinesResult,
     ReadResult,
     Submission,
+    LocalSocketTrust,
+    Principal,
+    Scope,
+    authorize,
+    local_socket_principal,
 )
-from fastapi import Depends, FastAPI, HTTPException, Query, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from ctxfs.credentials import CredentialStore
 
 from ctxd.mcp_server import handle_message
 
@@ -43,10 +51,19 @@ class CtxfsSubmissionBody(BaseModel):
 class CtxfsSubmissionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    # These fields remain transport metadata for compatibility with existing
+    # trackers.  They never select the authenticated principal or its grants.
     user_id: str | None = None
     writer_id: str = Field(min_length=1)
     writer_prefix: str = Field(min_length=1)
     submission: CtxfsSubmissionBody
+
+
+class CtxfsAuthMode(str, Enum):
+    """Explicit authentication policy selected by the server transport."""
+
+    TRUSTED_LOCAL = "trusted_local"
+    BEARER = "bearer"
 
 
 def default_ctxfs_root(local_home: Path | None = None) -> Path:
@@ -55,16 +72,68 @@ def default_ctxfs_root(local_home: Path | None = None) -> Path:
     return local_home.expanduser().parent / "ctxfs"
 
 
-def create_ctxfs_app(root: Path) -> FastAPI:
+def create_ctxfs_app(
+    root: Path,
+    *,
+    auth_mode: CtxfsAuthMode,
+    credential_root: Path | None = None,
+) -> FastAPI:
+    if not isinstance(auth_mode, CtxfsAuthMode):
+        raise ValueError("auth_mode must be a CtxfsAuthMode value")
+    credential_root = root if credential_root is None else credential_root
     app = FastAPI(title="ctxd local ctxfs")
 
+    def require(scope: Scope) -> Callable[..., Principal]:
+        def dependency(authorization: str | None = Header(default=None)) -> Principal:
+            principal: Principal | None
+            if auth_mode is CtxfsAuthMode.TRUSTED_LOCAL:
+                principal = local_socket_principal(LocalSocketTrust.TRUSTED_ADMIN)
+            else:
+                token = _bearer_token(authorization)
+                if token is None:
+                    raise _auth_error(401, "missing or invalid bearer credential")
+                with CredentialStore(credential_root) as credentials:
+                    grant = credentials.verify(token)
+                principal = grant.principal() if grant is not None else None
+            # Submission prefix authorization is repeated against the actual
+            # server-parsed payload below. Here, establish only that the
+            # principal has at least one usable submit grant (or is admin).
+            authorization_path = (
+                principal.prefixes[0]
+                if scope is Scope.SUBMIT and principal.prefixes
+                else None
+            )
+            decision = authorize(principal, scope, path=authorization_path)
+            if not decision.allowed:
+                raise _auth_error(
+                    decision.http_status or 403,
+                    decision.denial_reason.value
+                    if decision.denial_reason
+                    else "denied",
+                )
+            assert principal is not None
+            return principal
+
+        return dependency
+
     @app.get("/health")
-    def health() -> dict[str, Any]:
+    def health(
+        _principal: Principal = Depends(require(Scope.STATUS)),
+    ) -> dict[str, Any]:
         store_root = _with_store(root, lambda store: str(store.root))
         return {"ok": True, "root": store_root}
 
     @app.post("/mcp")
-    def ctxfs_mcp(message: dict[str, Any]) -> Response:
+    def ctxfs_mcp(
+        message: dict[str, Any],
+        authorization: str | None = Header(default=None),
+    ) -> Response:
+        _authenticate_mcp(
+            message,
+            auth_mode=auth_mode,
+            credential_root=credential_root,
+            authorization=authorization,
+        )
         response = handle_message(
             message,
             lambda name, arguments: _execute_ctxfs_tool(root, name, arguments),
@@ -76,6 +145,7 @@ def create_ctxfs_app(root: Path) -> FastAPI:
     @app.get("/api/ctxfs/stat", response_model=Entry)
     def stat_ctxfs_path(
         path: str = Query(..., min_length=1),
+        _principal: Principal = Depends(require(Scope.READ)),
         _identity_guard: None = Depends(_reject_user_id_query),
     ) -> Entry:
         return _with_store(
@@ -86,6 +156,7 @@ def create_ctxfs_app(root: Path) -> FastAPI:
     @app.get("/api/ctxfs/ls", response_model=Bounded[DirectoryEntry])
     def list_ctxfs_path(
         path: str = "",
+        _principal: Principal = Depends(require(Scope.READ)),
         _identity_guard: None = Depends(_reject_user_id_query),
         limit: int = Query(1000, ge=1, le=5000),
     ) -> Bounded[DirectoryEntry]:
@@ -102,6 +173,7 @@ def create_ctxfs_app(root: Path) -> FastAPI:
     @app.get("/api/ctxfs/tree", response_model=Bounded[DirectoryEntry])
     def tree_ctxfs_path(
         prefix: str = "",
+        _principal: Principal = Depends(require(Scope.READ)),
         _identity_guard: None = Depends(_reject_user_id_query),
         depth: int | None = Query(default=None, ge=0),
         limit: int = Query(1000, ge=1, le=5000),
@@ -121,6 +193,7 @@ def create_ctxfs_app(root: Path) -> FastAPI:
     def glob_ctxfs_paths(
         pattern: str = Query(..., min_length=1),
         prefix: str = "",
+        _principal: Principal = Depends(require(Scope.READ)),
         _identity_guard: None = Depends(_reject_user_id_query),
         limit: int = Query(1000, ge=1, le=5000),
     ) -> Bounded[DirectoryEntry]:
@@ -138,6 +211,7 @@ def create_ctxfs_app(root: Path) -> FastAPI:
     @app.get("/api/ctxfs/read", response_model=ReadResult)
     def read_ctxfs_path(
         path: str = Query(..., min_length=1),
+        _principal: Principal = Depends(require(Scope.READ)),
         _identity_guard: None = Depends(_reject_user_id_query),
         max_bytes: int = Query(1_000_000, ge=1, le=5_000_000),
     ) -> ReadResult:
@@ -156,6 +230,7 @@ def create_ctxfs_app(root: Path) -> FastAPI:
         path: str = Query(..., min_length=1),
         start_line: int = Query(..., ge=1),
         end_line: int = Query(..., ge=1),
+        _principal: Principal = Depends(require(Scope.READ)),
         _identity_guard: None = Depends(_reject_user_id_query),
     ) -> ReadLinesResult:
         return _with_store(
@@ -173,6 +248,7 @@ def create_ctxfs_app(root: Path) -> FastAPI:
     def grep_ctxfs_paths(
         pattern: str = Query(..., min_length=1),
         prefix: str = "",
+        _principal: Principal = Depends(require(Scope.READ)),
         _identity_guard: None = Depends(_reject_user_id_query),
         limit: int = Query(1000, ge=1, le=5000),
     ) -> Bounded[GrepMatch]:
@@ -193,20 +269,36 @@ def create_ctxfs_app(root: Path) -> FastAPI:
     @app.post("/api/ctxfs/submissions", response_model=Submission)
     def submit_ctxfs_operations(
         payload: CtxfsSubmissionRequest,
+        principal: Principal = Depends(require(Scope.SUBMIT)),
         _identity_guard: None = Depends(_reject_user_id_query),
     ) -> Submission:
         def submit(store: CtxfsStore) -> Submission:
             try:
+                try:
+                    prefix_decision = authorize(
+                        principal, Scope.SUBMIT, path=payload.writer_prefix
+                    )
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+                if not prefix_decision.allowed:
+                    raise HTTPException(
+                        status_code=prefix_decision.http_status or 403,
+                        detail=prefix_decision.denial_reason.value,
+                    )
+                # A credential can own multiple disjoint roots. Derive a stable
+                # server-side writer per granted root without trusting the
+                # caller's writer identifier.
+                writer_id = f"{principal.key_id or principal.principal_id}:{payload.writer_prefix}"
                 store.register_prefix(
                     LOCAL_CTXFS_USER_ID,
-                    payload.writer_id,
+                    writer_id,
                     payload.writer_prefix,
                 )
                 operations = [
                     _operation_from_payload(operation)
                     for operation in payload.submission.operations
                 ]
-                return store.submit(LOCAL_CTXFS_USER_ID, payload.writer_id, operations)
+                return store.submit(LOCAL_CTXFS_USER_ID, writer_id, operations)
             except PermissionError as exc:
                 raise HTTPException(status_code=403, detail=str(exc)) from exc
             except (ValidationError, ValueError) as exc:
@@ -305,6 +397,51 @@ def _reject_user_id_query(user_id: str | None = Query(default=None)) -> None:
             status_code=400,
             detail="ctxfs local user identity is derived by the service",
         )
+
+
+def _bearer_token(authorization: str | None) -> str | None:
+    if authorization is None:
+        return None
+    scheme, separator, token = authorization.partition(" ")
+    if separator != " " or scheme.lower() != "bearer" or not token:
+        return None
+    if token.strip() != token or " " in token:
+        return None
+    return token
+
+
+def _auth_error(status_code: int, detail: str) -> HTTPException:
+    headers = {"WWW-Authenticate": "Bearer"} if status_code == 401 else None
+    return HTTPException(status_code=status_code, detail=detail, headers=headers)
+
+
+def _authenticate_mcp(
+    message: dict[str, Any],
+    *,
+    auth_mode: CtxfsAuthMode,
+    credential_root: Path,
+    authorization: str | None,
+) -> Principal:
+    if auth_mode is CtxfsAuthMode.TRUSTED_LOCAL:
+        principal = local_socket_principal(LocalSocketTrust.TRUSTED_ADMIN)
+    else:
+        token = _bearer_token(authorization)
+        if token is None:
+            raise _auth_error(401, "missing or invalid bearer credential")
+        with CredentialStore(credential_root) as credentials:
+            grant = credentials.verify(token)
+        principal = grant.principal() if grant is not None else None
+
+    method = message.get("method")
+    required_scope = Scope.STATUS if method in {"initialize", "ping"} else Scope.READ
+    decision = authorize(principal, required_scope)
+    if not decision.allowed:
+        raise _auth_error(
+            decision.http_status or 403,
+            decision.denial_reason.value if decision.denial_reason else "denied",
+        )
+    assert principal is not None
+    return principal
 
 
 def _operation_from_payload(payload: dict[str, Any]) -> CtxfsOperation:

@@ -16,6 +16,7 @@ import uvicorn
 
 from ctxd.ctxfs_client import CtxfsClient
 from ctxd.local_ctxfs_server import (
+    CtxfsAuthMode,
     DEFAULT_CTXFS_HOST,
     DEFAULT_CTXFS_PORT,
     create_ctxfs_app,
@@ -162,7 +163,11 @@ def stop(paths: LocalCtxfsPaths | None = None) -> dict[str, object]:
 
 def serve(root: Path, *, socket_path: Path | None = None) -> None:
     _ensure_private_directory(root)
-    app = create_ctxfs_app(root)
+    # Trust is a property of the private managed Unix socket, never of TCP.
+    auth_mode = (
+        CtxfsAuthMode.TRUSTED_LOCAL if socket_path is not None else CtxfsAuthMode.BEARER
+    )
+    app = create_ctxfs_app(root, auth_mode=auth_mode)
     if socket_path is not None:
         _ensure_private_directory(socket_path.parent)
         uvicorn.run(app, uds=str(socket_path), log_level="warning")

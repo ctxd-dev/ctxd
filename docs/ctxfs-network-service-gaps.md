@@ -267,7 +267,12 @@ clients.
    in [PR #36](https://github.com/ctxd-dev/ctxd/pull/36); independent review and
    targeted local verification passed; CI triggered. HTTP middleware and client
    credential transport remain in later items.**
-4. Add REST and MCP authentication/authorization middleware.
+4. Add REST and MCP authentication/authorization middleware. **Implemented in
+   this PR: managed Unix sockets use an explicit trusted-local principal; HTTP
+   requires server-verified bearer credentials, applies status/read/submit
+   scopes consistently to REST and MCP, and derives writer authority from the
+   authenticated key and its granted prefixes. Client credential transport and
+   supported TLS serving remain in later items.**
 5. Add endpoint-scoped client credentials and authenticated CLI/SDK transport.
 6. Add explicit network serving with TLS requirements and safe defaults.
 7. Add multi-process end-to-end, abuse, rotation, and recovery tests.
