@@ -37,6 +37,38 @@ def load_secret_bundle(*, base_url: str, client_id: str | None) -> dict[str, Any
     return payload
 
 
+def load_ctxfs_api_key(*, endpoint: str) -> str | None:
+    payload = load_secret_bundle(base_url="", client_id=None)
+    credentials = payload.get("ctxfs_api_keys", {})
+    if not isinstance(credentials, dict):
+        return None
+    value = credentials.get(endpoint)
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def save_ctxfs_api_key(*, endpoint: str, api_key: str) -> None:
+    payload = load_secret_bundle(base_url="", client_id=None)
+    credentials = payload.get("ctxfs_api_keys")
+    if not isinstance(credentials, dict):
+        credentials = {}
+    credentials[endpoint] = api_key.strip()
+    payload["ctxfs_api_keys"] = credentials
+    save_secret_bundle(payload, base_url="", client_id=None)
+
+
+def clear_ctxfs_api_key(*, endpoint: str) -> None:
+    payload = load_secret_bundle(base_url="", client_id=None)
+    credentials = payload.get("ctxfs_api_keys")
+    if not isinstance(credentials, dict) or endpoint not in credentials:
+        return
+    del credentials[endpoint]
+    if credentials:
+        payload["ctxfs_api_keys"] = credentials
+    else:
+        payload.pop("ctxfs_api_keys", None)
+    save_secret_bundle(payload, base_url="", client_id=None)
+
+
 def save_secret_bundle(
     bundle: dict[str, Any], *, base_url: str, client_id: str | None
 ) -> None:
@@ -62,6 +94,16 @@ def save_secret_bundle(
 def clear_secret_bundle(*, base_url: str, client_id: str | None) -> None:
     del base_url, client_id
     path = get_credentials_path()
+    try:
+        payload = json.loads(path.read_text())
+    except FileNotFoundError:
+        return
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CtxdAuthError("Stored ctxd credentials are invalid.") from exc
+    if isinstance(payload, dict) and "ctxfs_api_keys" in payload:
+        retained = {"ctxfs_api_keys": payload["ctxfs_api_keys"]}
+        save_secret_bundle(retained, base_url="", client_id=None)
+        return
     try:
         path.unlink()
     except FileNotFoundError:

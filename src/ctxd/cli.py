@@ -14,11 +14,15 @@ from ctxd import Client, CtxdError
 from ctxd._metadata import SDK_VERSION
 from ctxd.config import (
     clear_api_key,
+    clear_ctxfs_api_key,
     resolve_api_key,
     resolve_backend,
+    resolve_ctxfs_api_key,
     resolve_ctxfs_endpoint_details,
     save_api_key,
     save_backend,
+    save_ctxfs_api_key,
+    save_ctxfs_endpoint,
 )
 from ctxd.folders import (
     add_folder,
@@ -120,20 +124,29 @@ def _build_parser() -> argparse.ArgumentParser:
         required=True,
     )
 
-    subparsers.add_parser(
+    login_parser = subparsers.add_parser(
         "login",
         help="Store an API key for future CLI and SDK calls.",
         description="Prompt for a ctxd API key and store it for future CLI and SDK calls.",
     )
-    subparsers.add_parser(
+    login_parser.add_argument(
+        "--endpoint", help="Authenticate to this ctxfs HTTP endpoint."
+    )
+    logout_parser = subparsers.add_parser(
         "logout",
         help="Remove the stored API key from this machine.",
         description="Clear the locally stored ctxd API key.",
     )
-    subparsers.add_parser(
+    logout_parser.add_argument(
+        "--endpoint", help="Remove credentials for this ctxfs HTTP endpoint."
+    )
+    status_parser = subparsers.add_parser(
         "status",
         help="Show whether ctxd authentication is configured.",
         description="Check whether an API key is available from the environment or stored credentials.",
+    )
+    status_parser.add_argument(
+        "--endpoint", help="Show authentication status for this ctxfs HTTP endpoint."
     )
 
     install_app_parser = subparsers.add_parser(
@@ -166,6 +179,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Set the default backend.",
     )
     backend_set_parser.add_argument("backend", choices=("remote", "hosted", "ctxfs"))
+    backend_set_parser.add_argument(
+        "--endpoint", help="HTTP(S) URL or unix:// socket for the ctxfs backend."
+    )
     backend_subparsers.add_parser("status", help="Print backend status.")
 
     config_parser = subparsers.add_parser(
@@ -359,7 +375,10 @@ def _build_parser() -> argparse.ArgumentParser:
     keys_create = keys_subparsers.add_parser("create", help="Create a credential.")
     keys_create.add_argument("--name", required=True)
     keys_create.add_argument(
-        "--scope", action="append", required=True, choices=tuple(scope.value for scope in Scope)
+        "--scope",
+        action="append",
+        required=True,
+        choices=tuple(scope.value for scope in Scope),
     )
     keys_create.add_argument("--prefix", action="append", default=[])
     keys_create.add_argument("--expires-at", type=float)
@@ -455,9 +474,8 @@ def _quote_shell_stripped_text_token(token: str) -> str:
         return token
 
     stripped_value = value.strip()
-    if (
-        stripped_value.startswith(("\"", "'", "("))
-        or stripped_value.endswith(("\"", "'", ")"))
+    if stripped_value.startswith(('"', "'", "(")) or stripped_value.endswith(
+        ('"', "'", ")")
     ):
         return token
 
@@ -466,7 +484,28 @@ def _quote_shell_stripped_text_token(token: str) -> str:
 
 
 def _handle_login(args: argparse.Namespace) -> int:
-    del args
+    if args.endpoint:
+        endpoint = resolve_ctxfs_endpoint_details(url=args.endpoint).endpoint
+        if endpoint.startswith("unix://"):
+            raise ValueError(
+                "ctxfs login is only supported for HTTP(S) endpoints; "
+                "Unix sockets use local peer trust."
+            )
+        api_key, should_save = _resolve_ctxfs_login_api_key(endpoint)
+        if not api_key:
+            raise ValueError(
+                "Missing ctxfs API key. Set `CTXD_CTXFS_API_KEY` or run "
+                "`ctxd login --endpoint URL` in an interactive terminal."
+            )
+        CtxfsClient(
+            endpoint=endpoint, api_key=api_key, timeout=5.0
+        ).validate_authentication()
+        if should_save:
+            save_ctxfs_api_key(api_key, endpoint=endpoint)
+            print(f"Saved ctxfs authentication for {endpoint}.")
+        else:
+            print(f"ctxfs authentication is valid for {endpoint}.")
+        return 0
     api_key, should_save = _resolve_login_api_key()
     if not api_key:
         raise ValueError(
@@ -484,14 +523,28 @@ def _handle_login(args: argparse.Namespace) -> int:
 
 
 def _handle_logout(args: argparse.Namespace) -> int:
-    del args
+    if args.endpoint:
+        endpoint = resolve_ctxfs_endpoint_details(url=args.endpoint).endpoint
+        clear_ctxfs_api_key(endpoint=endpoint)
+        print(f"Cleared stored ctxfs authentication for {endpoint}.")
+        return 0
     clear_api_key()
     print("Cleared stored ctxd API key.")
     return 0
 
 
 def _handle_status(args: argparse.Namespace) -> int:
-    del args
+    if args.endpoint:
+        endpoint = resolve_ctxfs_endpoint_details(url=args.endpoint).endpoint
+        api_key = resolve_ctxfs_api_key(endpoint=endpoint)
+        if not api_key:
+            print(f"Not authenticated to ctxfs at {endpoint}.", file=sys.stderr)
+            return 1
+        CtxfsClient(
+            endpoint=endpoint, api_key=api_key, timeout=5.0
+        ).validate_authentication()
+        print(f"Authenticated to ctxfs at {endpoint}.")
+        return 0
     try:
         api_key = resolve_api_key()
     except CtxdError as exc:
@@ -540,6 +593,25 @@ def _prompt_api_key() -> str | None:
     if api_key and api_key.strip():
         return api_key.strip()
     return None
+
+
+def _resolve_ctxfs_login_api_key(endpoint: str) -> tuple[str | None, bool]:
+    env_api_key = os.getenv("CTXD_CTXFS_API_KEY")
+    if env_api_key and env_api_key.strip():
+        return env_api_key.strip(), False
+    try:
+        stored_api_key = resolve_ctxfs_api_key(endpoint=endpoint)
+    except CtxdError:
+        stored_api_key = None
+    if stored_api_key:
+        return stored_api_key, False
+    if not sys.stdin.isatty():
+        return None, False
+    try:
+        value = getpass.getpass("ctxfs API key: ")
+    except (EOFError, KeyboardInterrupt):
+        return None, False
+    return (value.strip(), True) if value and value.strip() else (None, False)
 
 
 def _handle_install_app(args: argparse.Namespace) -> int:
@@ -619,14 +691,20 @@ def _handle_backend(args: argparse.Namespace) -> int:
 
     if args.backend_command == "set":
         backend = resolve_backend(args.backend)
+        if args.endpoint and backend != "ctxfs":
+            raise ValueError("`--endpoint` is only supported with the ctxfs backend.")
         if backend == "ctxfs":
-            resolution = resolve_ctxfs_endpoint_details()
+            resolution = resolve_ctxfs_endpoint_details(url=args.endpoint)
             if resolution.managed_local:
                 service = ensure_started()
             else:
-                CtxfsClient(endpoint=resolution.endpoint, timeout=2.0).status()
+                CtxfsClient(
+                    endpoint=resolution.endpoint, timeout=2.0
+                ).validate_authentication()
                 service = None
             save_backend(backend)
+            if args.endpoint:
+                save_ctxfs_endpoint(args.endpoint)
             print(f"Backend set to {_display_backend(backend)}.")
             print(f"ctxfs endpoint: {resolution.endpoint}")
             print(f"ctxfs endpoint source: {resolution.source}")

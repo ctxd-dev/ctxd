@@ -6,16 +6,20 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from ctxd import SDK_NAME, AsyncClient, Client, __version__, get_user_agent
+from ctxd import SDK_NAME, AsyncClient, Client, CtxfsClient, __version__, get_user_agent
 from ctxd._metadata import SDK_VERSION
 from ctxd.config import (
     DEFAULT_CTXFS_SOCKET,
     clear_api_key,
+    clear_ctxfs_api_key,
+    normalize_ctxfs_endpoint,
     resolve_api_key,
     resolve_backend,
     resolve_ctxfs_endpoint,
     resolve_ctxfs_endpoint_details,
+    resolve_ctxfs_api_key,
     save_api_key,
+    save_ctxfs_api_key,
 )
 from ctxd.exceptions import CtxdAuthError, CtxdError, CtxdProtocolError
 
@@ -380,6 +384,127 @@ def test_ctxfs_endpoint_prefers_socket_env(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setenv("CTXD_CTXFS_SOCKET", "/tmp/ctxfs.sock")
 
     assert resolve_ctxfs_endpoint() == "unix:///tmp/ctxfs.sock"
+
+
+def test_ctxfs_credentials_are_normalized_scoped_and_isolated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CTXD_CONFIG_PATH", str(tmp_path / "config.json"))
+    monkeypatch.delenv("CTXD_CTXFS_API_KEY", raising=False)
+    save_api_key("hosted-token")
+    save_ctxfs_api_key("one-token", endpoint="HTTPS://ONE.example:443/")
+    save_ctxfs_api_key("two-token", endpoint="https://two.example")
+
+    assert normalize_ctxfs_endpoint("HTTPS://ONE.example:443/") == "https://one.example"
+    assert resolve_ctxfs_api_key(endpoint="https://one.example/") == "one-token"
+    assert resolve_ctxfs_api_key(endpoint="https://two.example") == "two-token"
+    assert resolve_api_key() == "hosted-token"
+
+    clear_ctxfs_api_key(endpoint="https://one.example")
+    assert resolve_ctxfs_api_key(endpoint="https://one.example") is None
+    assert resolve_ctxfs_api_key(endpoint="https://two.example") == "two-token"
+    assert resolve_api_key() == "hosted-token"
+
+
+def test_ctxfs_endpoint_rejects_paths_that_would_change_credential_scope() -> None:
+    with pytest.raises(ValueError, match="must not contain a path"):
+        normalize_ctxfs_endpoint("https://ctxfs.example/tenant-a")
+
+
+def test_ctxfs_credential_precedence_and_unix_socket_trust(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CTXD_CONFIG_PATH", str(tmp_path / "config.json"))
+    save_ctxfs_api_key("stored", endpoint="https://ctxfs.example")
+    monkeypatch.setenv("CTXD_CTXFS_API_KEY", "environment")
+
+    assert (
+        resolve_ctxfs_api_key("explicit", endpoint="https://ctxfs.example")
+        == "explicit"
+    )
+    assert resolve_ctxfs_api_key(endpoint="https://ctxfs.example") == "environment"
+    assert resolve_ctxfs_api_key("explicit", endpoint="unix:///tmp/ctxfs.sock") is None
+
+
+def test_ctxfs_http_client_sends_endpoint_bearer_without_hosted_key_leakage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CTXD_CONFIG_PATH", str(tmp_path / "config.json"))
+    monkeypatch.setenv("CTXD_API_KEY", "hosted-secret")
+    monkeypatch.setenv("CTXD_CTXFS_API_KEY", "ctxfs-secret")
+    client = Client(backend="ctxfs", ctxfs_endpoint="https://ctxfs.example")
+
+    async def mock_request(self, method, url, *, params=None, headers=None):
+        del self, params
+        assert method == "GET"
+        assert url == "/health"
+        assert headers["Authorization"] == "Bearer ctxfs-secret"
+        assert "hosted-secret" not in str(headers)
+        return httpx.Response(200, json={"status": "ok"})
+
+    with patch("httpx.AsyncClient.request", mock_request):
+        client.get_profile()
+
+
+def test_ctxfs_http_mcp_uses_endpoint_bearer(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = Client(
+        backend="ctxfs",
+        ctxfs_endpoint="https://ctxfs.example",
+        ctxfs_api_key="mcp-token",
+    )
+
+    async def mock_request(self, method, url, **kwargs):
+        del self
+        assert method == "POST"
+        assert url == "/mcp"
+        assert kwargs["headers"]["Authorization"] == "Bearer mcp-token"
+        assert kwargs["json"]["params"] == {
+            "name": "tree",
+            "arguments": {"prefix": "Docs"},
+        }
+        return httpx.Response(
+            200,
+            json={"jsonrpc": "2.0", "id": 1, "result": {"items": []}},
+        )
+
+    monkeypatch.setattr("httpx.AsyncClient.request", mock_request)
+    assert client.call_tool("tree", {"prefix": "Docs"}) == {"items": []}
+
+
+def test_ctxfs_authentication_validation_accepts_authenticated_scope_denial(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = CtxfsClient(
+        endpoint="https://ctxfs.example",
+        api_key="submit-only-token",
+    )
+
+    async def mock_request(self, method, url, **kwargs):
+        del self, kwargs
+        assert method == "GET"
+        assert url == "/health"
+        return httpx.Response(403, json={"detail": "scope_denied"})
+
+    monkeypatch.setattr("httpx.AsyncClient.request", mock_request)
+    client.validate_authentication()
+
+
+def test_ctxfs_authentication_validation_rejects_invalid_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = CtxfsClient(
+        endpoint="https://ctxfs.example",
+        api_key="invalid-token",
+    )
+
+    async def mock_request(self, method, url, **kwargs):
+        del self, method, url, kwargs
+        return httpx.Response(401, json={"detail": "invalid bearer credential"})
+
+    monkeypatch.setattr("httpx.AsyncClient.request", mock_request)
+    with pytest.raises(CtxdError) as exc_info:
+        client.validate_authentication()
+    assert exc_info.value.status_code == 401
 
 
 def test_ctxfs_endpoint_details_mark_only_default_socket_as_managed(

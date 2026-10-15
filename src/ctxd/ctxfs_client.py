@@ -3,7 +3,7 @@ from typing import Any
 import httpx
 
 from ctxd._metadata import get_user_agent
-from ctxd.config import resolve_ctxfs_endpoint
+from ctxd.config import resolve_ctxfs_api_key, resolve_ctxfs_endpoint
 from ctxd.exceptions import CtxdError, CtxdProtocolError
 from ctxd.models import (
     CtxfsBounded,
@@ -24,10 +24,12 @@ class AsyncCtxfsClient:
         *,
         endpoint: str | None = None,
         socket_path: str | None = None,
+        api_key: str | None = None,
         timeout: float = 30.0,
     ) -> None:
         self._endpoint = resolve_ctxfs_endpoint(url=endpoint, socket_path=socket_path)
         self._timeout = timeout
+        self._api_key = resolve_ctxfs_api_key(api_key, endpoint=self._endpoint)
         self._client: httpx.AsyncClient | None = None
 
     @property
@@ -49,6 +51,21 @@ class AsyncCtxfsClient:
             payload["status"] = "ok"
         payload.setdefault("endpoint", self._endpoint)
         return CtxfsStatus.model_validate(payload)
+
+    async def validate_authentication(self) -> None:
+        """Validate a bearer token without requiring the status capability.
+
+        A valid credential that lacks ``status`` receives 403 from ``/health``;
+        an absent or invalid credential receives 401 from authentication
+        middleware. This keeps submit-only tracker credentials usable while
+        still rejecting invalid tokens before they are persisted or a service
+        is started.
+        """
+        try:
+            await self.status()
+        except CtxdError as exc:
+            if exc.status_code != 403:
+                raise
 
     async def stat(self, path: str) -> CtxfsEntry:
         payload = await self._request("GET", "/api/ctxfs/stat", params={"path": path})
@@ -83,9 +100,7 @@ class AsyncCtxfsClient:
         payload = await self._request("GET", "/api/ctxfs/glob", params=params)
         return CtxfsBounded[CtxfsDirectoryEntry].model_validate(payload)
 
-    async def read(
-        self, path: str, *, max_bytes: int | None = None
-    ) -> CtxfsReadResult:
+    async def read(self, path: str, *, max_bytes: int | None = None) -> CtxfsReadResult:
         params = _drop_none({"path": path, "max_bytes": max_bytes})
         payload = await self._request("GET", "/api/ctxfs/read", params=params)
         return CtxfsReadResult.model_validate(payload)
@@ -112,24 +127,44 @@ class AsyncCtxfsClient:
         payload = await self._request("GET", "/api/ctxfs/grep", params=params)
         return CtxfsBounded[CtxfsGrepMatch].model_validate(payload)
 
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        payload = await self._request(
+            "POST",
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "method": "tools/call",
+                "params": {"name": name, "arguments": arguments},
+                "id": 1,
+            },
+        )
+        if "error" in payload:
+            raise CtxdProtocolError(f"ctxfs MCP request failed: {payload['error']}")
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            raise CtxdProtocolError("ctxfs MCP response did not include a result")
+        return result
+
     async def _request(
         self,
         method: str,
         path: str,
         *,
         params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         headers = {"User-Agent": get_user_agent(), "Accept": "application/json"}
+        if self._api_key and not self._endpoint.startswith("unix://"):
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        request_kwargs: dict[str, Any] = {"params": params, "headers": headers}
+        if json is not None:
+            request_kwargs["json"] = json
         try:
             if self._client is not None:
-                response = await self._client.request(
-                    method, path, params=params, headers=headers
-                )
+                response = await self._client.request(method, path, **request_kwargs)
             else:
                 async with self._build_client() as client:
-                    response = await client.request(
-                        method, path, params=params, headers=headers
-                    )
+                    response = await client.request(method, path, **request_kwargs)
         except httpx.RequestError as exc:
             raise CtxdError(
                 f"Could not connect to ctxfs at {self._endpoint}. "
@@ -146,11 +181,13 @@ class AsyncCtxfsClient:
                 base_url="http://ctxfs.local",
                 timeout=self._timeout,
                 transport=transport,
+                follow_redirects=False,
             )
 
         return httpx.AsyncClient(
             base_url=self._endpoint.rstrip("/"),
             timeout=self._timeout,
+            follow_redirects=False,
         )
 
     @staticmethod
@@ -216,11 +253,13 @@ class CtxfsClient:
         *,
         endpoint: str | None = None,
         socket_path: str | None = None,
+        api_key: str | None = None,
         timeout: float = 30.0,
     ) -> None:
         self._async_client = AsyncCtxfsClient(
             endpoint=endpoint,
             socket_path=socket_path,
+            api_key=api_key,
             timeout=timeout,
         )
         self.files = CtxfsFiles(self)
@@ -231,6 +270,9 @@ class CtxfsClient:
 
     def status(self) -> CtxfsStatus:
         return _run(self._async_client.status())
+
+    def validate_authentication(self) -> None:
+        return _run(self._async_client.validate_authentication())
 
     def stat(self, path: str) -> CtxfsEntry:
         return _run(self._async_client.stat(path))
@@ -272,6 +314,9 @@ class CtxfsClient:
         self, pattern: str, *, prefix: str = "", limit: int | None = None
     ) -> CtxfsBounded[CtxfsGrepMatch]:
         return _run(self._async_client.grep(pattern, prefix=prefix, limit=limit))
+
+    def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        return _run(self._async_client.call_tool(name, arguments))
 
 
 def _run(coro):

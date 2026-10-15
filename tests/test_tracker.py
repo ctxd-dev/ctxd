@@ -3,7 +3,44 @@ from pathlib import Path
 import pytest
 
 from ctxd.folders import FolderConfig
-from ctxd.tracker import TrackerPaths, run_forever, sync_once
+from ctxd.tracker import TrackerPaths, _submit_operations, run_forever, sync_once
+
+
+def test_tracker_http_submission_sends_ctxfs_endpoint_credential(monkeypatch) -> None:
+    captured = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+    class Client:
+        def __init__(self, **kwargs):
+            captured["client"] = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def post(self, path, *, json, headers):
+            captured.update(path=path, payload=json, headers=headers)
+            return Response()
+
+    monkeypatch.setattr(
+        "ctxd.tracker.resolve_ctxfs_api_key", lambda **kwargs: "writer-token"
+    )
+    monkeypatch.setattr("ctxd.tracker.httpx.Client", Client)
+
+    _submit_operations(
+        "https://ctxfs.example",
+        writer_id="writer",
+        writer_prefix="Workstation",
+        operations=[],
+    )
+
+    assert captured["headers"] == {"Authorization": "Bearer writer-token"}
+    assert captured["path"] == "/api/ctxfs/submissions"
 
 
 def test_tracker_sync_submits_text_files_and_persists_state(
@@ -62,7 +99,7 @@ def test_tracker_sync_submits_delete_for_missing_file(
     )
     state_file = tmp_path / "state.json"
     state_file.write_text(
-        '{\n'
+        "{\n"
         '  "local-files/folder-1": {\n'
         '    "local-files/folder-1:1:2": "sha256:old"\n'
         "  }\n"
@@ -104,7 +141,7 @@ def test_tracker_sync_preserves_state_when_folder_scan_is_incomplete(
     )
     state_file = tmp_path / "state.json"
     state_file.write_text(
-        '{\n'
+        "{\n"
         '  "local-files/folder-1": {\n'
         '    "local-files/folder-1:1:2": "sha256:old"\n'
         "  }\n"
@@ -135,7 +172,7 @@ def test_tracker_sync_deletes_files_for_removed_configured_folder(
 ) -> None:
     state_file = tmp_path / "state.json"
     state_file.write_text(
-        '{\n'
+        "{\n"
         '  "local-files/folder-1": {\n'
         '    "local-files/folder-1:1:2": "sha256:old"\n'
         "  }\n"

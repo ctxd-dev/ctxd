@@ -64,7 +64,7 @@ def test_tracker_service_start_checks_external_endpoint_without_local_start(
     assert result["folders"] == 0
     ensure_started.assert_not_called()
     client.assert_called_once_with(endpoint="http://ctxfs.internal:8765", timeout=2.0)
-    client.return_value.status.assert_called_once_with()
+    client.return_value.validate_authentication.assert_called_once_with()
 
 
 def test_tracker_service_external_failure_does_not_start_tracker(
@@ -77,7 +77,9 @@ def test_tracker_service_external_failure_does_not_start_tracker(
     ), patch("ctxd.tracker_service.ensure_started") as ensure_started, patch(
         "ctxd.tracker_service.CtxfsClient"
     ) as client, patch("ctxd.tracker_service.subprocess.Popen") as popen:
-        client.return_value.status.side_effect = RuntimeError("endpoint unavailable")
+        client.return_value.validate_authentication.side_effect = RuntimeError(
+            "endpoint unavailable"
+        )
 
         try:
             start(paths)

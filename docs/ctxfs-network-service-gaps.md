@@ -274,6 +274,10 @@ clients.
    bearer credentials. Client credential transport and supported TLS serving
    remain in later items.**
 5. Add endpoint-scoped client credentials and authenticated CLI/SDK transport.
+   **Implemented in [PR #38](https://github.com/ctxd-dev/ctxd/pull/38);
+   independent review and targeted local verification passed; CI triggered.
+   HTTP endpoints resolve isolated credentials by normalized endpoint, while
+   trusted Unix sockets deliberately omit bearer credentials.**
 6. Add explicit network serving with TLS requirements and safe defaults.
 7. Add multi-process end-to-end, abuse, rotation, and recovery tests.
 8. Update public docs and declare the authenticated network topology supported.

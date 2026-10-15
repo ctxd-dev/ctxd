@@ -90,6 +90,56 @@ def test_cli_login_rejects_api_key_flag() -> None:
     assert "unrecognized arguments: --api-key api-key-123" in stderr.getvalue()
 
 
+def test_cli_ctxfs_login_validates_before_saving() -> None:
+    stdout = StringIO()
+    with patch.dict("os.environ", {"CTXD_CTXFS_API_KEY": ""}, clear=False), patch(
+        "ctxd.cli.resolve_ctxfs_api_key", return_value=None
+    ), patch("ctxd.cli.sys.stdin.isatty", return_value=True), patch(
+        "ctxd.cli.getpass.getpass", return_value="reader-token"
+    ), patch("ctxd.cli.CtxfsClient") as client, patch(
+        "ctxd.cli.save_ctxfs_api_key"
+    ) as save, redirect_stdout(stdout):
+        exit_code = main(["login", "--endpoint", "https://ctxfs.example/"])
+
+    assert exit_code == 0
+    client.assert_called_once_with(
+        endpoint="https://ctxfs.example", api_key="reader-token", timeout=5.0
+    )
+    client.return_value.validate_authentication.assert_called_once_with()
+    save.assert_called_once_with("reader-token", endpoint="https://ctxfs.example")
+    assert "reader-token" not in stdout.getvalue()
+
+
+def test_cli_ctxfs_login_validation_failure_does_not_save() -> None:
+    with patch.dict(
+        "os.environ", {"CTXD_CTXFS_API_KEY": "bad-token"}, clear=False
+    ), patch("ctxd.cli.CtxfsClient") as client, patch(
+        "ctxd.cli.save_ctxfs_api_key"
+    ) as save:
+        client.return_value.validate_authentication.side_effect = CtxdAuthError(
+            "unauthorized"
+        )
+        exit_code = main(["login", "--endpoint", "https://ctxfs.example"])
+
+    assert exit_code == 1
+    save.assert_not_called()
+
+
+def test_cli_ctxfs_status_checks_authentication_without_requiring_status_scope() -> None:
+    stdout = StringIO()
+    with patch(
+        "ctxd.cli.resolve_ctxfs_api_key", return_value="submit-only-token"
+    ), patch("ctxd.cli.CtxfsClient") as client, redirect_stdout(stdout):
+        exit_code = main(["status", "--endpoint", "https://ctxfs.example"])
+
+    assert exit_code == 0
+    client.assert_called_once_with(
+        endpoint="https://ctxfs.example", api_key="submit-only-token", timeout=5.0
+    )
+    client.return_value.validate_authentication.assert_called_once_with()
+    assert stdout.getvalue() == "Authenticated to ctxfs at https://ctxfs.example.\n"
+
+
 def test_cli_login_saves_prompted_api_key() -> None:
     stdout = StringIO()
     profile = ProfileResult(
@@ -101,13 +151,9 @@ def test_cli_login_saves_prompted_api_key() -> None:
         "ctxd.cli.resolve_api_key", return_value=None
     ), patch("ctxd.cli.sys.stdin.isatty", return_value=True), patch(
         "ctxd.cli.getpass.getpass", return_value="prompted-api-key"
-    ), patch(
-        "ctxd.cli.Client.get_profile", return_value=profile
-    ), patch(
+    ), patch("ctxd.cli.Client.get_profile", return_value=profile), patch(
         "ctxd.cli.save_api_key"
-    ) as save_api_key, redirect_stdout(
-        stdout
-    ):
+    ) as save_api_key, redirect_stdout(stdout):
         exit_code = main(["login"])
 
     assert exit_code == 0
@@ -135,13 +181,9 @@ def test_cli_login_stores_prompted_api_key_in_plaintext_credentials(
         clear=False,
     ), patch("ctxd.cli.resolve_api_key", return_value=None), patch(
         "ctxd.cli.sys.stdin.isatty", return_value=True
-    ), patch(
-        "ctxd.cli.getpass.getpass", return_value="prompted-api-key"
-    ), patch(
+    ), patch("ctxd.cli.getpass.getpass", return_value="prompted-api-key"), patch(
         "ctxd.cli.Client.get_profile", return_value=profile
-    ), redirect_stdout(
-        stdout
-    ):
+    ), redirect_stdout(stdout):
         exit_code = main(["login"])
 
     assert exit_code == 0
@@ -177,13 +219,9 @@ def test_cli_login_prompts_for_missing_api_key() -> None:
         "ctxd.cli.resolve_api_key", return_value=None
     ), patch("ctxd.cli.sys.stdin.isatty", return_value=True), patch(
         "ctxd.cli.getpass.getpass", return_value="prompted-api-key"
-    ) as getpass, patch(
-        "ctxd.cli.Client.get_profile", return_value=profile
-    ), patch(
+    ) as getpass, patch("ctxd.cli.Client.get_profile", return_value=profile), patch(
         "ctxd.cli.save_api_key"
-    ) as save_api_key, redirect_stdout(
-        stdout
-    ):
+    ) as save_api_key, redirect_stdout(stdout):
         exit_code = main(["login"])
 
     assert exit_code == 0
@@ -204,13 +242,9 @@ def test_cli_login_prompts_when_stored_key_lookup_fails() -> None:
         side_effect=CtxdAuthError("Unable to read stored ctxd credentials."),
     ), patch("ctxd.cli.sys.stdin.isatty", return_value=True), patch(
         "ctxd.cli.getpass.getpass", return_value="prompted-api-key"
-    ) as getpass, patch(
-        "ctxd.cli.Client.get_profile", return_value=profile
-    ), patch(
+    ) as getpass, patch("ctxd.cli.Client.get_profile", return_value=profile), patch(
         "ctxd.cli.save_api_key"
-    ) as save_api_key, redirect_stdout(
-        stdout
-    ):
+    ) as save_api_key, redirect_stdout(stdout):
         exit_code = main(["login"])
 
     assert exit_code == 0
@@ -230,9 +264,7 @@ def test_cli_login_uses_resolved_api_key() -> None:
         "ctxd.cli.resolve_api_key", return_value="stored-api-key"
     ), patch("ctxd.cli.Client.get_profile", return_value=profile), patch(
         "ctxd.cli.save_api_key"
-    ) as save_api_key, redirect_stdout(
-        stdout
-    ):
+    ) as save_api_key, redirect_stdout(stdout):
         exit_code = main(["login"])
 
     assert exit_code == 0
@@ -267,9 +299,7 @@ def test_cli_login_requires_api_key() -> None:
         "ctxd.cli.resolve_api_key", return_value=None
     ), patch("ctxd.cli.sys.stdin.isatty", return_value=False), patch(
         "ctxd.cli.getpass.getpass"
-    ) as getpass, patch(
-        "sys.stderr", stderr
-    ):
+    ) as getpass, patch("sys.stderr", stderr):
         exit_code = main(["login"])
 
     assert exit_code == 1
@@ -660,9 +690,9 @@ def test_cli_backend_set_ctxfs_starts_service(tmp_path: Path) -> None:
         return_value=CtxfsEndpointResolution(
             "unix:///tmp/ctxfs.sock", "default-managed-socket", True
         ),
-    ), patch("ctxd.cli.ensure_started", return_value=service) as ensure, redirect_stdout(
-        stdout
-    ):
+    ), patch(
+        "ctxd.cli.ensure_started", return_value=service
+    ) as ensure, redirect_stdout(stdout):
         exit_code = main(["backend", "set", "ctxfs"])
 
     assert exit_code == 0
@@ -690,9 +720,7 @@ def test_cli_backend_set_ctxfs_failure_does_not_save_backend(tmp_path: Path) -> 
         ),
     ), patch(
         "ctxd.cli.ensure_started", side_effect=RuntimeError("service failed")
-    ), patch(
-        "sys.stderr", stderr
-    ):
+    ), patch("sys.stderr", stderr):
         exit_code = main(["backend", "set", "ctxfs"])
 
     assert exit_code == 1
@@ -721,7 +749,7 @@ def test_cli_backend_set_ctxfs_checks_external_endpoint_without_local_start(
     assert exit_code == 0
     ensure.assert_not_called()
     client.assert_called_once_with(endpoint="http://ctxfs.internal:8765", timeout=2.0)
-    client.return_value.status.assert_called_once_with()
+    client.return_value.validate_authentication.assert_called_once_with()
     output = stdout.getvalue()
     assert "ctxfs endpoint source: environment-url" in output
     assert "ctxfs managed locally: False" in output
@@ -743,7 +771,9 @@ def test_cli_backend_set_ctxfs_external_failure_does_not_save_backend(
     ), patch("ctxd.cli.ensure_started") as ensure, patch(
         "ctxd.cli.CtxfsClient"
     ) as client:
-        client.return_value.status.side_effect = RuntimeError("endpoint unavailable")
+        client.return_value.validate_authentication.side_effect = RuntimeError(
+            "endpoint unavailable"
+        )
         exit_code = main(["backend", "set", "ctxfs"])
 
     assert exit_code == 1
@@ -847,7 +877,9 @@ def test_cli_files_grep_outputs_bounded_matches() -> None:
         ],
         complete=True,
     )
-    client = SimpleNamespace(files=SimpleNamespace(grep=lambda *args, **kwargs: matches))
+    client = SimpleNamespace(
+        files=SimpleNamespace(grep=lambda *args, **kwargs: matches)
+    )
 
     with patch("ctxd.cli.Client", return_value=client), redirect_stdout(stdout):
         exit_code = main(
@@ -993,7 +1025,7 @@ def test_cli_search_folder_maps_name_to_ctxfs_prefix(tmp_path: Path) -> None:
     stdout = StringIO()
     config_path = tmp_path / "config.json"
     config_path.write_text(
-        '{\n'
+        "{\n"
         '  "folders": {\n'
         '    "Documents": {\n'
         '      "name": "Documents",\n'
@@ -1060,7 +1092,7 @@ def test_cli_files_tree_resolves_folder_name(tmp_path: Path) -> None:
     stdout = StringIO()
     config_path = tmp_path / "config.json"
     config_path.write_text(
-        '{\n'
+        "{\n"
         '  "folders": {\n'
         '    "Documents": {\n'
         '      "name": "Documents",\n'
@@ -1143,7 +1175,7 @@ def test_cli_files_read_resolves_folder_name_and_outputs_text(tmp_path: Path) ->
     stdout = StringIO()
     config_path = tmp_path / "config.json"
     config_path.write_text(
-        '{\n'
+        "{\n"
         '  "folders": {\n'
         '    "Documents": {\n'
         '      "name": "Documents",\n'
@@ -1167,9 +1199,7 @@ def test_cli_files_read_resolves_folder_name_and_outputs_text(tmp_path: Path) ->
         {"CTXD_CONFIG_PATH": str(config_path)},
         clear=False,
     ), patch("ctxd.cli.Client", return_value=client), redirect_stdout(stdout):
-        exit_code = main(
-            ["files", "read", "Documents/README.md", "--backend", "ctxfs"]
-        )
+        exit_code = main(["files", "read", "Documents/README.md", "--backend", "ctxfs"])
 
     assert exit_code == 0
     assert stdout.getvalue() == "hello\n"
