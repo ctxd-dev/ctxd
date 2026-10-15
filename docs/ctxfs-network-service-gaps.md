@@ -289,6 +289,9 @@ clients.
    Coverage includes isolated processes, multiple writers, abuse and rotation,
    restart recovery, idempotency, secret non-disclosure, and verified TLS.**
 8. Update public docs and declare the authenticated network topology supported.
+   **Implemented in the pending documentation PR; command examples are checked
+   against CLI help and public-doc regression tests cover the supported topology
+   and safety boundaries.**
 
-Network deployment should not be documented as supported until steps 1 through
-7 are complete and verified.
+Steps 1 through 7 are complete and verified. The pending step 8 PR documents
+the supported authenticated topology while retaining the managed-local path.

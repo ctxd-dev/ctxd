@@ -1,14 +1,26 @@
 ---
-title: 'Security'
+title: 'Security and data'
 
 ---
 
-ctxd is local-first. The tracker and ctxfs service run under your user account and process only folders you explicitly add.
+ctxd supports a managed local deployment and an authenticated ctxfs network
+deployment. A tracker processes only folders explicitly added on that client;
+a server can run without any local folders.
 
 ## Network boundary
 
-- Local ctxfs binds to loopback by default.
-- Do not bind ctxfs to a public interface. The loopback API assumes the operating-system user boundary.
+- The managed Unix socket uses local peer trust and private filesystem
+  permissions.
+- TCP always requires a bearer credential, including loopback.
+- Non-loopback serving additionally requires `--allow-network` and direct TLS.
+- Clients must verify a certificate valid for the configured endpoint hostname.
+- Do not expose server state, private keys, or bearer tokens through shared
+  files, logs, command arguments, or URLs.
+
+This is a single ctxfs namespace with scoped credentials, not a multi-tenant
+security boundary. `read`, `submit`, `status`, and `admin` are distinct scopes;
+submission credentials are restricted by server-owned prefix grants. REST and
+MCP enforce the same policy.
 
 ## What ctxd stores
 
@@ -23,7 +35,23 @@ Text files that need no transformation may be linked into the ctxfs tree instead
 
 ## Per-user isolation
 
-The service is installed per user, and its state is stored in that user's home directory. Use normal operating-system account and file permissions to control access to the tracked folders and ctxfs state.
+The managed local service runs per user, and its state is stored in that user's
+home directory. Use normal operating-system account and file permissions to
+control access to the tracked folders and ctxfs state.
+
+For a standalone server, protect its selected `--root`, credential database,
+TLS private key, and backups with a dedicated operating-system account and
+private permissions. ctxd does not configure a service manager, reverse proxy,
+firewall, certificate issuer, backup system, or multi-tenant isolation.
+
+## Credential recovery
+
+Tokens cannot be recovered from the server: it stores verifiers, not plaintext.
+Create a replacement credential if a token is lost. If a token may be exposed,
+revoke it immediately with `ctxd keys --root ROOT revoke KEY_ID`, create a
+replacement, and install the new token with `ctxd logout --endpoint URL`
+followed by `ctxd login --endpoint URL`. Credential recovery requires local
+filesystem access to the server data root.
 
 ## Removing data
 

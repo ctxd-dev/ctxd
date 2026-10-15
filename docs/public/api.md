@@ -1,10 +1,10 @@
 ---
-title: 'Local API'
+title: 'ctxfs API'
 
 ---
 
-The local ctxfs server provides REST endpoints under `/api/ctxfs` and an MCP
-endpoint at `POST /mcp`. The managed server listens on the Unix socket
+The ctxfs server provides REST endpoints under `/api/ctxfs` and an MCP endpoint
+at `POST /mcp`. The managed server listens on the Unix socket
 `~/.ctxd/local/ctxfs.sock` by default.
 
 Check the active URL with:
@@ -13,7 +13,10 @@ Check the active URL with:
 ctxd backend status
 ```
 
-Loopback requests do not require a ctxd API key. Do not expose this service on a public interface.
+The managed Unix socket uses local peer trust. Every HTTP request requires
+`Authorization: Bearer <token>`, including loopback. Network clients must use
+HTTPS with a certificate they trust. REST and HTTP MCP use the same
+authentication and authorization policy.
 
 ## Operations
 
@@ -40,9 +43,8 @@ ctxd files read-lines Documents/runbook.md --start 20 --end 40
 ctxd files grep "rollback" --prefix Documents --limit 50
 ```
 
-Use these CLI commands for normal local access. They handle the effective socket
-endpoint and folder aliases. The REST routes are intended for clients that can
-connect to the configured Unix socket or an explicitly configured HTTP URL.
+Use these CLI commands for normal access. They handle the effective local or
+network endpoint, endpoint-scoped bearer credential, and folder aliases.
 
 For MCP, configure `ctxd-mcp` as described in the [ctxfs guide](/docs/ctxfs), or
 connect an HTTP-capable MCP client to `/mcp` on the effective endpoint.
@@ -56,5 +58,7 @@ Directory, tree, glob, and grep responses are bounded by `limit`. Check the resp
 ## Errors
 
 - `400` — invalid path, range, pattern, or limit
+- `401` — bearer credential is missing, invalid, expired, or revoked
+- `403` — the credential lacks the required scope or submission prefix
 - `404` — requested path does not exist
 - `503` — ctxfs is unavailable; check `ctxd backend status`

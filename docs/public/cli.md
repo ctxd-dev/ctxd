@@ -3,7 +3,8 @@ title: 'CLI'
 
 ---
 
-The `ctxd` CLI installs and manages the local tracker and ctxfs service.
+The `ctxd` CLI manages the local tracker and ctxfs service and can connect to an
+externally managed ctxfs server.
 
 ## Install
 
@@ -22,7 +23,21 @@ ctxd backend status
 
 `backend set` saves the selection. It starts ctxfs for the default managed local
 socket, or checks the effective endpoint when a URL or socket was explicitly
-configured. Local operation does not require an API key.
+configured. The managed Unix socket does not require an API key. HTTP endpoints
+do.
+
+Configure and authenticate to a network server:
+
+```bash
+ctxd login --endpoint https://ctxfs.example.net:8443
+ctxd backend set ctxfs --endpoint https://ctxfs.example.net:8443
+ctxd status --endpoint https://ctxfs.example.net:8443
+ctxd backend status
+```
+
+`login` prompts for the token and stores it for that normalized endpoint. Use
+`CTXD_CTXFS_API_KEY` instead for non-interactive use. Remove the stored token
+with `ctxd logout --endpoint https://ctxfs.example.net:8443`.
 
 ## Folders
 
@@ -69,6 +84,43 @@ Every listing and matching command is bounded. Inspect `complete` and
 `ctxd backend status` to check the active backend, effective endpoint, endpoint
 source, health, and whether ctxd manages the server process locally.
 
+Run a standalone server in the foreground:
+
+```bash
+# Trusted local Unix socket
+ctxd server serve --root ~/.ctxd/ctxfs --socket ~/.ctxd/local/ctxfs.sock
+
+# Authenticated loopback HTTP
+ctxd server serve --root ~/.ctxd/ctxfs --host 127.0.0.1 --port 8765
+
+# Authenticated network HTTPS
+ctxd server serve --root /srv/ctxfs --host 0.0.0.0 --port 8443 \
+  --allow-network --tls-cert /etc/ctxfs/server.crt \
+  --tls-key /etc/ctxfs/server.key
+```
+
+TCP uses bearer authentication. A non-loopback bind is rejected unless
+`--allow-network`, `--tls-cert`, and `--tls-key` are all supplied. These are
+foreground commands; ctxd does not install a background supervisor.
+
+## Server credentials
+
+Credential commands operate directly on a server data root:
+
+```bash
+ctxd keys --root /srv/ctxfs create --name reader --scope read --scope status
+ctxd keys --root /srv/ctxfs create --name laptop --scope submit --scope status \
+  --prefix local-files/ROOT_ID
+ctxd keys --root /srv/ctxfs list
+ctxd keys --root /srv/ctxfs rotate KEY_ID
+ctxd keys --root /srv/ctxfs revoke KEY_ID
+```
+
+Creation and rotation print a bearer token once. Transfer it securely; only a
+verifier is retained. `admin` grants all capabilities and cannot be combined
+with other scopes. Prefix grants apply to `submit` credentials; grant each
+`local-files/ROOT_ID` shown by `ctxd folders list` that the tracker may update.
+
 ## MCP
 
 For the default Unix-socket installation, configure MCP clients to launch the
@@ -89,3 +141,4 @@ its configured endpoint.
 | `CTXD_BACKEND` | Override the active backend (`ctxfs` or `remote`) |
 | `CTXD_CTXFS_SOCKET` | Use ctxfs through the selected Unix socket |
 | `CTXD_CTXFS_URL` | Use ctxfs through the selected HTTP URL |
+| `CTXD_CTXFS_API_KEY` | Supply a ctxfs HTTP bearer token without storing it |

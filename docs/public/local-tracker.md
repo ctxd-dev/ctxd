@@ -34,8 +34,17 @@ ctxd backend status
 
 With the default endpoint, selecting the backend starts ctxfs. `tracker start`
 launches the tracker as a detached process for the current user. Both commands
-check an explicitly configured `CTXD_CTXFS_URL` or `CTXD_CTXFS_SOCKET` without
-starting another server. Start the tracker again after a reboot; automatic login
+check an explicitly configured endpoint without starting another server. For
+example, configure and authenticate to a network server before starting:
+
+```bash
+ctxd login --endpoint https://ctxfs.example.net:8443
+ctxd backend set ctxfs --endpoint https://ctxfs.example.net:8443
+ctxd tracker start
+```
+
+The tracker uses a `submit` credential whose prefix grant covers the submitted
+ctxfs paths. Start the tracker again after a reboot; automatic login
 registration is not currently installed.
 
 The tracker can run with zero configured folders. Add folders only on machines
@@ -60,8 +69,9 @@ ctxd tracker status
 ctxd backend status
 ```
 
-A healthy local setup reports `Backend: ctxfs`, `ctxfs healthy: True`, and a
-running tracker.
+A healthy setup reports `Backend: ctxfs`, the effective endpoint, `ctxfs
+healthy: True`, and a running tracker. For an external endpoint, ctxd reports
+that the server is not locally managed.
 
 ## Move a folder
 
@@ -107,13 +117,18 @@ directory separately only if you intend to delete all ctxd-managed local state.
 
 ## Troubleshooting
 
-If ctxfs is unreachable:
+If ctxfs is unreachable or rejects authentication:
 
 ```bash
 ctxd config get backend
 ctxd backend status
 ctxd tracker status
 ```
+
+For an HTTP endpoint, confirm `ctxd status --endpoint URL`, the server
+certificate trust chain, and that the credential has `submit` plus the required
+prefix. Rotation revokes the old key immediately; run `ctxd logout --endpoint
+URL`, then `ctxd login --endpoint URL` and enter the newly printed token.
 
 If a change has not appeared, restart tracking with `ctxd tracker stop` followed
 by `ctxd tracker start`, then check `ctxd tracker status`.
