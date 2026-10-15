@@ -279,10 +279,10 @@ clients.
    HTTP endpoints resolve isolated credentials by normalized endpoint, while
    trusted Unix sockets deliberately omit bearer credentials.**
 6. Add explicit network serving with TLS requirements and safe defaults.
-   **Implemented on `ctxfs/secure-network-server`. `ctxd server serve` runs in
-   the foreground and defaults to the managed Unix socket. TCP always uses
-   bearer authentication; non-loopback and wildcard binds additionally require
-   explicit `--allow-network` plus readable TLS certificate and key files.**
+   **Implemented in [PR #39](https://github.com/ctxd-dev/ctxd/pull/39);
+   independent review and targeted local verification passed; CI triggered.
+   TCP always uses bearer authentication; non-loopback and wildcard binds also
+   require explicit network opt-in and direct TLS.**
 7. Add multi-process end-to-end, abuse, rotation, and recovery tests.
 8. Update public docs and declare the authenticated network topology supported.
 
