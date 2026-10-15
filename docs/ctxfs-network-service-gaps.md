@@ -289,9 +289,10 @@ clients.
    Coverage includes isolated processes, multiple writers, abuse and rotation,
    restart recovery, idempotency, secret non-disclosure, and verified TLS.**
 8. Update public docs and declare the authenticated network topology supported.
-   **Implemented in the pending documentation PR; command examples are checked
-   against CLI help and public-doc regression tests cover the supported topology
-   and safety boundaries.**
+   **Implemented in [PR #41](https://github.com/ctxd-dev/ctxd/pull/41);
+   independent review and targeted local verification passed; CI triggered.
+   Command examples are checked against CLI help and regression tests cover the
+   supported topology and safety boundaries.**
 
-Steps 1 through 7 are complete and verified. The pending step 8 PR documents
-the supported authenticated topology while retaining the managed-local path.
+Steps 1 through 7 are complete and verified. PR #41 documents the supported
+authenticated topology while retaining the managed-local path.
