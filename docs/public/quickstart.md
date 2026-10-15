@@ -21,7 +21,9 @@ ctxd backend set ctxfs
 ctxd config get backend
 ```
 
-This saves the backend and starts the local ctxfs server. No API key is required.
+This saves the backend and starts ctxfs at the default managed local endpoint.
+If you explicitly configured an endpoint, the command checks that server
+instead. The managed-local workflow does not require an API key.
 
 ## 3. Track a folder
 

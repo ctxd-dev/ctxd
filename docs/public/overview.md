@@ -3,32 +3,40 @@ title: 'Overview'
 
 ---
 
-ctxd turns folders on your computer into local, agent-readable context. It uses two pieces:
+ctxd makes indexed content available as agent-readable context. It uses two
+pieces:
 
-1. The **local tracker** watches only the folders you choose.
-2. **ctxfs** presents the tracked content as a path-oriented filesystem with bounded read tools.
+1. The optional **local tracker** watches only the folders you choose and sends
+   their content to ctxfs.
+2. **ctxfs** stores indexed content and exposes it through filesystem-shaped
+   paths with bounded read tools.
 
-Put the material you want an agent to use in a local folder, then track that folder.
+Add a folder when this machine should contribute local content. A ctxfs server
+can run and serve its existing store without a local tracker or tracked folder.
 
 ## How it works
 
 1. **Install** the `ctxd` command and select the local `ctxfs` backend.
-2. **Choose folders** with `ctxd folders add`. Nothing outside those folders is tracked.
-3. **Keep them current.** The local service detects file changes and updates ctxfs.
-4. **Read locally** with `ls`, `tree`, `glob`, `stat`, `read`, `read_lines`, and `grep` operations.
+2. **Optionally choose folders** with `ctxd folders add` when this machine should
+   contribute content. Nothing outside those folders is tracked.
+3. **Keep contributed folders current.** The tracker detects file changes and
+   updates ctxfs.
+4. **Read through the ctxd CLI** with `ls`, `tree`, `glob`, `stat`, `read`,
+   `read-lines`, and `grep` operations.
 
 ## Local architecture
 
 | Component | Role | Default location |
 | --- | --- | --- |
 | [Local tracker](/docs/local-tracker) | Watches selected folders and applies changes | Per-user background process |
-| [ctxfs](/docs/ctxfs) | Stores and exposes the local context tree | `~/.ctxd/ctxfs` |
+| [ctxfs](/docs/ctxfs) | Stores indexed content and exposes filesystem-shaped paths | `~/.ctxd/ctxfs` |
 | [CLI](/docs/cli) | Configures folders and reads ctxfs | `ctxd` |
 | [Local API](/docs/api) | Provides REST and MCP access | `~/.ctxd/local/ctxfs.sock` |
 
-The tracker and ctxfs server are separate per-user processes. Starting the
-tracker ensures the ctxfs server is running. Local reads do not require an API
-key.
+The tracker and ctxfs server are separate processes. With the default managed
+local endpoint, starting the tracker ensures ctxfs is running. An explicitly
+configured endpoint is checked without starting another server. The supported
+managed-local workflow does not require an API key.
 
 ## What agents can do
 

@@ -728,6 +728,29 @@ def test_cli_backend_set_ctxfs_checks_external_endpoint_without_local_start(
     assert "ctxfs root:" not in output
 
 
+def test_cli_backend_set_ctxfs_external_failure_does_not_save_backend(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.json"
+
+    with patch.dict(
+        "os.environ",
+        {
+            "CTXD_CONFIG_PATH": str(config_path),
+            "CTXD_CTXFS_URL": "http://ctxfs.internal:8765",
+        },
+        clear=False,
+    ), patch("ctxd.cli.ensure_started") as ensure, patch(
+        "ctxd.cli.CtxfsClient"
+    ) as client:
+        client.return_value.status.side_effect = RuntimeError("endpoint unavailable")
+        exit_code = main(["backend", "set", "ctxfs"])
+
+    assert exit_code == 1
+    ensure.assert_not_called()
+    assert not config_path.exists()
+
+
 def test_cli_search_passes_ctxfs_options() -> None:
     stdout = StringIO()
 

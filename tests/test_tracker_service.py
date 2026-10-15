@@ -67,6 +67,30 @@ def test_tracker_service_start_checks_external_endpoint_without_local_start(
     client.return_value.status.assert_called_once_with()
 
 
+def test_tracker_service_external_failure_does_not_start_tracker(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+
+    with patch.dict(
+        "os.environ", {"CTXD_CTXFS_URL": "http://ctxfs.internal:8765"}, clear=False
+    ), patch("ctxd.tracker_service.ensure_started") as ensure_started, patch(
+        "ctxd.tracker_service.CtxfsClient"
+    ) as client, patch("ctxd.tracker_service.subprocess.Popen") as popen:
+        client.return_value.status.side_effect = RuntimeError("endpoint unavailable")
+
+        try:
+            start(paths)
+        except RuntimeError as exc:
+            assert str(exc) == "endpoint unavailable"
+        else:
+            raise AssertionError("start should fail when the endpoint is unavailable")
+
+    ensure_started.assert_not_called()
+    popen.assert_not_called()
+    assert not paths.pid_file.exists()
+
+
 def test_tracker_service_status_ignores_stale_or_unrelated_pid(
     tmp_path: Path,
 ) -> None:

@@ -31,8 +31,9 @@ serve that content to authorized readers.
 - Running ctxfs does not intrinsically require any configured folders.
 - The submission endpoint accepts writer identity and prefix information from
   the request and stores all data under the single local service identity.
-- `ctxd tracker start` currently starts or verifies the managed local ctxfs
-  service unconditionally, even when a remote ctxfs URL is configured.
+- `ctxd tracker start` starts or verifies ctxfs only for the default managed
+  local socket. When an endpoint is explicitly configured, it verifies that
+  endpoint without starting another server.
 
 ### Authentication and network boundary
 
