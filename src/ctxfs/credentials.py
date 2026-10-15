@@ -1,0 +1,279 @@
+"""Server-owned ctxfs API-key persistence and lifecycle operations."""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import os
+import secrets
+import sqlite3
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable
+
+from ctxfs.auth import CredentialGrant, Scope
+
+
+TOKEN_PREFIX = "ctxfs"
+SCRYPT_N = 2**14
+SCRYPT_R = 8
+SCRYPT_P = 1
+
+
+@dataclass(frozen=True, slots=True)
+class Credential:
+    key_id: str
+    name: str
+    scopes: frozenset[Scope]
+    prefixes: tuple[str, ...]
+    created_at: float
+    expires_at: float | None
+    revoked_at: float | None
+    replaced_by: str | None
+
+    @property
+    def active(self) -> bool:
+        return self.revoked_at is None and (
+            self.expires_at is None or self.expires_at > time.time()
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "key_id": self.key_id,
+            "name": self.name,
+            "scopes": sorted(scope.value for scope in self.scopes),
+            "prefixes": list(self.prefixes),
+            "created_at": self.created_at,
+            "expires_at": self.expires_at,
+            "revoked_at": self.revoked_at,
+            "replaced_by": self.replaced_by,
+            "active": self.active,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class IssuedCredential:
+    credential: Credential
+    token: str
+
+
+class CredentialStore:
+    """SQLite credential store rooted in private server-owned state."""
+
+    def __init__(self, root: Path):
+        self.root = root.expanduser()
+        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(self.root, 0o700)
+        self.path = self.root / "credentials.sqlite3"
+        self.connection = sqlite3.connect(self.path, timeout=10)
+        self.connection.row_factory = sqlite3.Row
+        self.connection.execute("PRAGMA journal_mode=WAL")
+        self.connection.execute("PRAGMA busy_timeout=10000")
+        self._migrate()
+        os.chmod(self.path, 0o600)
+
+    def __enter__(self) -> CredentialStore:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        self.connection.close()
+
+    def _migrate(self) -> None:
+        with self.connection:
+            self.connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS credentials (
+                    key_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    scopes TEXT NOT NULL,
+                    prefixes TEXT NOT NULL,
+                    salt BLOB NOT NULL,
+                    verifier BLOB NOT NULL,
+                    created_at REAL NOT NULL,
+                    expires_at REAL,
+                    revoked_at REAL,
+                    replaced_by TEXT
+                )
+                """
+            )
+
+    def create(
+        self,
+        *,
+        name: str,
+        scopes: Iterable[Scope | str],
+        prefixes: Iterable[str] = (),
+        expires_at: float | None = None,
+    ) -> IssuedCredential:
+        issued, salt, verifier = self._prepare(
+            name=name, scopes=scopes, prefixes=prefixes, expires_at=expires_at
+        )
+        with self.connection:
+            self._insert(issued.credential, salt, verifier)
+        return issued
+
+    def _prepare(
+        self,
+        *,
+        name: str,
+        scopes: Iterable[Scope | str],
+        prefixes: Iterable[str] = (),
+        expires_at: float | None = None,
+    ) -> tuple[IssuedCredential, bytes, bytes]:
+        clean_name = name.strip()
+        if not clean_name:
+            raise ValueError("credential name must be non-empty")
+        normalized_scopes = frozenset(
+            scope if isinstance(scope, Scope) else Scope(scope) for scope in scopes
+        )
+        key_id = secrets.token_urlsafe(12)
+        # 32 random bytes provides 256 bits of secret material.
+        secret = secrets.token_urlsafe(32)
+        token = f"{TOKEN_PREFIX}.{key_id}.{secret}"
+        grant = CredentialGrant(
+            principal_id=key_id,
+            key_id=key_id,
+            scopes=normalized_scopes,
+            prefixes=tuple(prefixes),
+        )
+        now = time.time()
+        if expires_at is not None and expires_at <= now:
+            raise ValueError("credential expiry must be in the future")
+        salt = secrets.token_bytes(16)
+        verifier = _derive(token, salt)
+        credential = Credential(
+            key_id=key_id,
+            name=clean_name,
+            scopes=grant.scopes,
+            prefixes=grant.prefixes,
+            created_at=now,
+            expires_at=expires_at,
+            revoked_at=None,
+            replaced_by=None,
+        )
+        return IssuedCredential(credential, token), salt, verifier
+
+    def _insert(self, credential: Credential, salt: bytes, verifier: bytes) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO credentials (
+                key_id, name, scopes, prefixes, salt, verifier,
+                created_at, expires_at, revoked_at, replaced_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+            """,
+            (
+                credential.key_id,
+                credential.name,
+                json.dumps(sorted(scope.value for scope in credential.scopes)),
+                json.dumps(credential.prefixes),
+                salt,
+                verifier,
+                credential.created_at,
+                credential.expires_at,
+            ),
+        )
+
+    def list(self) -> list[Credential]:
+        rows = self.connection.execute(
+            "SELECT * FROM credentials ORDER BY created_at, key_id"
+        ).fetchall()
+        return [_credential(row) for row in rows]
+
+    def get(self, key_id: str) -> Credential:
+        row = self.connection.execute(
+            "SELECT * FROM credentials WHERE key_id = ?", (key_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"unknown credential: {key_id}")
+        return _credential(row)
+
+    def verify(self, token: str, *, now: float | None = None) -> CredentialGrant | None:
+        parsed = _parse_token(token)
+        if parsed is None:
+            return None
+        key_id = parsed
+        row = self.connection.execute(
+            "SELECT * FROM credentials WHERE key_id = ?", (key_id,)
+        ).fetchone()
+        if row is None or not hmac.compare_digest(
+            _derive(token, row["salt"]), row["verifier"]
+        ):
+            return None
+        current = time.time() if now is None else now
+        if row["revoked_at"] is not None or (
+            row["expires_at"] is not None and row["expires_at"] <= current
+        ):
+            return None
+        credential = _credential(row)
+        return CredentialGrant(
+            principal_id=credential.key_id,
+            key_id=credential.key_id,
+            scopes=credential.scopes,
+            prefixes=credential.prefixes,
+        )
+
+    def revoke(self, key_id: str) -> Credential:
+        now = time.time()
+        with self.connection:
+            cursor = self.connection.execute(
+                "UPDATE credentials SET revoked_at = COALESCE(revoked_at, ?) WHERE key_id = ?",
+                (now, key_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError(f"unknown credential: {key_id}")
+        return self.get(key_id)
+
+    def rotate(self, key_id: str) -> IssuedCredential:
+        old = self.get(key_id)
+        if old.revoked_at is not None:
+            raise ValueError("cannot rotate a revoked credential")
+        issued, salt, verifier = self._prepare(
+            name=old.name,
+            scopes=old.scopes,
+            prefixes=old.prefixes,
+            expires_at=old.expires_at,
+        )
+        now = time.time()
+        with self.connection:
+            self._insert(issued.credential, salt, verifier)
+            cursor = self.connection.execute(
+                """
+                UPDATE credentials SET revoked_at = ?, replaced_by = ?
+                WHERE key_id = ? AND revoked_at IS NULL
+                """,
+                (now, issued.credential.key_id, key_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("credential was revoked during rotation")
+        return issued
+
+
+def _derive(token: str, salt: bytes) -> bytes:
+    return hashlib.scrypt(
+        token.encode("utf-8"), salt=salt, n=SCRYPT_N, r=SCRYPT_R, p=SCRYPT_P
+    )
+
+
+def _parse_token(token: str) -> str | None:
+    parts = token.split(".")
+    if len(parts) != 3 or parts[0] != TOKEN_PREFIX or not parts[1] or not parts[2]:
+        return None
+    return parts[1]
+
+
+def _credential(row: sqlite3.Row) -> Credential:
+    return Credential(
+        key_id=row["key_id"],
+        name=row["name"],
+        scopes=frozenset(Scope(value) for value in json.loads(row["scopes"])),
+        prefixes=tuple(json.loads(row["prefixes"])),
+        created_at=row["created_at"],
+        expires_at=row["expires_at"],
+        revoked_at=row["revoked_at"],
+        replaced_by=row["replaced_by"],
+    )
