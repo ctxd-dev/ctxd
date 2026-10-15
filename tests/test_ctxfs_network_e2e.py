@@ -23,10 +23,13 @@ def _free_port() -> int:
 
 @contextmanager
 def _server(root: Path, port: int):
+    server_home = root.parent / f"{root.name}-home"
+    server_home.mkdir(mode=0o700, exist_ok=True)
     environment = os.environ.copy()
     for name in tuple(environment):
         if name.startswith("CTXD_"):
             environment.pop(name)
+    environment["HOME"] = str(server_home)
     process = subprocess.Popen(
         [
             sys.executable,
@@ -52,10 +55,17 @@ def _server(root: Path, port: int):
                 stdout, stderr = process.communicate()
                 pytest.fail(f"ctxfs exited during startup: {stdout}\n{stderr}")
             try:
-                with socket.create_connection(("127.0.0.1", port), timeout=0.1):
+                readiness = httpx.get(
+                    f"http://127.0.0.1:{port}/health", timeout=0.2
+                )
+                if (
+                    readiness.status_code == 401
+                    and readiness.headers.get("www-authenticate") == "Bearer"
+                ):
                     break
-            except OSError:
-                time.sleep(0.05)
+            except httpx.HTTPError:
+                pass
+            time.sleep(0.05)
         else:
             pytest.fail("ctxfs did not begin listening")
         yield f"http://127.0.0.1:{port}"
@@ -214,7 +224,18 @@ def test_isolated_tracker_server_and_cli_network_topology(tmp_path: Path) -> Non
             timeout=2,
         )
         assert mcp.status_code == 200
-        assert mcp.json()["result"]["structuredContent"]["text"].startswith("hello")
+        rest = httpx.get(
+            f"{endpoint}/api/ctxfs/read",
+            params={"path": "Writer/notes.md"},
+            headers=_auth(reader.token),
+            timeout=2,
+        )
+        assert rest.status_code == 200
+        assert (
+            mcp.json()["result"]["structuredContent"]["text"]
+            == rest.json()["text"]
+            == "hello from the remote tracker\n"
+        )
 
         assert httpx.get(
             f"{endpoint}/api/ctxfs/tree", headers=_auth(writer.token), timeout=2
