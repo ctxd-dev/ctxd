@@ -105,7 +105,7 @@ def test_cli_ctxfs_login_validates_before_saving() -> None:
     client.assert_called_once_with(
         endpoint="https://ctxfs.example", api_key="reader-token", timeout=5.0
     )
-    client.return_value.status.assert_called_once_with()
+    client.return_value.validate_authentication.assert_called_once_with()
     save.assert_called_once_with("reader-token", endpoint="https://ctxfs.example")
     assert "reader-token" not in stdout.getvalue()
 
@@ -116,11 +116,28 @@ def test_cli_ctxfs_login_validation_failure_does_not_save() -> None:
     ), patch("ctxd.cli.CtxfsClient") as client, patch(
         "ctxd.cli.save_ctxfs_api_key"
     ) as save:
-        client.return_value.status.side_effect = CtxdAuthError("unauthorized")
+        client.return_value.validate_authentication.side_effect = CtxdAuthError(
+            "unauthorized"
+        )
         exit_code = main(["login", "--endpoint", "https://ctxfs.example"])
 
     assert exit_code == 1
     save.assert_not_called()
+
+
+def test_cli_ctxfs_status_checks_authentication_without_requiring_status_scope() -> None:
+    stdout = StringIO()
+    with patch(
+        "ctxd.cli.resolve_ctxfs_api_key", return_value="submit-only-token"
+    ), patch("ctxd.cli.CtxfsClient") as client, redirect_stdout(stdout):
+        exit_code = main(["status", "--endpoint", "https://ctxfs.example"])
+
+    assert exit_code == 0
+    client.assert_called_once_with(
+        endpoint="https://ctxfs.example", api_key="submit-only-token", timeout=5.0
+    )
+    client.return_value.validate_authentication.assert_called_once_with()
+    assert stdout.getvalue() == "Authenticated to ctxfs at https://ctxfs.example.\n"
 
 
 def test_cli_login_saves_prompted_api_key() -> None:
@@ -732,7 +749,7 @@ def test_cli_backend_set_ctxfs_checks_external_endpoint_without_local_start(
     assert exit_code == 0
     ensure.assert_not_called()
     client.assert_called_once_with(endpoint="http://ctxfs.internal:8765", timeout=2.0)
-    client.return_value.status.assert_called_once_with()
+    client.return_value.validate_authentication.assert_called_once_with()
     output = stdout.getvalue()
     assert "ctxfs endpoint source: environment-url" in output
     assert "ctxfs managed locally: False" in output
@@ -754,7 +771,9 @@ def test_cli_backend_set_ctxfs_external_failure_does_not_save_backend(
     ), patch("ctxd.cli.ensure_started") as ensure, patch(
         "ctxd.cli.CtxfsClient"
     ) as client:
-        client.return_value.status.side_effect = RuntimeError("endpoint unavailable")
+        client.return_value.validate_authentication.side_effect = RuntimeError(
+            "endpoint unavailable"
+        )
         exit_code = main(["backend", "set", "ctxfs"])
 
     assert exit_code == 1

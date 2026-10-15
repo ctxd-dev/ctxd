@@ -486,13 +486,20 @@ def _quote_shell_stripped_text_token(token: str) -> str:
 def _handle_login(args: argparse.Namespace) -> int:
     if args.endpoint:
         endpoint = resolve_ctxfs_endpoint_details(url=args.endpoint).endpoint
+        if endpoint.startswith("unix://"):
+            raise ValueError(
+                "ctxfs login is only supported for HTTP(S) endpoints; "
+                "Unix sockets use local peer trust."
+            )
         api_key, should_save = _resolve_ctxfs_login_api_key(endpoint)
         if not api_key:
             raise ValueError(
                 "Missing ctxfs API key. Set `CTXD_CTXFS_API_KEY` or run "
                 "`ctxd login --endpoint URL` in an interactive terminal."
             )
-        CtxfsClient(endpoint=endpoint, api_key=api_key, timeout=5.0).status()
+        CtxfsClient(
+            endpoint=endpoint, api_key=api_key, timeout=5.0
+        ).validate_authentication()
         if should_save:
             save_ctxfs_api_key(api_key, endpoint=endpoint)
             print(f"Saved ctxfs authentication for {endpoint}.")
@@ -533,7 +540,9 @@ def _handle_status(args: argparse.Namespace) -> int:
         if not api_key:
             print(f"Not authenticated to ctxfs at {endpoint}.", file=sys.stderr)
             return 1
-        CtxfsClient(endpoint=endpoint, api_key=api_key, timeout=5.0).status()
+        CtxfsClient(
+            endpoint=endpoint, api_key=api_key, timeout=5.0
+        ).validate_authentication()
         print(f"Authenticated to ctxfs at {endpoint}.")
         return 0
     try:
@@ -689,7 +698,9 @@ def _handle_backend(args: argparse.Namespace) -> int:
             if resolution.managed_local:
                 service = ensure_started()
             else:
-                CtxfsClient(endpoint=resolution.endpoint, timeout=2.0).status()
+                CtxfsClient(
+                    endpoint=resolution.endpoint, timeout=2.0
+                ).validate_authentication()
                 service = None
             save_backend(backend)
             if args.endpoint:

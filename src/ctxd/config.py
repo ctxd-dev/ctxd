@@ -142,7 +142,9 @@ def normalize_ctxfs_endpoint(endpoint: str) -> str:
         raise ValueError(
             "ctxfs endpoint must not contain credentials, query, or fragment"
         )
-    return urlunsplit((parsed.scheme.lower(), host, parsed.path.rstrip("/"), "", ""))
+    if parsed.path not in {"", "/"}:
+        raise ValueError("ctxfs endpoint must not contain a path")
+    return urlunsplit((parsed.scheme.lower(), host, "", "", ""))
 
 
 def resolve_ctxfs_api_key(

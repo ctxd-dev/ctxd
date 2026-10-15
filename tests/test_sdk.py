@@ -6,7 +6,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from ctxd import SDK_NAME, AsyncClient, Client, __version__, get_user_agent
+from ctxd import SDK_NAME, AsyncClient, Client, CtxfsClient, __version__, get_user_agent
 from ctxd._metadata import SDK_VERSION
 from ctxd.config import (
     DEFAULT_CTXFS_SOCKET,
@@ -406,6 +406,11 @@ def test_ctxfs_credentials_are_normalized_scoped_and_isolated(
     assert resolve_api_key() == "hosted-token"
 
 
+def test_ctxfs_endpoint_rejects_paths_that_would_change_credential_scope() -> None:
+    with pytest.raises(ValueError, match="must not contain a path"):
+        normalize_ctxfs_endpoint("https://ctxfs.example/tenant-a")
+
+
 def test_ctxfs_credential_precedence_and_unix_socket_trust(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -464,6 +469,42 @@ def test_ctxfs_http_mcp_uses_endpoint_bearer(monkeypatch: pytest.MonkeyPatch) ->
 
     monkeypatch.setattr("httpx.AsyncClient.request", mock_request)
     assert client.call_tool("tree", {"prefix": "Docs"}) == {"items": []}
+
+
+def test_ctxfs_authentication_validation_accepts_authenticated_scope_denial(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = CtxfsClient(
+        endpoint="https://ctxfs.example",
+        api_key="submit-only-token",
+    )
+
+    async def mock_request(self, method, url, **kwargs):
+        del self, kwargs
+        assert method == "GET"
+        assert url == "/health"
+        return httpx.Response(403, json={"detail": "scope_denied"})
+
+    monkeypatch.setattr("httpx.AsyncClient.request", mock_request)
+    client.validate_authentication()
+
+
+def test_ctxfs_authentication_validation_rejects_invalid_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = CtxfsClient(
+        endpoint="https://ctxfs.example",
+        api_key="invalid-token",
+    )
+
+    async def mock_request(self, method, url, **kwargs):
+        del self, method, url, kwargs
+        return httpx.Response(401, json={"detail": "invalid bearer credential"})
+
+    monkeypatch.setattr("httpx.AsyncClient.request", mock_request)
+    with pytest.raises(CtxdError) as exc_info:
+        client.validate_authentication()
+    assert exc_info.value.status_code == 401
 
 
 def test_ctxfs_endpoint_details_mark_only_default_socket_as_managed(

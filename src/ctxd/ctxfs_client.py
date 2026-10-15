@@ -52,6 +52,21 @@ class AsyncCtxfsClient:
         payload.setdefault("endpoint", self._endpoint)
         return CtxfsStatus.model_validate(payload)
 
+    async def validate_authentication(self) -> None:
+        """Validate a bearer token without requiring the status capability.
+
+        A valid credential that lacks ``status`` receives 403 from ``/health``;
+        an absent or invalid credential receives 401 from authentication
+        middleware. This keeps submit-only tracker credentials usable while
+        still rejecting invalid tokens before they are persisted or a service
+        is started.
+        """
+        try:
+            await self.status()
+        except CtxdError as exc:
+            if exc.status_code != 403:
+                raise
+
     async def stat(self, path: str) -> CtxfsEntry:
         payload = await self._request("GET", "/api/ctxfs/stat", params={"path": path})
         return CtxfsEntry.model_validate(payload)
@@ -166,11 +181,13 @@ class AsyncCtxfsClient:
                 base_url="http://ctxfs.local",
                 timeout=self._timeout,
                 transport=transport,
+                follow_redirects=False,
             )
 
         return httpx.AsyncClient(
             base_url=self._endpoint.rstrip("/"),
             timeout=self._timeout,
+            follow_redirects=False,
         )
 
     @staticmethod
@@ -253,6 +270,9 @@ class CtxfsClient:
 
     def status(self) -> CtxfsStatus:
         return _run(self._async_client.status())
+
+    def validate_authentication(self) -> None:
+        return _run(self._async_client.validate_authentication())
 
     def stat(self, path: str) -> CtxfsEntry:
         return _run(self._async_client.stat(path))

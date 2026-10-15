@@ -61,7 +61,9 @@ def start(paths: TrackerServicePaths | None = None) -> dict[str, object]:
     if resolution.managed_local:
         ensure_started()
     else:
-        CtxfsClient(endpoint=resolution.endpoint, timeout=2.0).status()
+        CtxfsClient(
+            endpoint=resolution.endpoint, timeout=2.0
+        ).validate_authentication()
     paths.local_home.mkdir(parents=True, exist_ok=True)
     command = [sys.executable, "-m", "ctxd.tracker_service", "run"]
     process = subprocess.Popen(
