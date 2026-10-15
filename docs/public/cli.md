@@ -20,8 +20,9 @@ ctxd config get backend
 ctxd backend status
 ```
 
-`backend set` saves the selection and starts ctxfs. Local operation does not
-require an API key.
+`backend set` saves the selection. It starts ctxfs for the default managed local
+socket, or checks the effective endpoint when a URL or socket was explicitly
+configured. Local operation does not require an API key.
 
 ## Folders
 
@@ -41,7 +42,9 @@ ctxd tracker status
 ctxd tracker stop
 ```
 
-The tracker synchronizes configured folders while it is running.
+The tracker synchronizes configured folders while it is running. It may run
+with zero folders; adding folders is optional unless this machine contributes
+content.
 
 ## Files
 
@@ -62,8 +65,9 @@ Every listing and matching command is bounded. Inspect `complete` and
 
 ## ctxfs
 
-`ctxd backend set ctxfs` starts ctxfs when needed. Use
-`ctxd backend status` to check the active backend and ctxfs endpoint.
+`ctxd backend set ctxfs` starts ctxfs only for the default managed endpoint. Use
+`ctxd backend status` to check the active backend, effective endpoint, endpoint
+source, health, and whether ctxd manages the server process locally.
 
 ## MCP
 

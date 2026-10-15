@@ -9,10 +9,12 @@ import pytest
 from ctxd import SDK_NAME, AsyncClient, Client, __version__, get_user_agent
 from ctxd._metadata import SDK_VERSION
 from ctxd.config import (
+    DEFAULT_CTXFS_SOCKET,
     clear_api_key,
     resolve_api_key,
     resolve_backend,
     resolve_ctxfs_endpoint,
+    resolve_ctxfs_endpoint_details,
     save_api_key,
 )
 from ctxd.exceptions import CtxdAuthError, CtxdError, CtxdProtocolError
@@ -380,6 +382,40 @@ def test_ctxfs_endpoint_prefers_socket_env(monkeypatch: pytest.MonkeyPatch) -> N
     assert resolve_ctxfs_endpoint() == "unix:///tmp/ctxfs.sock"
 
 
+def test_ctxfs_endpoint_details_mark_only_default_socket_as_managed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CTXD_CONFIG_PATH", str(tmp_path / "config.json"))
+    monkeypatch.delenv("CTXD_CTXFS_URL", raising=False)
+    monkeypatch.delenv("CTXD_CTXFS_SOCKET", raising=False)
+    monkeypatch.setattr(
+        "ctxd.config._resolve_local_daemon_ctxfs_endpoint", lambda: None
+    )
+
+    default = resolve_ctxfs_endpoint_details()
+    explicit = resolve_ctxfs_endpoint_details(socket_path="/tmp/external.sock")
+
+    assert default.endpoint == f"unix://{DEFAULT_CTXFS_SOCKET}"
+    assert default.source == "default-managed-socket"
+    assert default.managed_local is True
+    assert explicit.endpoint == "unix:///tmp/external.sock"
+    assert explicit.source == "argument-socket"
+    assert explicit.managed_local is False
+
+
+def test_ctxfs_endpoint_details_preserve_environment_precedence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CTXD_CTXFS_URL", "https://ctxfs.example.net")
+    monkeypatch.setenv("CTXD_CTXFS_SOCKET", "/tmp/lower-priority.sock")
+
+    resolution = resolve_ctxfs_endpoint_details()
+
+    assert resolution.endpoint == "https://ctxfs.example.net"
+    assert resolution.source == "environment-url"
+    assert resolution.managed_local is False
+
+
 def test_ctxfs_endpoint_reads_local_daemon_ctxfs_section(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -394,6 +430,10 @@ def test_ctxfs_endpoint_reads_local_daemon_ctxfs_section(
     )
 
     assert resolve_ctxfs_endpoint() == "unix:///tmp/custom.sock"
+
+    resolution = resolve_ctxfs_endpoint_details()
+    assert resolution.source == "daemon-config"
+    assert resolution.managed_local is False
 
 
 def test_ctxfs_endpoint_reads_local_daemon_host_port_when_socket_disabled(

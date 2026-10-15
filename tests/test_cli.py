@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from ctxd.cli import main
+from ctxd.config import CtxfsEndpointResolution
 from ctxd.exceptions import CtxdAuthError
 from ctxd._metadata import SDK_VERSION
 from ctxd.models import (
@@ -596,14 +597,47 @@ def test_cli_backend_status_uses_ctxfs_profile() -> None:
         exit_code = main(["backend", "status"])
 
     assert exit_code == 0
-    service_status.assert_called_once_with()
+    service_status.assert_not_called()
     client.assert_called_once_with(endpoint="unix:///tmp/override.sock", timeout=2.0)
     client.return_value.status.assert_called_once_with()
     output = stdout.getvalue()
     assert "Backend: ctxfs" in output
-    assert "ctxfs running: True" in output
+    assert "ctxfs managed locally: False" in output
+    assert "ctxfs endpoint source: environment-socket" in output
+    assert "ctxfs running:" not in output
     assert "ctxfs healthy: True" in output
     assert "ctxfs endpoint: unix:///tmp/override.sock" in output
+
+
+def test_cli_backend_status_reports_managed_local_process() -> None:
+    stdout = StringIO()
+    service = {
+        "running": True,
+        "healthy": True,
+        "endpoint": "unix:///tmp/ctxfs.sock",
+        "root": "/tmp/ctxfs",
+        "error": None,
+    }
+
+    with patch.dict("os.environ", {"CTXD_BACKEND": "ctxfs"}, clear=False), patch(
+        "ctxd.cli.resolve_ctxfs_endpoint_details",
+        return_value=CtxfsEndpointResolution(
+            "unix:///tmp/ctxfs.sock", "default-managed-socket", True
+        ),
+    ), patch(
+        "ctxd.cli.ctxfs_service_status", return_value=service
+    ) as service_status, patch("ctxd.cli.CtxfsClient") as client, redirect_stdout(
+        stdout
+    ):
+        exit_code = main(["backend", "status"])
+
+    assert exit_code == 0
+    service_status.assert_called_once_with()
+    client.assert_called_once_with(endpoint="unix:///tmp/ctxfs.sock", timeout=2.0)
+    output = stdout.getvalue()
+    assert "ctxfs managed locally: True" in output
+    assert "ctxfs running: True" in output
+    assert "ctxfs root: /tmp/ctxfs" in output
 
 
 def test_cli_backend_set_ctxfs_starts_service(tmp_path: Path) -> None:
@@ -621,6 +655,11 @@ def test_cli_backend_set_ctxfs_starts_service(tmp_path: Path) -> None:
         "os.environ",
         {"CTXD_CONFIG_PATH": str(config_path)},
         clear=False,
+    ), patch(
+        "ctxd.cli.resolve_ctxfs_endpoint_details",
+        return_value=CtxfsEndpointResolution(
+            "unix:///tmp/ctxfs.sock", "default-managed-socket", True
+        ),
     ), patch("ctxd.cli.ensure_started", return_value=service) as ensure, redirect_stdout(
         stdout
     ):
@@ -630,7 +669,9 @@ def test_cli_backend_set_ctxfs_starts_service(tmp_path: Path) -> None:
     ensure.assert_called_once_with()
     output = stdout.getvalue()
     assert "Backend set to ctxfs." in output
-    assert "ctxfs endpoint: unix:///tmp/ctxfs.sock" in output
+    assert "ctxfs endpoint source: default-managed-socket" in output
+    assert "ctxfs managed locally: True" in output
+    assert "ctxfs endpoint: unix://" in output
     assert '"backend": "ctxfs"' in config_path.read_text()
 
 
@@ -643,6 +684,11 @@ def test_cli_backend_set_ctxfs_failure_does_not_save_backend(tmp_path: Path) -> 
         {"CTXD_CONFIG_PATH": str(config_path)},
         clear=False,
     ), patch(
+        "ctxd.cli.resolve_ctxfs_endpoint_details",
+        return_value=CtxfsEndpointResolution(
+            "unix:///tmp/ctxfs.sock", "default-managed-socket", True
+        ),
+    ), patch(
         "ctxd.cli.ensure_started", side_effect=RuntimeError("service failed")
     ), patch(
         "sys.stderr", stderr
@@ -651,6 +697,57 @@ def test_cli_backend_set_ctxfs_failure_does_not_save_backend(tmp_path: Path) -> 
 
     assert exit_code == 1
     assert stderr.getvalue() == "service failed\n"
+    assert not config_path.exists()
+
+
+def test_cli_backend_set_ctxfs_checks_external_endpoint_without_local_start(
+    tmp_path: Path,
+) -> None:
+    stdout = StringIO()
+    config_path = tmp_path / "config.json"
+
+    with patch.dict(
+        "os.environ",
+        {
+            "CTXD_CONFIG_PATH": str(config_path),
+            "CTXD_CTXFS_URL": "http://ctxfs.internal:8765",
+        },
+        clear=False,
+    ), patch("ctxd.cli.ensure_started") as ensure, patch(
+        "ctxd.cli.CtxfsClient"
+    ) as client, redirect_stdout(stdout):
+        exit_code = main(["backend", "set", "ctxfs"])
+
+    assert exit_code == 0
+    ensure.assert_not_called()
+    client.assert_called_once_with(endpoint="http://ctxfs.internal:8765", timeout=2.0)
+    client.return_value.status.assert_called_once_with()
+    output = stdout.getvalue()
+    assert "ctxfs endpoint source: environment-url" in output
+    assert "ctxfs managed locally: False" in output
+    assert "ctxfs root:" not in output
+
+
+def test_cli_backend_set_ctxfs_external_failure_does_not_save_backend(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.json"
+
+    with patch.dict(
+        "os.environ",
+        {
+            "CTXD_CONFIG_PATH": str(config_path),
+            "CTXD_CTXFS_URL": "http://ctxfs.internal:8765",
+        },
+        clear=False,
+    ), patch("ctxd.cli.ensure_started") as ensure, patch(
+        "ctxd.cli.CtxfsClient"
+    ) as client:
+        client.return_value.status.side_effect = RuntimeError("endpoint unavailable")
+        exit_code = main(["backend", "set", "ctxfs"])
+
+    assert exit_code == 1
+    ensure.assert_not_called()
     assert not config_path.exists()
 
 

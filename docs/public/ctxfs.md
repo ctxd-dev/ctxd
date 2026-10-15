@@ -2,7 +2,9 @@
 title: 'ctxfs'
 ---
 
-ctxfs presents tracked local content as a filesystem-shaped tree that agents can inspect with explicit, bounded operations. It runs locally with the tracker and uses exact, path-oriented reads.
+ctxfs stores indexed content and metadata and exposes them through a
+filesystem-shaped tree that agents can inspect with explicit, bounded
+operations. The server can run independently of a tracker or configured folder.
 
 ## Install and start
 
@@ -16,7 +18,9 @@ ctxd backend status
 
 The default data root is `~/.ctxd/ctxfs`. The managed server listens through the
 Unix socket `~/.ctxd/local/ctxfs.sock`; `ctxd backend status` prints the effective
-endpoint. Do not launch a second server against the same data root.
+endpoint and whether ctxd manages it. An explicitly configured URL or socket is
+treated as externally managed and is checked without launching a second server.
+Do not launch a second server against the same data root.
 
 ## Path model
 

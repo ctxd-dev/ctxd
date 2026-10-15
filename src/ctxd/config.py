@@ -1,6 +1,7 @@
 import json
 import os
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,15 @@ DEFAULT_CONFIG_PATH = Path.home() / ".ctxd" / "config.json"
 DEFAULT_BACKEND = "remote"
 SUPPORTED_BACKENDS = frozenset({"hosted", "remote", "ctxfs"})
 DEFAULT_CTXFS_SOCKET = Path.home() / ".ctxd" / "local" / "ctxfs.sock"
-DEFAULT_CTXFS_URL = "http://127.0.0.1:8765"
+
+
+@dataclass(frozen=True)
+class CtxfsEndpointResolution:
+    """The effective ctxfs endpoint and who owns its process lifecycle."""
+
+    endpoint: str
+    source: str
+    managed_local: bool
 
 
 def get_config_path() -> Path:
@@ -102,37 +111,50 @@ def resolve_ctxfs_endpoint(
     url: str | None = None,
     socket_path: str | None = None,
 ) -> str:
+    return resolve_ctxfs_endpoint_details(url=url, socket_path=socket_path).endpoint
+
+
+def resolve_ctxfs_endpoint_details(
+    *,
+    url: str | None = None,
+    socket_path: str | None = None,
+) -> CtxfsEndpointResolution:
     if url and url.strip():
-        return url.strip()
+        return CtxfsEndpointResolution(url.strip(), "argument-url", False)
     if socket_path and socket_path.strip():
-        return _socket_endpoint(socket_path.strip())
+        return CtxfsEndpointResolution(
+            _socket_endpoint(socket_path.strip()), "argument-socket", False
+        )
 
     env_url = os.getenv("CTXD_CTXFS_URL")
     if env_url and env_url.strip():
-        return env_url.strip()
+        return CtxfsEndpointResolution(env_url.strip(), "environment-url", False)
 
     env_socket = os.getenv("CTXD_CTXFS_SOCKET")
     if env_socket and env_socket.strip():
-        return _socket_endpoint(env_socket.strip())
+        return CtxfsEndpointResolution(
+            _socket_endpoint(env_socket.strip()), "environment-socket", False
+        )
 
     config = load_config()
     config_url = config.get("ctxfs_url")
     if isinstance(config_url, str) and config_url.strip():
-        return config_url.strip()
+        return CtxfsEndpointResolution(config_url.strip(), "config-url", False)
 
     config_socket = config.get("ctxfs_socket")
     if isinstance(config_socket, str) and config_socket.strip():
-        return _socket_endpoint(config_socket.strip())
+        return CtxfsEndpointResolution(
+            _socket_endpoint(config_socket.strip()), "config-socket", False
+        )
 
     daemon_endpoint = _resolve_local_daemon_ctxfs_endpoint()
     if daemon_endpoint:
-        return daemon_endpoint
+        return CtxfsEndpointResolution(daemon_endpoint, "daemon-config", False)
 
     default_socket = DEFAULT_CTXFS_SOCKET.expanduser()
-    if default_socket.exists():
-        return _socket_endpoint(str(default_socket))
-
-    return DEFAULT_CTXFS_URL
+    return CtxfsEndpointResolution(
+        _socket_endpoint(str(default_socket)), "default-managed-socket", True
+    )
 
 
 def save_api_key(api_key: str, *, base_url: str | None = None) -> Path:

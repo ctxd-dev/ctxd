@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
+from ctxd.config import resolve_ctxfs_endpoint_details
+from ctxd.ctxfs_client import CtxfsClient
 from ctxd.folders import list_folders
 from ctxd.local_ctxfs_service import ensure_started
 from ctxd.tracker import run_forever, sync_once
@@ -55,7 +57,11 @@ def start(paths: TrackerServicePaths | None = None) -> dict[str, object]:
     if current["running"]:
         return current
 
-    ensure_started()
+    resolution = resolve_ctxfs_endpoint_details()
+    if resolution.managed_local:
+        ensure_started()
+    else:
+        CtxfsClient(endpoint=resolution.endpoint, timeout=2.0).status()
     paths.local_home.mkdir(parents=True, exist_ok=True)
     command = [sys.executable, "-m", "ctxd.tracker_service", "run"]
     process = subprocess.Popen(
