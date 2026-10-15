@@ -2,11 +2,13 @@
 title: 'Local tracker'
 ---
 
-The local tracker watches folders you select and keeps their ctxfs representation current. It runs with the local ctxfs server as one per-user background service.
+The local tracker watches folders you select and keeps their ctxfs representation
+current. The tracker and ctxfs server are separate per-user processes; starting
+the tracker ensures ctxfs is running first.
 
 ## Requirements
 
-- A supported macOS, Linux, or Windows user environment
+- macOS or Linux
 - Python 3.11 or 3.12 with `pip`
 - A local folder you want ctxd to track
 
@@ -24,12 +26,14 @@ The package includes the CLI, tracker, and ctxfs. ctxfs is not installed as a se
 ## Start in ctxfs mode
 
 ```bash
-ctxd config set backend ctxfs
+ctxd backend set ctxfs
 ctxd tracker start
 ctxd backend status
 ```
 
-Selecting the `ctxfs` backend installs and starts the per-user service. The service starts again at login and restarts after failures.
+Selecting the backend starts ctxfs. `tracker start` launches the tracker as a
+detached process for the current user. Start it again after a reboot; automatic
+login registration is not currently installed.
 
 ## Add folders
 
@@ -39,7 +43,9 @@ ctxd folders add ~/Projects/example --name Example
 ctxd folders list
 ```
 
-Each folder receives a stable `ROOT_ID`. Its ctxfs prefix is `local-files/<ROOT_ID>/`.
+Each folder name becomes a CLI path alias, such as `Documents/notes.md`. The
+underlying ctxfs prefix has a generated root ID, but ordinary CLI use does not
+require it.
 
 ## Monitor
 
@@ -81,7 +87,7 @@ pip install --upgrade ctxd
 ctxd tracker start
 ```
 
-Existing roots and local state are preserved.
+Configured folders and local ctxfs state are preserved.
 
 ## Uninstall
 
@@ -89,6 +95,9 @@ Existing roots and local state are preserved.
 ctxd tracker stop
 pip uninstall ctxd
 ```
+
+Uninstalling the package does not remove `~/.ctxd`. Review and remove that
+directory separately only if you intend to delete all ctxd-managed local state.
 
 ## Troubleshooting
 

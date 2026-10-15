@@ -3,7 +3,9 @@ title: 'Local API'
 
 ---
 
-The local ctxfs API is served by the per-user `ctxd` service. Its default base URL is `http://127.0.0.1:8765/api/ctxfs`.
+The local ctxfs server provides REST endpoints under `/api/ctxfs` and an MCP
+endpoint at `POST /mcp`. The managed server listens on the Unix socket
+`~/.ctxd/local/ctxfs.sock` by default.
 
 Check the active URL with:
 
@@ -17,24 +19,33 @@ Loopback requests do not require a ctxd API key. Do not expose this service on a
 
 | Operation | Endpoint | Important parameters |
 | --- | --- | --- |
-| Stat a path | `GET /stat` | `path` |
-| List a directory | `GET /ls` | `path`, `limit` |
-| Walk a subtree | `GET /tree` | `prefix`, `depth`, `limit` |
-| Match paths | `GET /glob` | `pattern`, `prefix`, `limit` |
-| Read a file | `GET /read` | `path`, `max_bytes` |
-| Read line range | `GET /read-lines` | `path`, `start_line`, `end_line` |
-| Match exact text | `GET /grep` | `pattern`, `prefix`, `limit` |
+| Stat a path | `GET /api/ctxfs/stat` | `path` |
+| List a directory | `GET /api/ctxfs/ls` | `path`, `limit` |
+| Walk a subtree | `GET /api/ctxfs/tree` | `prefix`, `depth`, `limit` |
+| Match paths | `GET /api/ctxfs/glob` | `pattern`, `prefix`, `limit` |
+| Read a file | `GET /api/ctxfs/read` | `path`, `max_bytes` |
+| Read line range | `GET /api/ctxfs/read-lines` | `path`, `start_line`, `end_line` |
+| Match exact text | `GET /api/ctxfs/grep` | `pattern`, `prefix`, `limit` |
+| MCP JSON-RPC | `POST /mcp` | MCP `initialize`, `ping`, `tools/list`, `tools/call` |
 
-Paths are relative to the ctxfs root. A tracked folder appears beneath `local-files/<ROOT_ID>/`.
+REST and MCP paths use canonical ctxfs paths beneath `local-files/<ROOT_ID>/`.
+The CLI resolves human-readable folder aliases before calling these interfaces.
 
 ## Examples
 
 ```bash
-curl "http://127.0.0.1:8765/api/ctxfs/ls?path=local-files/<ROOT_ID>"
-curl "http://127.0.0.1:8765/api/ctxfs/glob?pattern=**/*.md&prefix=local-files/<ROOT_ID>"
-curl "http://127.0.0.1:8765/api/ctxfs/read-lines?path=local-files/<ROOT_ID>/runbook.md&start_line=20&end_line=40"
-curl "http://127.0.0.1:8765/api/ctxfs/grep?pattern=rollback&prefix=local-files/<ROOT_ID>&limit=50"
+ctxd files ls Documents
+ctxd files glob "Documents/**/*.md" --limit 100
+ctxd files read-lines Documents/runbook.md --start 20 --end 40
+ctxd files grep "rollback" --prefix Documents --limit 50
 ```
+
+Use these CLI commands for normal local access. They handle the effective socket
+endpoint and folder aliases. The REST routes are intended for clients that can
+connect to the configured Unix socket or an explicitly configured HTTP URL.
+
+For MCP, configure `ctxd-mcp` as described in the [ctxfs guide](/docs/ctxfs), or
+connect an HTTP-capable MCP client to `/mcp` on the effective endpoint.
 
 ## Bounds and identity
 

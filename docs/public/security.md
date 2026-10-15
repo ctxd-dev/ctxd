@@ -30,14 +30,16 @@ The service is installed per user, and its state is stored in that user's home d
 Stop tracking a folder without deleting the source folder:
 
 ```bash
-ctxd folders remove <ROOT_ID>
+ctxd folders remove Documents
 ```
 
-Remove the service and all local daemon state:
+Stop tracking and uninstall the package:
 
 ```bash
 ctxd tracker stop
 pip uninstall ctxd
 ```
 
-Review the paths before using the purge options. This action removes ctxd-managed local state, not your tracked source folders.
+Uninstalling does not delete `~/.ctxd`. If you choose to remove that directory
+manually, review the path first: it contains ctxd-managed configuration, tracker
+state, and ctxfs data, but not the tracked source folders themselves.

@@ -56,3 +56,21 @@ def test_public_docs_do_not_reference_removed_cli_commands() -> None:
         text = path.read_text()
         for command in removed_commands:
             assert command not in text, f"{path.name}: {command}"
+
+
+def test_public_docs_use_the_supported_local_workflow() -> None:
+    public_text = "\n".join(
+        path.read_text() for path in PUBLIC_DOCS.rglob("*.md")
+    )
+
+    assert "ctxd backend set ctxfs" in public_text
+    assert "ctxd files tree" in public_text
+    assert "ctxd files grep" in public_text
+    assert "POST /mcp" in public_text
+    assert "ctxd-mcp" in public_text
+    assert "~/.ctxd/local/ctxfs.sock" in public_text
+    assert "curl " not in public_text
+    assert "ctxd config set backend ctxfs" not in public_text
+    assert "http://127.0.0.1:8765" not in public_text
+    assert "macOS, Linux, or Windows" not in public_text
+    assert "ctxd folders remove <ROOT_ID>" not in public_text
