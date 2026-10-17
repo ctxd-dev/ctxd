@@ -99,7 +99,6 @@ def test_overview_describes_optional_tracker_and_endpoint_ownership() -> None:
     text = (PUBLIC_DOCS / "overview.md").read_text()
 
     assert "optional **local tracker**" in text
-    assert "ctxfs server\ncan run and serve its existing store" in text
     assert "Read through the ctxd CLI" in text
     assert "Starting the tracker ensures the ctxfs server is running" not in text
 

@@ -11,8 +11,7 @@ can use two pieces:
 2. **ctxfs** stores indexed content and exposes it through filesystem-shaped
    paths with bounded read tools.
 
-Add a folder when this machine should contribute local content. A ctxfs server
-can run and serve its existing store without a local tracker or tracked folder.
+Add a folder when this machine should contribute local content.
 
 ## How it works
 
