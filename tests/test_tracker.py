@@ -1,3 +1,5 @@
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -84,6 +86,135 @@ def test_tracker_sync_submits_text_files_and_persists_state(
     assert operation["path"] == "local-files/folder-1/README.md"
     assert operation["text"] == "hello ctxfs\n"
     assert operation["file_format"] == "md"
+    payload = json.loads((tmp_path / "state.json").read_text())
+    tracked = next(iter(payload["local-files/folder-1"].values()))
+    assert tracked == {
+        "content_hash": operation["source_version"],
+        "file_format": "md",
+        "path": "local-files/folder-1/README.md",
+        "source_version": operation["source_version"],
+    }
+
+
+def test_tracker_sync_submits_only_incremental_changes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    docs = tmp_path / "Docs"
+    docs.mkdir()
+    original = docs / "original.md"
+    original.write_text("version one\n", encoding="utf-8")
+    folder = FolderConfig(
+        name="Documents",
+        path=str(docs),
+        prefix="local-files/folder-1",
+    )
+    paths = TrackerPaths(state_file=tmp_path / "state.json")
+    submissions: list[list[dict]] = []
+
+    def submit(endpoint, *, writer_id, writer_prefix, operations):
+        del endpoint, writer_id, writer_prefix
+        submissions.append(operations)
+
+    monkeypatch.setattr("ctxd.tracker._submit_operations", submit)
+
+    first = sync_once(folders=[folder], endpoint="http://ctxfs.local", paths=paths)
+    assert first["operations"] == 1
+    assert [operation["kind"] for operation in submissions.pop()] == ["put"]
+
+    unchanged = sync_once(folders=[folder], endpoint="http://ctxfs.local", paths=paths)
+    assert unchanged["operations"] == 0
+    assert submissions == []
+
+    original.write_text("version two\n", encoding="utf-8")
+    edited = sync_once(folders=[folder], endpoint="http://ctxfs.local", paths=paths)
+    assert edited["operations"] == 1
+    assert [operation["kind"] for operation in submissions.pop()] == ["put"]
+
+    added_path = docs / "added.txt"
+    added_path.write_text("new\n", encoding="utf-8")
+    added = sync_once(folders=[folder], endpoint="http://ctxfs.local", paths=paths)
+    assert added["operations"] == 1
+    assert submissions.pop()[0]["path"] == "local-files/folder-1/added.txt"
+
+    renamed = docs / "renamed.md"
+    original.rename(renamed)
+    moved = sync_once(folders=[folder], endpoint="http://ctxfs.local", paths=paths)
+    assert moved["operations"] == 1
+    move = submissions.pop()[0]
+    assert move["kind"] == "move"
+    assert move["path"] == "local-files/folder-1/renamed.md"
+    assert move["expected_content_hash"] == move["source_version"]
+
+    added_path.unlink()
+    deleted = sync_once(folders=[folder], endpoint="http://ctxfs.local", paths=paths)
+    assert deleted["operations"] == 1
+    assert submissions.pop()[0]["kind"] == "delete"
+
+
+def test_tracker_rename_uses_ctxfs_normalized_content_hash(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    docs = tmp_path / "Docs"
+    docs.mkdir()
+    original = docs / "original.md"
+    original.write_bytes(b"line one\r\nline two\r\n")
+    folder = FolderConfig(
+        name="Documents", path=str(docs), prefix="local-files/folder-1"
+    )
+    paths = TrackerPaths(state_file=tmp_path / "state.json")
+    submissions: list[list[dict]] = []
+    monkeypatch.setattr(
+        "ctxd.tracker._submit_operations",
+        lambda endpoint, **kwargs: submissions.append(kwargs["operations"]),
+    )
+    sync_once(folders=[folder], endpoint="http://ctxfs.local", paths=paths)
+    submissions.clear()
+
+    original.rename(docs / "renamed.md")
+    sync_once(folders=[folder], endpoint="http://ctxfs.local", paths=paths)
+
+    move = submissions[0][0]
+    normalized_hash = "sha256:" + hashlib.sha256(b"line one\nline two\n").hexdigest()
+    assert move["kind"] == "move"
+    assert move["expected_content_hash"] == normalized_hash
+    assert move["expected_content_hash"] != move["source_version"]
+
+
+def test_tracker_sync_migrates_legacy_state_with_a_safe_put(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    docs = tmp_path / "Docs"
+    docs.mkdir()
+    tracked_path = docs / "README.md"
+    tracked_path.write_text("hello ctxfs\n", encoding="utf-8")
+    folder = FolderConfig(
+        name="Documents", path=str(docs), prefix="local-files/folder-1"
+    )
+    stat = tracked_path.stat()
+    source_key = f"{folder.prefix}:{stat.st_dev}:{stat.st_ino}"
+    source_version = "sha256:" + hashlib.sha256(tracked_path.read_bytes()).hexdigest()
+    state_file = tmp_path / "state.json"
+    state_file.write_text(
+        '{"local-files/folder-1":{"%s":"%s"}}\n' % (source_key, source_version)
+    )
+    submissions = []
+    monkeypatch.setattr(
+        "ctxd.tracker._submit_operations",
+        lambda endpoint, **kwargs: submissions.extend(kwargs["operations"]),
+    )
+
+    result = sync_once(
+        folders=[folder],
+        endpoint="http://ctxfs.local",
+        paths=TrackerPaths(state_file=state_file),
+    )
+
+    assert result["operations"] == 1
+    assert submissions[0]["kind"] == "put"
+    assert '"path": "local-files/folder-1/README.md"' in state_file.read_text()
 
 
 def test_tracker_sync_submits_delete_for_missing_file(
