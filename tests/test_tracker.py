@@ -182,6 +182,47 @@ def test_tracker_rename_uses_ctxfs_normalized_content_hash(
     assert move["expected_content_hash"] != move["source_version"]
 
 
+def test_tracker_rename_with_new_file_format_uses_put(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    docs = tmp_path / "Docs"
+    docs.mkdir()
+    original = docs / "original.md"
+    original.write_text("unchanged\n", encoding="utf-8")
+    folder = FolderConfig(
+        name="Documents", path=str(docs), prefix="local-files/folder-1"
+    )
+    paths = TrackerPaths(state_file=tmp_path / "state.json")
+    submissions: list[list[dict]] = []
+    monkeypatch.setattr(
+        "ctxd.tracker._submit_operations",
+        lambda endpoint, **kwargs: submissions.append(kwargs["operations"]),
+    )
+    sync_once(folders=[folder], endpoint="http://ctxfs.local", paths=paths)
+    source_key = submissions[0][0]["source_key"]
+    submissions.clear()
+
+    renamed = docs / "renamed.txt"
+    original.rename(renamed)
+    sync_once(folders=[folder], endpoint="http://ctxfs.local", paths=paths)
+
+    assert len(submissions) == 1
+    assert len(submissions[0]) == 1
+    operation = submissions[0][0]
+    assert operation["kind"] == "put"
+    assert operation["path"] == "local-files/folder-1/renamed.txt"
+    assert operation["file_format"] == "txt"
+    assert operation["source_key"] == source_key
+    payload = json.loads(paths.state_file.read_text())
+    assert payload[folder.prefix][operation["source_key"]] == {
+        "content_hash": operation["source_version"],
+        "file_format": "txt",
+        "path": "local-files/folder-1/renamed.txt",
+        "source_version": operation["source_version"],
+    }
+
+
 def test_tracker_sync_migrates_legacy_state_with_a_safe_put(
     tmp_path: Path,
     monkeypatch,
