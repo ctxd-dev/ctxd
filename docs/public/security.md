@@ -35,9 +35,11 @@ Text files that need no transformation may be linked into the ctxfs tree instead
 
 ## Per-user isolation
 
-The managed local service runs per user, and its state is stored in that user's
-home directory. Use normal operating-system account and file permissions to
-control access to the tracked folders and ctxfs state.
+The managed local ctxfs service runs under the invoking operating-system account
+and protects its default runtime and data directories with user-only
+permissions. It relies on normal operating-system account isolation and is not
+a separate security sandbox. Other processes running as the same account, and
+operating-system administrators, can access ctxd state.
 
 For a standalone server, protect its selected `--root`, credential database,
 TLS private key, and backups with a dedicated operating-system account and

@@ -141,6 +141,15 @@ def test_public_docs_describe_supported_authenticated_network_topology() -> None
     assert "MCP reader therefore normally\nneeds both `read` and `status`" in public_text
 
 
+def test_security_docs_describe_os_account_isolation_without_claiming_a_sandbox() -> None:
+    text = (PUBLIC_DOCS / "security.md").read_text()
+
+    assert "runs under the invoking operating-system account" in text
+    assert "user-only\npermissions" in text
+    assert "is not\na separate security sandbox" in text
+    assert "installed per user" not in text
+
+
 def test_documented_network_command_groups_exist_in_cli_help() -> None:
     commands = (
         ("server", "serve"),
