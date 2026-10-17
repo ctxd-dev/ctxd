@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import socket
 import stat
 import tempfile
@@ -12,6 +13,7 @@ from ctxd.local_ctxfs_server import CtxfsAuthMode
 from ctxd.local_ctxfs_service import (
     LocalCtxfsPaths,
     _is_loopback_host,
+    _private_umask,
     ensure_started,
     serve,
     status,
@@ -48,6 +50,28 @@ def _paths(tmp_path: Path) -> LocalCtxfsPaths:
         pid_file=tmp_path / "local" / "ctxfs.pid",
         lock_file=tmp_path / "local" / "ctxfs.lock",
     )
+
+
+def test_private_umask_protects_created_paths_and_restores_previous(
+    tmp_path: Path,
+) -> None:
+    previous = os.umask(0o027)
+    try:
+        with pytest.raises(RuntimeError, match="exercise restoration"):
+            with _private_umask():
+                directory = tmp_path / "directory"
+                directory.mkdir()
+                file = tmp_path / "file"
+                file.touch()
+                raise RuntimeError("exercise restoration")
+
+        assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+        assert stat.S_IMODE(file.stat().st_mode) == 0o600
+
+        restored = os.umask(0o027)
+        assert restored == 0o027
+    finally:
+        os.umask(previous)
 
 
 def test_ensure_started_returns_existing_healthy_service(tmp_path: Path) -> None:
