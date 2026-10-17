@@ -7,6 +7,7 @@ import socket
 import ssl
 import subprocess
 import sys
+import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -15,6 +16,19 @@ import httpx
 import pytest
 
 from ctxfs.credentials import CredentialStore
+
+
+# Public read-operation E2E matrix:
+#
+# | operation  | managed CLI | authenticated REST | authenticated MCP |
+# |------------|-------------|--------------------|-------------------|
+# | stat       | yes         | yes                | yes               |
+# | ls         | yes         | yes                | yes               |
+# | tree       | yes         | yes                | yes               |
+# | glob       | yes         | yes                | yes               |
+# | read       | yes         | yes                | yes               |
+# | read-lines | yes         | yes                | read_lines: yes   |
+# | grep       | yes         | yes                | yes               |
 
 
 def _free_port() -> int:
@@ -40,17 +54,17 @@ def _server(
             environment.pop(name)
     environment["HOME"] = str(server_home)
     command = [
-            sys.executable,
-            "-m",
-            "ctxd.local_ctxfs_service",
-            "serve",
-            "--root",
-            str(root),
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(port),
-        ]
+        sys.executable,
+        "-m",
+        "ctxd.local_ctxfs_service",
+        "serve",
+        "--root",
+        str(root),
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+    ]
     if tls_cert is not None and tls_key is not None:
         command.extend(["--tls-cert", str(tls_cert), "--tls-key", str(tls_key)])
     process = subprocess.Popen(
@@ -151,6 +165,21 @@ def _client_environment(home: Path, endpoint: str, token: str) -> dict[str, str]
     return environment
 
 
+def _isolated_environment(home: Path) -> dict[str, str]:
+    environment = os.environ.copy()
+    for name in tuple(environment):
+        if name.startswith("CTXD_"):
+            environment.pop(name)
+    environment.update(
+        {
+            "HOME": str(home),
+            "CTXD_CONFIG_PATH": str(home / ".ctxd" / "config.json"),
+            "CTXD_CREDENTIALS_PATH": str(home / ".ctxd" / "credentials.json"),
+        }
+    )
+    return environment
+
+
 def _run_module(
     module: str, *arguments: str, environment: dict[str, str]
 ) -> subprocess.CompletedProcess[str]:
@@ -179,6 +208,37 @@ def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _cli_json(*arguments: str, environment: dict[str, str]) -> dict[str, object]:
+    result = _run_module("ctxd.cli", *arguments, environment=environment)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def _mcp_request(
+    endpoint: str,
+    token: str,
+    method: str,
+    *,
+    params: dict[str, object] | None = None,
+    request_id: int = 1,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": method,
+    }
+    if params is not None:
+        payload["params"] = params
+    response = httpx.post(
+        f"{endpoint}/mcp",
+        headers=_auth(token),
+        json=payload,
+        timeout=2,
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
 def _submission(prefix: str, *, run_id: str = "run-1") -> dict[str, object]:
     return {
         "writer_id": "untrusted-client-value",
@@ -203,6 +263,208 @@ def _submission(prefix: str, *, run_id: str = "run-1") -> dict[str, object]:
     }
 
 
+def test_managed_ctxfs_full_cli_lifecycle(tmp_path: Path) -> None:
+    # Keep the managed Unix socket below macOS's short AF_UNIX path limit.
+    home = Path(tempfile.mkdtemp(prefix="ctxd-e2e-"))
+    tracked = tmp_path / "source"
+    nested = tracked / "nested"
+    nested.mkdir(parents=True)
+    notes = tracked / "notes.md"
+    notes.write_text("alpha needle\nbeta\nneedle omega\n", encoding="utf-8")
+    (nested / "report.txt").write_text("nested context\n", encoding="utf-8")
+    (tracked / ".hidden.md").write_text("hidden\n", encoding="utf-8")
+    (tracked / "binary.md").write_bytes(b"\xff\xfe")
+    (tracked / "unsupported.bin").write_text("unsupported\n", encoding="utf-8")
+    (tracked / "extensionless").write_text("extensionless\n", encoding="utf-8")
+    (tracked / "oversized.txt").write_bytes(b"x" * 5_000_001)
+    environment = _isolated_environment(home)
+
+    try:
+        initialized = _run_module(
+            "ctxd.cli", "backend", "set", "ctxfs", environment=environment
+        )
+        assert initialized.returncode == 0, initialized.stderr
+        assert "ctxfs managed locally: True" in initialized.stdout
+
+        registered = _run_module(
+            "ctxd.cli",
+            "folders",
+            "add",
+            str(tracked),
+            "--name",
+            "Documents",
+            environment=environment,
+        )
+        assert registered.returncode == 0, registered.stderr
+        config = json.loads((home / ".ctxd" / "config.json").read_text())
+        prefix = config["folders"]["Documents"]["prefix"]
+        canonical_notes = f"{prefix}/notes.md"
+
+        synchronized = _run_module(
+            "ctxd.tracker_service", "sync-once", environment=environment
+        )
+        assert synchronized.returncode == 0, synchronized.stderr
+
+        stat = _cli_json("files", "stat", "Documents/notes.md", environment=environment)
+        assert stat["path"] == canonical_notes
+        assert stat["size_bytes"] == len(notes.read_bytes())
+        assert stat["line_count"] == 3
+
+        listing = _cli_json("files", "ls", "Documents", environment=environment)
+        assert {(item["path"], item["kind"]) for item in listing["items"]} == {
+            (canonical_notes, "file"),
+            (f"{prefix}/nested", "directory"),
+        }
+        assert listing["complete"] is True
+
+        tree = _cli_json("files", "tree", "Documents", environment=environment)
+        tree_paths = {item["path"] for item in tree["items"]}
+        assert tree_paths == {
+            canonical_notes,
+            f"{prefix}/nested",
+            f"{prefix}/nested/report.txt",
+        }
+        assert not any(
+            name in path
+            for path in tree_paths
+            for name in (
+                ".hidden.md",
+                "binary.md",
+                "unsupported.bin",
+                "extensionless",
+                "oversized.txt",
+            )
+        )
+
+        glob = _cli_json("files", "glob", "Documents/**/*.txt", environment=environment)
+        assert [item["path"] for item in glob["items"]] == [
+            f"{prefix}/nested/report.txt"
+        ]
+
+        read = _run_module(
+            "ctxd.cli",
+            "files",
+            "read",
+            "Documents/notes.md",
+            environment=environment,
+        )
+        assert read.returncode == 0, read.stderr
+        assert read.stdout == notes.read_text()
+
+        lines = _cli_json(
+            "files",
+            "read-lines",
+            "Documents/notes.md",
+            "--start",
+            "2",
+            "--end",
+            "3",
+            "--json",
+            environment=environment,
+        )
+        assert lines["lines"] == ["beta", "needle omega"]
+        assert lines["start_line"] == 2
+        assert lines["end_line"] == 3
+
+        grep = _cli_json(
+            "files",
+            "grep",
+            "needle",
+            "--prefix",
+            "Documents",
+            environment=environment,
+        )
+        assert [
+            (item["line_number"], item["match_start"]) for item in grep["items"]
+        ] == [
+            (1, 6),
+            (3, 0),
+        ]
+        assert {item["path"] for item in grep["items"]} == {canonical_notes}
+
+        bounded = _cli_json(
+            "files", "tree", "Documents", "--limit", "1", environment=environment
+        )
+        assert bounded["complete"] is False
+        assert bounded["stopped_by"] == "limit"
+        truncated = _cli_json(
+            "files",
+            "read",
+            "Documents/notes.md",
+            "--max-bytes",
+            "5",
+            "--json",
+            environment=environment,
+        )
+        assert truncated["text"] == "alpha"
+        assert truncated["complete"] is False
+        assert truncated["stopped_by"] == "max_bytes"
+
+        missing = _run_module(
+            "ctxd.cli",
+            "files",
+            "stat",
+            "Documents/missing.md",
+            environment=environment,
+        )
+        assert missing.returncode != 0
+
+        # Remove the unreadable eligible file so subsequent scans are complete
+        # and may safely infer deletions.
+        (tracked / "binary.md").unlink()
+        notes.write_text("updated\n", encoding="utf-8")
+        (tracked / "added.md").write_text("added\n", encoding="utf-8")
+        (nested / "report.txt").rename(nested / "renamed.txt")
+        changed = _run_module(
+            "ctxd.tracker_service", "sync-once", environment=environment
+        )
+        assert changed.returncode == 0, changed.stderr
+        changed_tree = _cli_json("files", "tree", "Documents", environment=environment)
+        changed_paths = {item["path"] for item in changed_tree["items"]}
+        assert f"{prefix}/added.md" in changed_paths
+        assert f"{prefix}/nested/renamed.txt" in changed_paths
+        assert f"{prefix}/nested/report.txt" not in changed_paths
+        assert (
+            _run_module(
+                "ctxd.cli",
+                "files",
+                "read",
+                "Documents/notes.md",
+                environment=environment,
+            ).stdout
+            == "updated\n"
+        )
+
+        (tracked / "added.md").unlink()
+        deleted = _run_module(
+            "ctxd.tracker_service", "sync-once", environment=environment
+        )
+        assert deleted.returncode == 0, deleted.stderr
+        updated_tree = _cli_json("files", "tree", "Documents", environment=environment)
+        updated_paths = {item["path"] for item in updated_tree["items"]}
+        assert f"{prefix}/nested/renamed.txt" in updated_paths
+        assert f"{prefix}/nested/report.txt" not in updated_paths
+        assert f"{prefix}/added.md" not in updated_paths
+    finally:
+        stopped = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from ctxd.local_ctxfs_service import stop; stop()",
+            ],
+            env=environment,
+            text=True,
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+        assert stopped.returncode == 0, stopped.stderr
+        assert not (home / ".ctxd" / "local" / "ctxfs.sock").exists()
+        assert not (home / ".ctxd" / "local" / "ctxfs.pid").exists()
+        shutil.rmtree(home)
+        assert not home.exists()
+
+
 def test_isolated_tracker_server_and_cli_network_topology(tmp_path: Path) -> None:
     """No client receives the server root or another client's HOME."""
     server_root = tmp_path / "server-only"
@@ -211,12 +473,13 @@ def test_isolated_tracker_server_and_cli_network_topology(tmp_path: Path) -> Non
     tracked = writer_home / "documents"
     tracked.mkdir(parents=True)
     (tracked / "notes.md").write_text("hello from the remote tracker\n")
+    (tracked / "report.txt").write_text("remote needle\nsecond line\n")
 
     with CredentialStore(server_root) as credentials:
         writer = credentials.create(
             name="writer", scopes=["submit"], prefixes=["Writer"]
         )
-        reader = credentials.create(name="reader", scopes=["read"])
+        reader = credentials.create(name="reader", scopes=["read", "status"])
 
     port = _free_port()
     with _server(server_root, port) as endpoint:
@@ -264,50 +527,148 @@ def test_isolated_tracker_server_and_cli_network_topology(tmp_path: Path) -> Non
         assert reader.token not in read.stdout + read.stderr
         assert not (reader_home / ".ctxd" / "config.json").exists()
 
-        # The same read scope protects HTTP MCP tools.
-        mcp = httpx.post(
-            f"{endpoint}/mcp",
-            headers=_auth(reader.token),
-            json={
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": "read",
-                    "arguments": {"path": "Writer/notes.md"},
-                },
-            },
-            timeout=2,
-        )
-        assert mcp.status_code == 200
-        rest = httpx.get(
-            f"{endpoint}/api/ctxfs/read",
-            params={"path": "Writer/notes.md"},
-            headers=_auth(reader.token),
-            timeout=2,
-        )
-        assert rest.status_code == 200
-        assert (
-            mcp.json()["result"]["structuredContent"]["text"]
-            == rest.json()["text"]
-            == "hello from the remote tracker\n"
-        )
+        health = httpx.get(f"{endpoint}/health", headers=_auth(reader.token), timeout=2)
+        assert health.status_code == 200
+        assert health.json()["ok"] is True
 
-        assert httpx.get(
-            f"{endpoint}/api/ctxfs/tree", headers=_auth(writer.token), timeout=2
-        ).status_code == 403
-        assert httpx.post(
-            f"{endpoint}/api/ctxfs/submissions",
+        initialized = _mcp_request(endpoint, reader.token, "initialize")
+        assert initialized["result"]["protocolVersion"] == "2025-06-18"
+        assert _mcp_request(endpoint, reader.token, "ping")["result"] == {}
+        listed = _mcp_request(endpoint, reader.token, "tools/list")
+        assert [tool["name"] for tool in listed["result"]["tools"]] == [
+            "ls",
+            "tree",
+            "glob",
+            "stat",
+            "read",
+            "read_lines",
+            "grep",
+        ]
+
+        operations = [
+            (
+                "stat",
+                "/api/ctxfs/stat",
+                {"path": "Writer/notes.md"},
+                {"path": "Writer/notes.md"},
+            ),
+            ("ls", "/api/ctxfs/ls", {"path": "Writer"}, {"path": "Writer"}),
+            (
+                "tree",
+                "/api/ctxfs/tree",
+                {"prefix": "Writer"},
+                {"prefix": "Writer"},
+            ),
+            (
+                "glob",
+                "/api/ctxfs/glob",
+                {"pattern": "Writer/*.md"},
+                {"pattern": "Writer/*.md"},
+            ),
+            (
+                "read",
+                "/api/ctxfs/read",
+                {"path": "Writer/notes.md"},
+                {"path": "Writer/notes.md"},
+            ),
+            (
+                "read_lines",
+                "/api/ctxfs/read-lines",
+                {"path": "Writer/report.txt", "start_line": 1, "end_line": 1},
+                {"path": "Writer/report.txt", "start_line": 1, "end_line": 1},
+            ),
+            (
+                "grep",
+                "/api/ctxfs/grep",
+                {"pattern": "remote", "prefix": "Writer"},
+                {"pattern": "remote", "prefix": "Writer"},
+            ),
+        ]
+        for tool, route, query, arguments in operations:
+            rest = httpx.get(
+                f"{endpoint}{route}",
+                params=query,
+                headers=_auth(reader.token),
+                timeout=2,
+            )
+            assert rest.status_code == 200, rest.text
+            mcp = _mcp_request(
+                endpoint,
+                reader.token,
+                "tools/call",
+                params={"name": tool, "arguments": arguments},
+            )
+            assert mcp["result"]["structuredContent"] == rest.json()
+
+        bounded = httpx.get(
+            f"{endpoint}/api/ctxfs/tree",
+            params={"prefix": "Writer", "limit": 1},
             headers=_auth(reader.token),
-            json=_submission("Writer"),
             timeout=2,
-        ).status_code == 403
-        assert httpx.post(
-            f"{endpoint}/api/ctxfs/submissions",
-            headers=_auth(writer.token),
-            json=_submission("Other"),
+        )
+        assert bounded.status_code == 200
+        assert bounded.json()["complete"] is False
+        assert bounded.json()["stopped_by"] == "limit"
+        truncated = httpx.get(
+            f"{endpoint}/api/ctxfs/read",
+            params={"path": "Writer/notes.md", "max_bytes": 5},
+            headers=_auth(reader.token),
             timeout=2,
-        ).status_code == 403
+        )
+        assert truncated.status_code == 200
+        assert truncated.json()["text"] == "hello"
+        assert truncated.json()["complete"] is False
+        assert truncated.json()["stopped_by"] == "max_bytes"
+        assert (
+            httpx.get(
+                f"{endpoint}/api/ctxfs/stat",
+                params={"path": "Writer/missing.md"},
+                headers=_auth(reader.token),
+                timeout=2,
+            ).status_code
+            == 404
+        )
+        assert (
+            httpx.get(
+                f"{endpoint}/api/ctxfs/tree",
+                params={"limit": 0},
+                headers=_auth(reader.token),
+                timeout=2,
+            ).status_code
+            == 422
+        )
+        missing_mcp = _mcp_request(
+            endpoint,
+            reader.token,
+            "tools/call",
+            params={"name": "stat", "arguments": {"path": "Writer/missing.md"}},
+        )
+        assert missing_mcp["result"]["isError"] is True
+
+        assert (
+            httpx.get(
+                f"{endpoint}/api/ctxfs/tree", headers=_auth(writer.token), timeout=2
+            ).status_code
+            == 403
+        )
+        assert (
+            httpx.post(
+                f"{endpoint}/api/ctxfs/submissions",
+                headers=_auth(reader.token),
+                json=_submission("Writer"),
+                timeout=2,
+            ).status_code
+            == 403
+        )
+        assert (
+            httpx.post(
+                f"{endpoint}/api/ctxfs/submissions",
+                headers=_auth(writer.token),
+                json=_submission("Other"),
+                timeout=2,
+            ).status_code
+            == 403
+        )
 
 
 def test_network_credentials_rotation_restart_and_abuse(tmp_path: Path) -> None:
@@ -332,9 +693,7 @@ def test_network_credentials_rotation_restart_and_abuse(tmp_path: Path) -> None:
     port = _free_port()
     first_server_output: dict[str, str] = {}
     with _server(root, port, output=first_server_output) as endpoint:
-        health = httpx.get(
-            f"{endpoint}/health", headers=_auth(status.token), timeout=2
-        )
+        health = httpx.get(f"{endpoint}/health", headers=_auth(status.token), timeout=2)
         assert health.status_code == 200
         assert health.json()["ok"] is True
         denial_bodies: list[str] = []
@@ -347,7 +706,9 @@ def test_network_credentials_rotation_restart_and_abuse(tmp_path: Path) -> None:
             f"Bearer {revoked.token}",
         ):
             headers = {} if authorization is None else {"Authorization": authorization}
-            response = httpx.get(f"{endpoint}/api/ctxfs/tree", headers=headers, timeout=2)
+            response = httpx.get(
+                f"{endpoint}/api/ctxfs/tree", headers=headers, timeout=2
+            )
             assert response.status_code == 401
             assert response.headers["www-authenticate"] == "Bearer"
             denial_bodies.append(response.text)
@@ -368,9 +729,12 @@ def test_network_credentials_rotation_restart_and_abuse(tmp_path: Path) -> None:
 
         with CredentialStore(root) as credentials:
             replacement = credentials.rotate(reader.credential.key_id)
-        assert httpx.get(
-            f"{endpoint}/api/ctxfs/tree", headers=_auth(reader.token), timeout=2
-        ).status_code == 401
+        assert (
+            httpx.get(
+                f"{endpoint}/api/ctxfs/tree", headers=_auth(reader.token), timeout=2
+            ).status_code
+            == 401
+        )
         tree = httpx.get(
             f"{endpoint}/api/ctxfs/tree", headers=_auth(replacement.token), timeout=2
         )
@@ -378,18 +742,24 @@ def test_network_credentials_rotation_restart_and_abuse(tmp_path: Path) -> None:
         assert [item["path"] for item in tree.json()["items"]].count(
             "Writer/manual.md"
         ) == 1
-        assert httpx.post(
-            f"{endpoint}/mcp",
-            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
-            timeout=2,
-        ).status_code == 401
+        assert (
+            httpx.post(
+                f"{endpoint}/mcp",
+                json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                timeout=2,
+            ).status_code
+            == 401
+        )
 
     # Store and credential state survive a clean server recovery.
     second_server_output: dict[str, str] = {}
     with _server(root, port, output=second_server_output) as endpoint:
-        assert httpx.get(
-            f"{endpoint}/health", headers=_auth(status.token), timeout=2
-        ).status_code == 200
+        assert (
+            httpx.get(
+                f"{endpoint}/health", headers=_auth(status.token), timeout=2
+            ).status_code
+            == 200
+        )
         recovered = httpx.get(
             f"{endpoint}/api/ctxfs/read",
             params={"path": "Writer/manual.md"},
@@ -398,12 +768,15 @@ def test_network_credentials_rotation_restart_and_abuse(tmp_path: Path) -> None:
         )
         assert recovered.status_code == 200
         assert recovered.json()["text"] == "network context\n"
-        assert httpx.post(
-            f"{endpoint}/mcp",
-            headers=_auth(writer.token),
-            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
-            timeout=2,
-        ).status_code == 403
+        assert (
+            httpx.post(
+                f"{endpoint}/mcp",
+                headers=_auth(writer.token),
+                json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                timeout=2,
+            ).status_code
+            == 403
+        )
 
     # Tokens are one-time bearer secrets: neither API/status output, server
     # output, denial text, nor the persistent database may disclose them.
@@ -453,9 +826,12 @@ def test_disjoint_writers_and_admin_capabilities(tmp_path: Path) -> None:
             timeout=2,
         )
         assert admin_submission.status_code == 200
-        assert httpx.get(
-            f"{endpoint}/health", headers=_auth(admin.token), timeout=2
-        ).status_code == 200
+        assert (
+            httpx.get(
+                f"{endpoint}/health", headers=_auth(admin.token), timeout=2
+            ).status_code
+            == 200
+        )
         tree = httpx.get(
             f"{endpoint}/api/ctxfs/tree", headers=_auth(admin.token), timeout=2
         )
@@ -465,12 +841,15 @@ def test_disjoint_writers_and_admin_capabilities(tmp_path: Path) -> None:
             "TeamB/manual.md",
             "Operations/manual.md",
         }
-        assert httpx.post(
-            f"{endpoint}/mcp",
-            headers=_auth(admin.token),
-            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
-            timeout=2,
-        ).status_code == 200
+        assert (
+            httpx.post(
+                f"{endpoint}/mcp",
+                headers=_auth(admin.token),
+                json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                timeout=2,
+            ).status_code
+            == 200
+        )
 
 
 def test_https_server_and_cli_verify_certificate_and_hostname(tmp_path: Path) -> None:

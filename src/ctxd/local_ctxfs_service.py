@@ -339,7 +339,9 @@ def _ensure_private_socket_directory(path: Path) -> None:
 
 @contextlib.contextmanager
 def _private_umask():
-    previous = os.umask(0o177)
+    # Remove group/other access while retaining owner execute bits required to
+    # traverse directories created by ctxfs during request handling.
+    previous = os.umask(0o077)
     try:
         yield
     finally:
