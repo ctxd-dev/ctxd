@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import socket
 import ssl
@@ -323,12 +324,19 @@ def _assert_cli_demo_state(
     grep = _cli_json(
         "files", "grep", grep_pattern, "--prefix", "Documents", environment=environment
     )
-    expected_grep_paths = {
-        f"{prefix}/{path}"
-        for path, body in documents.items()
-        if grep_pattern.casefold() in body.casefold()
-    }
-    assert {item["path"] for item in grep["items"]} == expected_grep_paths
+    compiled_pattern = re.compile(grep_pattern)
+    expected_grep_hits = []
+    for path, body in documents.items():
+        for line_number, line in enumerate(body.splitlines(), start=1):
+            if match := compiled_pattern.search(line):
+                expected_grep_hits.append(
+                    (f"{prefix}/{path}", line_number, match.start())
+                )
+    actual_grep_hits = [
+        (item["path"], item["line_number"], item["match_start"])
+        for item in grep["items"]
+    ]
+    assert sorted(actual_grep_hits) == sorted(expected_grep_hits)
 
 
 def _assert_rest_mcp_parity(
