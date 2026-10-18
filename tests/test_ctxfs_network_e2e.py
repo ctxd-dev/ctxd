@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import socket
 import ssl
@@ -16,6 +17,44 @@ import httpx
 import pytest
 
 from ctxfs.credentials import CredentialStore
+
+
+DEMO_DOCUMENTS = {
+    "google_drive/handbook/onboarding.md": """# Engineering onboarding checklist
+
+## Week one — hardware
+
+Every engineer is issued a laptop from the standard build: 16-inch, 36 GB RAM, 1 TB disk.
+Swaps outside the standard build need a written reason and go to the finance lead.
+""",
+    "google_drive/handbook/equipment-approval.md": """# Equipment approval policy
+
+Standard-build requests are approved by the hiring manager and need no further sign-off.
+Anything above the standard build goes to the finance lead, and needs a written reason.
+""",
+    "google_drive/handbook/time-off.md": """# Time off and holidays
+
+Annual leave is 25 days plus public holidays. Book it with your manager.
+Unpaid leave is arranged case by case with your manager.
+This document does not cover sabbaticals.
+""",
+    "google_drive/retros/2026-03-12-checkout.md": """# Retro — checkout outage, 12 March
+
+Customer impact was 41 minutes of failed checkout attempts.
+A connection-pool ceiling and a health check that did not test the dependency caused it.
+""",
+    "github/it-requests/README.md": """# it-requests
+
+Open an issue using the `hardware` template. IT picks it up once the `approval` label is set.
+""",
+    # ctxfs indexes files, so the demo's extensionless Slack UID is represented
+    # as Markdown while preserving its source hierarchy and content.
+    "slack/channels/incidents.md": """# #incidents
+
+09:14 Paging on-call — checkout 5xx rate is climbing.
+09:55 Recovered. Error rate back to baseline. Retro tomorrow.
+""",
+}
 
 
 # Public read-operation E2E matrix:
@@ -214,6 +253,114 @@ def _cli_json(*arguments: str, environment: dict[str, str]) -> dict[str, object]
     return json.loads(result.stdout)
 
 
+def _write_documents(root: Path, documents: dict[str, str]) -> None:
+    for relative_path, text in documents.items():
+        path = root / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+
+def _assert_cli_demo_state(
+    environment: dict[str, str],
+    prefix: str,
+    documents: dict[str, str],
+    *,
+    grep_pattern: str,
+) -> None:
+    """Exercise every public read command against one coherent snapshot."""
+    paths = {f"{prefix}/{path}" for path in documents}
+    tree = _cli_json("files", "tree", "Documents", environment=environment)
+    tree_files = {item["path"] for item in tree["items"] if item["kind"] == "file"}
+    assert tree_files == paths
+
+    listing = _cli_json(
+        "files", "ls", "Documents/google_drive/handbook", environment=environment
+    )
+    handbook_paths = {
+        f"{prefix}/{path}"
+        for path in documents
+        if path.startswith("google_drive/handbook/")
+    }
+    assert {item["path"] for item in listing["items"]} == handbook_paths
+
+    markdown = _cli_json("files", "glob", "Documents/**/*.md", environment=environment)
+    assert {item["path"] for item in markdown["items"]} == {
+        path for path in paths if path.endswith(".md")
+    }
+
+    relative_path = "google_drive/handbook/onboarding.md"
+    text = documents[relative_path]
+    canonical_path = f"{prefix}/{relative_path}"
+    stat = _cli_json(
+        "files", "stat", f"Documents/{relative_path}", environment=environment
+    )
+    assert stat["path"] == canonical_path
+    assert stat["size_bytes"] == len(text.encode())
+    assert stat["line_count"] == len(text.splitlines())
+
+    read = _run_module(
+        "ctxd.cli",
+        "files",
+        "read",
+        f"Documents/{relative_path}",
+        environment=environment,
+    )
+    assert read.returncode == 0, read.stderr
+    assert read.stdout == text
+
+    lines = _cli_json(
+        "files",
+        "read-lines",
+        f"Documents/{relative_path}",
+        "--start",
+        "1",
+        "--end",
+        "2",
+        "--json",
+        environment=environment,
+    )
+    assert lines["lines"] == text.splitlines()[:2]
+
+    grep = _cli_json(
+        "files", "grep", grep_pattern, "--prefix", "Documents", environment=environment
+    )
+    compiled_pattern = re.compile(grep_pattern)
+    expected_grep_hits = []
+    for path, body in documents.items():
+        for line_number, line in enumerate(body.splitlines(), start=1):
+            if match := compiled_pattern.search(line):
+                expected_grep_hits.append(
+                    (f"{prefix}/{path}", line_number, match.start())
+                )
+    actual_grep_hits = [
+        (item["path"], item["line_number"], item["match_start"])
+        for item in grep["items"]
+    ]
+    assert sorted(actual_grep_hits) == sorted(expected_grep_hits)
+
+
+def _assert_rest_mcp_parity(
+    endpoint: str,
+    token: str,
+    operations: list[tuple[str, str, dict[str, object], dict[str, object]]],
+) -> dict[str, dict[str, object]]:
+    results = {}
+    for tool, route, query, arguments in operations:
+        rest = httpx.get(
+            f"{endpoint}{route}", params=query, headers=_auth(token), timeout=2
+        )
+        assert rest.status_code == 200, rest.text
+        mcp = _mcp_request(
+            endpoint,
+            token,
+            "tools/call",
+            params={"name": tool, "arguments": arguments},
+        )
+        assert mcp["result"]["structuredContent"] == rest.json()
+        results[tool] = rest.json()
+    return results
+
+
 def _mcp_request(
     endpoint: str,
     token: str,
@@ -267,11 +414,9 @@ def test_managed_ctxfs_full_cli_lifecycle(tmp_path: Path) -> None:
     # Keep the managed Unix socket below macOS's short AF_UNIX path limit.
     home = Path(tempfile.mkdtemp(prefix="ctxd-e2e-"))
     tracked = tmp_path / "source"
-    nested = tracked / "nested"
-    nested.mkdir(parents=True)
-    notes = tracked / "notes.md"
-    notes.write_text("alpha needle\nbeta\nneedle omega\n", encoding="utf-8")
-    (nested / "report.txt").write_text("nested context\n", encoding="utf-8")
+    tracked.mkdir()
+    documents = dict(DEMO_DOCUMENTS)
+    _write_documents(tracked, documents)
     (tracked / ".hidden.md").write_text("hidden\n", encoding="utf-8")
     (tracked / "binary.md").write_bytes(b"\xff\xfe")
     (tracked / "unsupported.bin").write_text("unsupported\n", encoding="utf-8")
@@ -298,32 +443,14 @@ def test_managed_ctxfs_full_cli_lifecycle(tmp_path: Path) -> None:
         assert registered.returncode == 0, registered.stderr
         config = json.loads((home / ".ctxd" / "config.json").read_text())
         prefix = config["folders"]["Documents"]["prefix"]
-        canonical_notes = f"{prefix}/notes.md"
-
         synchronized = _run_module(
             "ctxd.tracker_service", "sync-once", environment=environment
         )
         assert synchronized.returncode == 0, synchronized.stderr
 
-        stat = _cli_json("files", "stat", "Documents/notes.md", environment=environment)
-        assert stat["path"] == canonical_notes
-        assert stat["size_bytes"] == len(notes.read_bytes())
-        assert stat["line_count"] == 3
-
-        listing = _cli_json("files", "ls", "Documents", environment=environment)
-        assert {(item["path"], item["kind"]) for item in listing["items"]} == {
-            (canonical_notes, "file"),
-            (f"{prefix}/nested", "directory"),
-        }
-        assert listing["complete"] is True
-
+        _assert_cli_demo_state(environment, prefix, documents, grep_pattern="checkout")
         tree = _cli_json("files", "tree", "Documents", environment=environment)
         tree_paths = {item["path"] for item in tree["items"]}
-        assert tree_paths == {
-            canonical_notes,
-            f"{prefix}/nested",
-            f"{prefix}/nested/report.txt",
-        }
         assert not any(
             name in path
             for path in tree_paths
@@ -336,52 +463,6 @@ def test_managed_ctxfs_full_cli_lifecycle(tmp_path: Path) -> None:
             )
         )
 
-        glob = _cli_json("files", "glob", "Documents/**/*.txt", environment=environment)
-        assert [item["path"] for item in glob["items"]] == [
-            f"{prefix}/nested/report.txt"
-        ]
-
-        read = _run_module(
-            "ctxd.cli",
-            "files",
-            "read",
-            "Documents/notes.md",
-            environment=environment,
-        )
-        assert read.returncode == 0, read.stderr
-        assert read.stdout == notes.read_text()
-
-        lines = _cli_json(
-            "files",
-            "read-lines",
-            "Documents/notes.md",
-            "--start",
-            "2",
-            "--end",
-            "3",
-            "--json",
-            environment=environment,
-        )
-        assert lines["lines"] == ["beta", "needle omega"]
-        assert lines["start_line"] == 2
-        assert lines["end_line"] == 3
-
-        grep = _cli_json(
-            "files",
-            "grep",
-            "needle",
-            "--prefix",
-            "Documents",
-            environment=environment,
-        )
-        assert [
-            (item["line_number"], item["match_start"]) for item in grep["items"]
-        ] == [
-            (1, 6),
-            (3, 0),
-        ]
-        assert {item["path"] for item in grep["items"]} == {canonical_notes}
-
         bounded = _cli_json(
             "files", "tree", "Documents", "--limit", "1", environment=environment
         )
@@ -390,13 +471,13 @@ def test_managed_ctxfs_full_cli_lifecycle(tmp_path: Path) -> None:
         truncated = _cli_json(
             "files",
             "read",
-            "Documents/notes.md",
+            "Documents/google_drive/handbook/onboarding.md",
             "--max-bytes",
             "5",
             "--json",
             environment=environment,
         )
-        assert truncated["text"] == "alpha"
+        assert truncated["text"] == "# Eng"
         assert truncated["complete"] is False
         assert truncated["stopped_by"] == "max_bytes"
 
@@ -412,39 +493,115 @@ def test_managed_ctxfs_full_cli_lifecycle(tmp_path: Path) -> None:
         # Remove the unreadable eligible file so subsequent scans are complete
         # and may safely infer deletions.
         (tracked / "binary.md").unlink()
-        notes.write_text("updated\n", encoding="utf-8")
-        (tracked / "added.md").write_text("added\n", encoding="utf-8")
-        (nested / "report.txt").rename(nested / "renamed.txt")
+        onboarding = "google_drive/handbook/onboarding.md"
+        documents[onboarding] = documents[onboarding].replace("36 GB", "64 GB")
+        (tracked / onboarding).write_text(documents[onboarding], encoding="utf-8")
+        added = "google_drive/handbook/security.md"
+        documents[added] = (
+            "# Security\n\nReport security issues to the security lead.\n"
+        )
+        _write_documents(tracked, {added: documents[added]})
+        old_retro = "google_drive/retros/2026-03-12-checkout.md"
+        new_retro = "google_drive/retros/checkout-outage.md"
+        (tracked / old_retro).rename(tracked / new_retro)
+        documents[new_retro] = documents.pop(old_retro)
+        old_time_off = "google_drive/handbook/time-off.md"
+        new_time_off = "google_drive/handbook/time-off.txt"
+        (tracked / old_time_off).rename(tracked / new_time_off)
+        documents[new_time_off] = documents.pop(old_time_off)
         changed = _run_module(
             "ctxd.tracker_service", "sync-once", environment=environment
         )
         assert changed.returncode == 0, changed.stderr
-        changed_tree = _cli_json("files", "tree", "Documents", environment=environment)
-        changed_paths = {item["path"] for item in changed_tree["items"]}
-        assert f"{prefix}/added.md" in changed_paths
-        assert f"{prefix}/nested/renamed.txt" in changed_paths
-        assert f"{prefix}/nested/report.txt" not in changed_paths
+        _assert_cli_demo_state(environment, prefix, documents, grep_pattern="64 GB")
+        for moved_path in (new_retro, new_time_off):
+            moved_text = documents[moved_path]
+            moved_stat = _cli_json(
+                "files", "stat", f"Documents/{moved_path}", environment=environment
+            )
+            assert moved_stat["path"] == f"{prefix}/{moved_path}"
+            assert moved_stat["size_bytes"] == len(moved_text.encode())
+            moved_read = _run_module(
+                "ctxd.cli",
+                "files",
+                "read",
+                f"Documents/{moved_path}",
+                environment=environment,
+            )
+            assert moved_read.returncode == 0, moved_read.stderr
+            assert moved_read.stdout == moved_text
+            moved_lines = _cli_json(
+                "files",
+                "read-lines",
+                f"Documents/{moved_path}",
+                "--start",
+                "1",
+                "--end",
+                "2",
+                "--json",
+                environment=environment,
+            )
+            assert moved_lines["lines"] == moved_text.splitlines()[:2]
+        moved_grep = _cli_json(
+            "files",
+            "grep",
+            "connection-pool ceiling",
+            "--prefix",
+            "Documents",
+            environment=environment,
+        )
+        assert {item["path"] for item in moved_grep["items"]} == {
+            f"{prefix}/{new_retro}"
+        }
+        for stale in (old_retro, old_time_off):
+            missing = _run_module(
+                "ctxd.cli",
+                "files",
+                "stat",
+                f"Documents/{stale}",
+                environment=environment,
+            )
+            assert missing.returncode != 0
+            stale_read = _run_module(
+                "ctxd.cli",
+                "files",
+                "read",
+                f"Documents/{stale}",
+                environment=environment,
+            )
+            assert stale_read.returncode != 0
+        stale_content = _cli_json(
+            "files", "grep", "36 GB", "--prefix", "Documents", environment=environment
+        )
+        assert stale_content["items"] == []
+
+        deleted_path = "google_drive/handbook/equipment-approval.md"
+        (tracked / deleted_path).unlink()
+        documents.pop(deleted_path)
+        deleted = _run_module(
+            "ctxd.tracker_service", "sync-once", environment=environment
+        )
+        assert deleted.returncode == 0, deleted.stderr
+        _assert_cli_demo_state(environment, prefix, documents, grep_pattern="checkout")
         assert (
             _run_module(
                 "ctxd.cli",
                 "files",
                 "read",
-                "Documents/notes.md",
+                f"Documents/{deleted_path}",
                 environment=environment,
-            ).stdout
-            == "updated\n"
+            ).returncode
+            != 0
         )
-
-        (tracked / "added.md").unlink()
-        deleted = _run_module(
-            "ctxd.tracker_service", "sync-once", environment=environment
+        deleted_grep = _cli_json(
+            "files",
+            "grep",
+            "Standard-build requests",
+            "--prefix",
+            "Documents",
+            environment=environment,
         )
-        assert deleted.returncode == 0, deleted.stderr
-        updated_tree = _cli_json("files", "tree", "Documents", environment=environment)
-        updated_paths = {item["path"] for item in updated_tree["items"]}
-        assert f"{prefix}/nested/renamed.txt" in updated_paths
-        assert f"{prefix}/nested/report.txt" not in updated_paths
-        assert f"{prefix}/added.md" not in updated_paths
+        assert deleted_grep["items"] == []
     finally:
         stopped = subprocess.run(
             [
@@ -584,21 +741,149 @@ def test_isolated_tracker_server_and_cli_network_topology(tmp_path: Path) -> Non
                 {"pattern": "remote", "prefix": "Writer"},
             ),
         ]
-        for tool, route, query, arguments in operations:
-            rest = httpx.get(
-                f"{endpoint}{route}",
-                params=query,
+        initial = _assert_rest_mcp_parity(endpoint, reader.token, operations)
+        assert initial["read"]["text"] == "hello from the remote tracker\n"
+
+        # Mutate through the real tracker, then exercise the complete REST/MCP
+        # matrix again. This catches stale reads in either public transport.
+        (tracked / "notes.md").write_text("updated remote context\nsecond line\n")
+        (tracked / "report.txt").rename(tracked / "moved-report.md")
+        changed = _run_module(
+            "ctxd.tracker_service",
+            "sync-once",
+            environment=_client_environment(writer_home, endpoint, writer.token),
+        )
+        assert changed.returncode == 0, changed.stderr
+        changed_operations = [
+            (
+                "stat",
+                "/api/ctxfs/stat",
+                {"path": "Writer/notes.md"},
+                {"path": "Writer/notes.md"},
+            ),
+            ("ls", "/api/ctxfs/ls", {"path": "Writer"}, {"path": "Writer"}),
+            ("tree", "/api/ctxfs/tree", {"prefix": "Writer"}, {"prefix": "Writer"}),
+            (
+                "glob",
+                "/api/ctxfs/glob",
+                {"pattern": "Writer/*.md"},
+                {"pattern": "Writer/*.md"},
+            ),
+            (
+                "read",
+                "/api/ctxfs/read",
+                {"path": "Writer/notes.md"},
+                {"path": "Writer/notes.md"},
+            ),
+            (
+                "read_lines",
+                "/api/ctxfs/read-lines",
+                {"path": "Writer/moved-report.md", "start_line": 1, "end_line": 1},
+                {"path": "Writer/moved-report.md", "start_line": 1, "end_line": 1},
+            ),
+            (
+                "grep",
+                "/api/ctxfs/grep",
+                {"pattern": "updated", "prefix": "Writer"},
+                {"pattern": "updated", "prefix": "Writer"},
+            ),
+        ]
+        changed_results = _assert_rest_mcp_parity(
+            endpoint, reader.token, changed_operations
+        )
+        assert (
+            changed_results["read"]["text"] == "updated remote context\nsecond line\n"
+        )
+        assert {item["path"] for item in changed_results["tree"]["items"]} == {
+            "Writer/moved-report.md",
+            "Writer/notes.md",
+        }
+        assert {item["path"] for item in changed_results["grep"]["items"]} == {
+            "Writer/notes.md"
+        }
+        assert (
+            httpx.get(
+                f"{endpoint}/api/ctxfs/stat",
+                params={"path": "Writer/report.txt"},
                 headers=_auth(reader.token),
                 timeout=2,
+            ).status_code
+            == 404
+        )
+        stale_stat_mcp = _mcp_request(
+            endpoint,
+            reader.token,
+            "tools/call",
+            params={"name": "stat", "arguments": {"path": "Writer/report.txt"}},
+        )
+        assert stale_stat_mcp["result"]["isError"] is True
+
+        (tracked / "moved-report.md").unlink()
+        (tracked / "persistent.md").write_text("persistent context\n")
+        deleted = _run_module(
+            "ctxd.tracker_service",
+            "sync-once",
+            environment=_client_environment(writer_home, endpoint, writer.token),
+        )
+        assert deleted.returncode == 0, deleted.stderr
+        deleted_operations = [
+            item
+            if item[0] != "read_lines"
+            else (
+                "read_lines",
+                "/api/ctxfs/read-lines",
+                {"path": "Writer/notes.md", "start_line": 1, "end_line": 1},
+                {"path": "Writer/notes.md", "start_line": 1, "end_line": 1},
             )
-            assert rest.status_code == 200, rest.text
-            mcp = _mcp_request(
-                endpoint,
-                reader.token,
-                "tools/call",
-                params={"name": tool, "arguments": arguments},
-            )
-            assert mcp["result"]["structuredContent"] == rest.json()
+            for item in changed_operations
+        ]
+        deleted_results = _assert_rest_mcp_parity(
+            endpoint, reader.token, deleted_operations
+        )
+        assert {item["path"] for item in deleted_results["tree"]["items"]} == {
+            "Writer/notes.md",
+            "Writer/persistent.md",
+        }
+        assert {item["path"] for item in deleted_results["ls"]["items"]} == {
+            "Writer/notes.md",
+            "Writer/persistent.md",
+        }
+        assert {item["path"] for item in deleted_results["glob"]["items"]} == {
+            "Writer/notes.md",
+            "Writer/persistent.md",
+        }
+        deleted_content = _assert_rest_mcp_parity(
+            endpoint,
+            reader.token,
+            [
+                (
+                    "grep",
+                    "/api/ctxfs/grep",
+                    {"pattern": "remote needle", "prefix": "Writer"},
+                    {"pattern": "remote needle", "prefix": "Writer"},
+                )
+            ],
+        )
+        assert deleted_content["grep"]["items"] == []
+        assert (
+            httpx.get(
+                f"{endpoint}/api/ctxfs/read",
+                params={"path": "Writer/moved-report.md"},
+                headers=_auth(reader.token),
+                timeout=2,
+            ).status_code
+            == 404
+        )
+        stale_read_mcp = _mcp_request(
+            endpoint,
+            reader.token,
+            "tools/call",
+            params={
+                "name": "read",
+                "arguments": {"path": "Writer/moved-report.md"},
+            },
+        )
+        assert stale_read_mcp["result"]["isError"] is True
 
         bounded = httpx.get(
             f"{endpoint}/api/ctxfs/tree",
@@ -616,7 +901,7 @@ def test_isolated_tracker_server_and_cli_network_topology(tmp_path: Path) -> Non
             timeout=2,
         )
         assert truncated.status_code == 200
-        assert truncated.json()["text"] == "hello"
+        assert truncated.json()["text"] == "updat"
         assert truncated.json()["complete"] is False
         assert truncated.json()["stopped_by"] == "max_bytes"
         assert (
