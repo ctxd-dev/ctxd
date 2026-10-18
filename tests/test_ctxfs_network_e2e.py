@@ -810,6 +810,13 @@ def test_isolated_tracker_server_and_cli_network_topology(tmp_path: Path) -> Non
             ).status_code
             == 404
         )
+        stale_stat_mcp = _mcp_request(
+            endpoint,
+            reader.token,
+            "tools/call",
+            params={"name": "stat", "arguments": {"path": "Writer/report.txt"}},
+        )
+        assert stale_stat_mcp["result"]["isError"] is True
 
         (tracked / "moved-report.md").unlink()
         (tracked / "persistent.md").write_text("persistent context\n")
@@ -867,6 +874,16 @@ def test_isolated_tracker_server_and_cli_network_topology(tmp_path: Path) -> Non
             ).status_code
             == 404
         )
+        stale_read_mcp = _mcp_request(
+            endpoint,
+            reader.token,
+            "tools/call",
+            params={
+                "name": "read",
+                "arguments": {"path": "Writer/moved-report.md"},
+            },
+        )
+        assert stale_read_mcp["result"]["isError"] is True
 
         bounded = httpx.get(
             f"{endpoint}/api/ctxfs/tree",
