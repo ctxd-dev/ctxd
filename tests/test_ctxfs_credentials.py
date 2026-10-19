@@ -8,6 +8,7 @@ import time
 import pytest
 
 from ctxd.cli import main
+import ctxfs.credentials as credentials_module
 from ctxfs.auth import Scope
 from ctxfs.credentials import CredentialStore
 
@@ -119,6 +120,58 @@ def test_cli_create_lists_and_revokes_without_redisplaying_token(
     assert main([*root_args, "revoke", created["key_id"], "--json"]) == 0
     revoked = json.loads(capsys.readouterr().out)
     assert revoked["active"] is False
+
+
+def test_cli_generated_key_id_can_be_revoked_when_random_id_starts_with_dash(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    key_ids = iter(["-aaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"])
+    monkeypatch.setattr(
+        credentials_module.secrets,
+        "token_urlsafe",
+        lambda size: next(key_ids) if size == 12 else "s" * 43,
+    )
+    root_args = ["keys", "--root", str(tmp_path)]
+
+    assert (
+        main([*root_args, "create", "--name", "reader", "--scope", "read", "--json"])
+        == 0
+    )
+    created = json.loads(capsys.readouterr().out)
+    assert created["key_id"] == "bbbbbbbbbbbbbbbb"
+
+    assert main([*root_args, "revoke", created["key_id"], "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["active"] is False
+
+
+def test_cli_generated_key_id_can_be_rotated_when_random_id_starts_with_dash(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    key_ids = iter(
+        [
+            "-aaaaaaaaaaaaaaa",
+            "bbbbbbbbbbbbbbbb",
+            "-ccccccccccccccc",
+            "dddddddddddddddd",
+        ]
+    )
+    monkeypatch.setattr(
+        credentials_module.secrets,
+        "token_urlsafe",
+        lambda size: next(key_ids) if size == 12 else "s" * 43,
+    )
+    root_args = ["keys", "--root", str(tmp_path)]
+
+    assert (
+        main([*root_args, "create", "--name", "reader", "--scope", "read", "--json"])
+        == 0
+    )
+    created = json.loads(capsys.readouterr().out)
+    assert created["key_id"] == "bbbbbbbbbbbbbbbb"
+
+    assert main([*root_args, "rotate", created["key_id"], "--json"]) == 0
+    rotated = json.loads(capsys.readouterr().out)
+    assert rotated["key_id"] == "dddddddddddddddd"
 
 
 def test_two_store_connections_can_create_credentials(tmp_path) -> None:
