@@ -254,6 +254,11 @@ class CtxfsFiles:
     ) -> CtxfsReadLinesResult:
         return self._client.read_lines(path, start_line=start_line, end_line=end_line)
 
+    def grep(
+        self, pattern: str, *, prefix: str = "", limit: int | None = None
+    ) -> CtxfsBounded[CtxfsGrepMatch]:
+        return self._client.grep(pattern, prefix=prefix, limit=limit)
+
 
 class CtxfsClient:
     """Synchronous client for the local ctxfs read interface."""
