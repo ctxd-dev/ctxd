@@ -21,8 +21,7 @@ def get_credentials_path() -> Path:
     return DEFAULT_CREDENTIALS_PATH
 
 
-def load_secret_bundle(*, base_url: str, client_id: str | None) -> dict[str, Any]:
-    del base_url, client_id
+def _load_credentials() -> dict[str, Any]:
     path = get_credentials_path()
     if not path.exists():
         return {}
@@ -38,7 +37,7 @@ def load_secret_bundle(*, base_url: str, client_id: str | None) -> dict[str, Any
 
 
 def load_ctxfs_api_key(*, endpoint: str) -> str | None:
-    payload = load_secret_bundle(base_url="", client_id=None)
+    payload = _load_credentials()
     credentials = payload.get("ctxfs_api_keys", {})
     if not isinstance(credentials, dict):
         return None
@@ -47,17 +46,17 @@ def load_ctxfs_api_key(*, endpoint: str) -> str | None:
 
 
 def save_ctxfs_api_key(*, endpoint: str, api_key: str) -> None:
-    payload = load_secret_bundle(base_url="", client_id=None)
+    payload = _load_credentials()
     credentials = payload.get("ctxfs_api_keys")
     if not isinstance(credentials, dict):
         credentials = {}
     credentials[endpoint] = api_key.strip()
     payload["ctxfs_api_keys"] = credentials
-    save_secret_bundle(payload, base_url="", client_id=None)
+    _save_credentials(payload)
 
 
 def clear_ctxfs_api_key(*, endpoint: str) -> None:
-    payload = load_secret_bundle(base_url="", client_id=None)
+    payload = _load_credentials()
     credentials = payload.get("ctxfs_api_keys")
     if not isinstance(credentials, dict) or endpoint not in credentials:
         return
@@ -66,13 +65,10 @@ def clear_ctxfs_api_key(*, endpoint: str) -> None:
         payload["ctxfs_api_keys"] = credentials
     else:
         payload.pop("ctxfs_api_keys", None)
-    save_secret_bundle(payload, base_url="", client_id=None)
+    _save_credentials(payload)
 
 
-def save_secret_bundle(
-    bundle: dict[str, Any], *, base_url: str, client_id: str | None
-) -> None:
-    del base_url, client_id
+def _save_credentials(bundle: dict[str, Any]) -> None:
     path = get_credentials_path()
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -89,24 +85,3 @@ def save_secret_bundle(
         path.chmod(0o600)
     except OSError:
         pass
-
-
-def clear_secret_bundle(*, base_url: str, client_id: str | None) -> None:
-    del base_url, client_id
-    path = get_credentials_path()
-    try:
-        payload = json.loads(path.read_text())
-    except FileNotFoundError:
-        return
-    except (OSError, json.JSONDecodeError) as exc:
-        raise CtxdAuthError("Stored ctxd credentials are invalid.") from exc
-    if isinstance(payload, dict) and "ctxfs_api_keys" in payload:
-        retained = {"ctxfs_api_keys": payload["ctxfs_api_keys"]}
-        save_secret_bundle(retained, base_url="", client_id=None)
-        return
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        return
-    except OSError as exc:
-        raise CtxdAuthError("Unable to remove stored ctxd credentials.") from exc

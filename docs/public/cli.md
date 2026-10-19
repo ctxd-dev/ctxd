@@ -16,23 +16,19 @@ ctxd --version
 ## Configuration
 
 ```bash
-ctxd backend set ctxfs
-ctxd config get backend
-ctxd backend status
+ctxd endpoint status
 ```
 
-`backend set` saves the selection. It starts ctxfs for the default managed local
-socket, or checks the effective endpoint when a URL or socket was explicitly
-configured. The managed Unix socket does not require an API key. HTTP endpoints
-do.
+The command starts ctxfs for the default local socket, or checks the configured
+endpoint. The Unix socket does not require an API key. HTTP endpoints do.
 
 Configure and authenticate to a network server:
 
 ```bash
 ctxd login --endpoint https://ctxfs.example.net:8443
-ctxd backend set ctxfs --endpoint https://ctxfs.example.net:8443
+ctxd endpoint set https://ctxfs.example.net:8443
 ctxd status --endpoint https://ctxfs.example.net:8443
-ctxd backend status
+ctxd endpoint status
 ```
 
 `login` prompts for the token and stores it for that normalized endpoint. Use
@@ -80,9 +76,8 @@ Every listing and matching command is bounded. Inspect `complete` and
 
 ## ctxfs
 
-`ctxd backend set ctxfs` starts ctxfs only for the default managed endpoint. Use
-`ctxd backend status` to check the active backend, effective endpoint, endpoint
-source, health, and whether ctxd manages the server process locally.
+`ctxd endpoint status` starts the default local ctxfs process when needed and
+reports the effective endpoint and health.
 
 Run a standalone server in the foreground:
 
@@ -141,7 +136,6 @@ its configured endpoint.
 | Variable | Purpose |
 | --- | --- |
 | `CTXD_CONFIG_PATH` | Override the CLI configuration file |
-| `CTXD_BACKEND` | Override the active backend (`ctxfs` or `remote`) |
 | `CTXD_CTXFS_SOCKET` | Use ctxfs through the selected Unix socket |
 | `CTXD_CTXFS_URL` | Use ctxfs through the selected HTTP URL |
 | `CTXD_CTXFS_API_KEY` | Supply a ctxfs HTTP bearer token without storing it |

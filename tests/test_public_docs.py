@@ -54,7 +54,7 @@ def test_cli_docs_only_list_supported_local_environment_variables() -> None:
     text = (PUBLIC_DOCS / "cli.md").read_text()
 
     assert "CTXD_CONFIG_PATH" in text
-    assert "CTXD_BACKEND" in text
+    assert "CTXD_BACKEND" not in text
     assert "CTXD_CTXFS_SOCKET" in text
     assert "CTXD_CTXFS_URL" in text
     assert "CTXD_LOCAL_HOME" not in text
@@ -69,6 +69,9 @@ def test_public_docs_do_not_reference_removed_cli_commands() -> None:
         "ctxd service ",
         "ctxd folders repair-move",
         "ctxd version",
+        "ctxd backend ",
+        "ctxd search ",
+        "ctxd fetch ",
     )
 
     for path in PUBLIC_DOCS.rglob("*.md"):
@@ -82,14 +85,15 @@ def test_public_docs_use_the_supported_local_workflow() -> None:
         path.read_text() for path in PUBLIC_DOCS.rglob("*.md")
     )
 
-    assert "ctxd backend set ctxfs" in public_text
+    assert "ctxd endpoint status" in public_text
     assert "ctxd files tree" in public_text
     assert "ctxd files grep" in public_text
     assert "POST /mcp" in public_text
     assert "ctxd-mcp" in public_text
     assert "~/.ctxd/local/ctxfs.sock" in public_text
     assert "curl " not in public_text
-    assert "ctxd config set backend ctxfs" not in public_text
+    assert "CTXD_BASE_URL" not in public_text
+    assert "CTXD_API_KEY" not in public_text
     assert "http://127.0.0.1:8765" not in public_text
     assert "macOS, Linux, or Windows" not in public_text
     assert "ctxd folders remove <ROOT_ID>" not in public_text
@@ -114,7 +118,7 @@ def test_public_docs_describe_supported_authenticated_network_topology() -> None
         "--scope submit",
         "ctxd keys --root /srv/ctxfs rotate KEY_ID",
         "ctxd keys --root /srv/ctxfs revoke KEY_ID",
-        "ctxd backend set ctxfs --endpoint https://",
+        "ctxd endpoint set https://",
         "ctxd login --endpoint https://",
         "ctxd status --endpoint https://",
         "ctxd logout --endpoint",
@@ -156,8 +160,8 @@ def test_documented_network_command_groups_exist_in_cli_help() -> None:
         ("keys", "list"),
         ("keys", "rotate"),
         ("keys", "revoke"),
-        ("backend", "set"),
-        ("backend", "status"),
+        ("endpoint", "set"),
+        ("endpoint", "status"),
         ("login",),
         ("status",),
         ("logout",),

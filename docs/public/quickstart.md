@@ -3,7 +3,7 @@ title: 'Quickstart'
 
 ---
 
-Start with managed local ctxfs, optionally track a folder, and read it through
+Start with local ctxfs, optionally track a folder, and read it through
 the CLI. See the [ctxfs guide](/docs/ctxfs) for a network deployment.
 
 ## 1. Install
@@ -15,16 +15,15 @@ pip install ctxd
 ctxd --version
 ```
 
-## 2. Enable local ctxfs
+## 2. Verify local ctxfs
 
 ```bash
-ctxd backend set ctxfs
-ctxd config get backend
+ctxd endpoint status
 ```
 
-This saves the backend and starts ctxfs at the default managed local endpoint.
-If you explicitly configured an endpoint, the command checks that server
-instead. The managed-local workflow does not require an API key.
+This starts ctxfs at the default local Unix socket and checks its health. If you
+configured an endpoint, the command checks that server instead. The default
+Unix-socket workflow does not require an API key.
 
 ## 3. Optionally track a folder
 
@@ -40,11 +39,11 @@ serve content submitted by other authorized tracker clients.
 ## 4. Verify the service
 
 ```bash
-ctxd backend status
+ctxd endpoint status
 ctxd tracker status
 ```
 
-Look for `Backend: ctxfs` and `ctxfs healthy: True`.
+Look for `ctxfs healthy: true`.
 
 Start the separate folder-tracker process:
 

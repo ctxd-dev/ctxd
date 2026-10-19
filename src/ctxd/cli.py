@@ -4,23 +4,16 @@ import argparse
 import getpass
 import json
 import os
-import re
 import sys
-import webbrowser
 from pathlib import Path
 from typing import Sequence
 
 from ctxd import Client, CtxdError
 from ctxd._metadata import SDK_VERSION
 from ctxd.config import (
-    clear_api_key,
     clear_ctxfs_api_key,
-    resolve_api_key,
-    resolve_backend,
     resolve_ctxfs_api_key,
     resolve_ctxfs_endpoint_details,
-    save_api_key,
-    save_backend,
     save_ctxfs_api_key,
     save_ctxfs_endpoint,
 )
@@ -28,12 +21,10 @@ from ctxd.folders import (
     add_folder,
     list_folders,
     remove_folder,
-    resolve_folder_prefix,
     try_resolve_named_path,
 )
 from ctxd.ctxfs_client import CtxfsClient
 from ctxd.local_ctxfs_service import ensure_started, serve as ctxfs_serve
-from ctxd.local_ctxfs_service import status as ctxfs_service_status
 from ctxd.local_ctxfs_service import default_paths as default_ctxfs_paths
 from ctxd.tracker_service import (
     start as tracker_start,
@@ -55,12 +46,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _handle_logout(args)
         if args.command == "status":
             return _handle_status(args)
-        if args.command == "install-app":
-            return _handle_install_app(args)
-        if args.command == "backend":
-            return _handle_backend(args)
-        if args.command == "config":
-            return _handle_config(args)
+        if args.command == "endpoint":
+            return _handle_endpoint(args)
         if args.command == "folders":
             return _handle_folders(args)
         if args.command == "tracker":
@@ -70,19 +57,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "server":
             return _handle_server(args)
 
-        client = Client(backend=getattr(args, "backend", None))
-
-        if args.command == "search":
-            kwargs = _ctxfs_search_kwargs(args)
-            result = client.search(_normalize_search_query(args.query), **kwargs)
-            return _emit_result(result.model_dump(), as_json=True)
-        if args.command == "fetch":
-            result = client.fetch_document(args.document_uid)
-            return _emit_result(result.model_dump(), as_json=args.json)
-        if args.command == "profile":
-            result = client.get_profile()
-            return _emit_result(result.model_dump(), as_json=args.json)
         if args.command == "files":
+            resolution = resolve_ctxfs_endpoint_details()
+            if resolution.managed_local:
+                ensure_started()
+            client = Client(ctxfs_endpoint=resolution.endpoint)
             return _handle_files(args, client)
     except (CtxdError, RuntimeError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
@@ -96,15 +75,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ctxd",
         description=(
-            "Search and fetch content from your ctxd-connected apps, manage CLI "
-            "authentication, and inspect indexed data."
+            "Track local folders and inspect indexed content through ctxfs."
         ),
         epilog=(
             "Examples:\n"
-            "  ctxd login\n"
-            "  ctxd install-app\n"
-            "  ctxd search text:deployment application:slack\n"
-            "  ctxd fetch doc-123 --json"
+            "  ctxd folders add ~/Documents --name docs\n"
+            "  ctxd tracker start\n"
+            "  ctxd files tree\n"
+            "  ctxd files read docs/README.md"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -114,12 +92,6 @@ def _build_parser() -> argparse.ArgumentParser:
         version=f"ctxd {SDK_VERSION}",
         help="Print the installed ctxd version and exit.",
     )
-    parser.add_argument(
-        "--backend",
-        choices=("remote", "hosted", "ctxfs"),
-        help="Backend to use for this command. Defaults to CTXD_BACKEND, config, then remote.",
-    )
-
     subparsers = parser.add_subparsers(
         dest="command",
         metavar="<command>",
@@ -152,129 +124,21 @@ def _build_parser() -> argparse.ArgumentParser:
         "--endpoint", help="Show authentication status for this ctxfs HTTP endpoint."
     )
 
-    install_app_parser = subparsers.add_parser(
-        "install-app",
-        help="Open the app installation page for connecting Slack, Google Drive, and more.",
-        description=(
-            "Open the ctxd app installation page, where you can connect integrations "
-            "such as Slack, Google Drive, GitHub, and Google Calendar."
-        ),
+    endpoint_parser = subparsers.add_parser(
+        "endpoint", help="Configure or inspect the ctxfs endpoint."
     )
-    install_app_parser.add_argument(
-        "--no-browser",
-        action="store_true",
-        help="Print the installation URL without opening a browser.",
+    endpoint_subparsers = endpoint_parser.add_subparsers(
+        dest="endpoint_command", metavar="<endpoint-command>", required=True
     )
-
-    backend_parser = subparsers.add_parser(
-        "backend",
-        help="Get, set, or inspect the active ctxd backend.",
-        description="Get, set, or inspect the active ctxd backend.",
-    )
-    backend_subparsers = backend_parser.add_subparsers(
-        dest="backend_command",
-        metavar="<backend-command>",
-        required=True,
-    )
-    backend_subparsers.add_parser("get", help="Print the active backend.")
-    backend_set_parser = backend_subparsers.add_parser(
-        "set",
-        help="Set the default backend.",
-    )
-    backend_set_parser.add_argument("backend", choices=("remote", "hosted", "ctxfs"))
-    backend_set_parser.add_argument(
-        "--endpoint", help="HTTP(S) URL or unix:// socket for the ctxfs backend."
-    )
-    backend_subparsers.add_parser("status", help="Print backend status.")
-
-    config_parser = subparsers.add_parser(
-        "config",
-        help="Get or set ctxd CLI configuration.",
-        description="Get or set ctxd CLI configuration.",
-    )
-    config_subparsers = config_parser.add_subparsers(
-        dest="config_command",
-        metavar="<config-command>",
-        required=True,
-    )
-    config_get_parser = config_subparsers.add_parser(
-        "get",
-        help="Get a configuration value.",
-    )
-    config_get_parser.add_argument("key", choices=("backend",))
-    config_set_parser = config_subparsers.add_parser(
-        "set",
-        help="Set a configuration value.",
-    )
-    config_set_parser.add_argument("key", choices=("backend",))
-    config_set_parser.add_argument("value")
-
-    search_parser = subparsers.add_parser(
-        "search",
-        help="Search indexed app content and print JSON results.",
-        description=(
-            "Search indexed app content using ctxd DSL. Search output is always JSON. "
-            "The query can be quoted or passed as separate tokens."
-        ),
-        epilog=(
-            "Examples:\n"
-            "  ctxd search text:deployment application:slack\n"
-            '  ctxd search "text:deployment application:slack"'
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    search_parser.add_argument(
-        "query",
-        nargs="+",
-        metavar="QUERY",
-        help="Search query or DSL tokens, for example: text:deployment application:slack.",
-    )
-    search_parser.add_argument(
-        "--prefix",
-        help="For ctxfs backend searches, restrict grep to this path prefix.",
-    )
-    search_parser.add_argument(
-        "--folder",
-        help="For ctxfs backend searches, restrict grep to a configured folder name.",
-    )
-    search_parser.add_argument(
-        "--limit",
-        type=int,
-        help="For ctxfs backend searches, limit grep matches.",
-    )
-    _add_backend_override(search_parser)
-
-    fetch_parser = subparsers.add_parser(
-        "fetch",
-        help="Fetch one indexed document by document UID.",
-        description="Fetch a single indexed document by document UID.",
-    )
-    fetch_parser.add_argument("document_uid", help="Document UID returned by search.")
-    fetch_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Print the full document response as JSON.",
-    )
-    _add_backend_override(fetch_parser)
-
-    profile_parser = subparsers.add_parser(
-        "profile",
-        help="Show connected integrations and indexed file tree.",
-        description="Show integration access plus the indexed file tree for the authenticated user.",
-    )
-    profile_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Print the profile response as JSON.",
-    )
-    _add_backend_override(profile_parser)
+    endpoint_set = endpoint_subparsers.add_parser("set", help="Set the ctxfs endpoint.")
+    endpoint_set.add_argument("url", help="HTTP(S) URL or unix:// socket.")
+    endpoint_subparsers.add_parser("status", help="Show ctxfs endpoint health.")
 
     files_parser = subparsers.add_parser(
         "files",
-        help="Read path-oriented content from the active backend.",
-        description="Read path-oriented content from the active backend.",
+        help="Read path-oriented content from ctxfs.",
+        description="Read path-oriented content from ctxfs.",
     )
-    _add_backend_override(files_parser)
     files_subparsers = files_parser.add_subparsers(
         dest="files_command",
         metavar="<files-command>",
@@ -285,18 +149,15 @@ def _build_parser() -> argparse.ArgumentParser:
     files_tree_parser.add_argument("prefix", nargs="?", default="")
     files_tree_parser.add_argument("--depth", type=int)
     files_tree_parser.add_argument("--limit", type=int)
-    _add_backend_override(files_tree_parser)
 
     files_ls_parser = files_subparsers.add_parser("ls", help="List a directory.")
     files_ls_parser.add_argument("path", nargs="?", default="")
     files_ls_parser.add_argument("--limit", type=int)
-    _add_backend_override(files_ls_parser)
 
     files_glob_parser = files_subparsers.add_parser("glob", help="Match paths by glob.")
     files_glob_parser.add_argument("pattern")
     files_glob_parser.add_argument("--prefix", default="")
     files_glob_parser.add_argument("--limit", type=int)
-    _add_backend_override(files_glob_parser)
 
     files_grep_parser = files_subparsers.add_parser(
         "grep", help="Search file contents."
@@ -304,11 +165,9 @@ def _build_parser() -> argparse.ArgumentParser:
     files_grep_parser.add_argument("pattern")
     files_grep_parser.add_argument("--prefix", default="")
     files_grep_parser.add_argument("--limit", type=int)
-    _add_backend_override(files_grep_parser)
 
     files_stat_parser = files_subparsers.add_parser("stat", help="Show path metadata.")
     files_stat_parser.add_argument("path")
-    _add_backend_override(files_stat_parser)
 
     files_read_lines_parser = files_subparsers.add_parser(
         "read-lines",
@@ -318,13 +177,11 @@ def _build_parser() -> argparse.ArgumentParser:
     files_read_lines_parser.add_argument("--start", type=int, required=True)
     files_read_lines_parser.add_argument("--end", type=int, required=True)
     files_read_lines_parser.add_argument("--json", action="store_true")
-    _add_backend_override(files_read_lines_parser)
 
     files_read_parser = files_subparsers.add_parser("read", help="Read a file.")
     files_read_parser.add_argument("path")
     files_read_parser.add_argument("--max-bytes", type=int)
     files_read_parser.add_argument("--json", action="store_true")
-    _add_backend_override(files_read_parser)
 
     folders_parser = subparsers.add_parser(
         "folders",
@@ -494,150 +351,57 @@ def _emit_key_metadata(payload: dict[str, object], *, as_json: bool) -> int:
     return 0
 
 
-def _add_backend_override(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--backend",
-        choices=("remote", "hosted", "ctxfs"),
-        default=argparse.SUPPRESS,
-        help="Backend to use for this command.",
-    )
-
-
-def _normalize_search_query(query_tokens: Sequence[str]) -> str:
-    normalized_tokens = [
-        _quote_shell_stripped_text_token(token) for token in query_tokens
-    ]
-    return " ".join(normalized_tokens)
-
-
-def _quote_shell_stripped_text_token(token: str) -> str:
-    if not token.lower().startswith("text:"):
-        return token
-
-    value = token[5:]
-    if not value or not re.search(r"\s", value):
-        return token
-
-    stripped_value = value.strip()
-    if stripped_value.startswith(('"', "'", "(")) or stripped_value.endswith(
-        ('"', "'", ")")
-    ):
-        return token
-
-    escaped_value = stripped_value.replace("\\", "\\\\").replace('"', '\\"')
-    return f'text:"{escaped_value}"'
-
-
 def _handle_login(args: argparse.Namespace) -> int:
-    if args.endpoint:
-        endpoint = resolve_ctxfs_endpoint_details(url=args.endpoint).endpoint
-        if endpoint.startswith("unix://"):
-            raise ValueError(
-                "ctxfs login is only supported for HTTP(S) endpoints; "
-                "Unix sockets use local peer trust."
-            )
-        api_key, should_save = _resolve_ctxfs_login_api_key(endpoint)
-        if not api_key:
-            raise ValueError(
-                "Missing ctxfs API key. Set `CTXD_CTXFS_API_KEY` or run "
-                "`ctxd login --endpoint URL` in an interactive terminal."
-            )
-        CtxfsClient(
-            endpoint=endpoint, api_key=api_key, timeout=5.0
-        ).validate_authentication()
-        if should_save:
-            save_ctxfs_api_key(api_key, endpoint=endpoint)
-            print(f"Saved ctxfs authentication for {endpoint}.")
-        else:
-            print(f"ctxfs authentication is valid for {endpoint}.")
-        return 0
-    api_key, should_save = _resolve_login_api_key()
+    endpoint = resolve_ctxfs_endpoint_details(url=args.endpoint).endpoint
+    if endpoint.startswith("unix://"):
+        raise ValueError(
+            "ctxfs login is only supported for HTTP(S) endpoints; "
+            "Unix sockets use local peer trust."
+        )
+    api_key, should_save = _resolve_ctxfs_login_api_key(endpoint)
     if not api_key:
         raise ValueError(
-            "Missing API key. Set `CTXD_API_KEY` or run `ctxd login` in an interactive terminal."
+            "Missing ctxfs API key. Set `CTXD_CTXFS_API_KEY` or run "
+            "`ctxd login --endpoint URL` in an interactive terminal."
         )
-
-    Client(api_key=api_key, backend="hosted").get_profile()
-
+    CtxfsClient(endpoint=endpoint, api_key=api_key, timeout=5.0).validate_authentication()
     if should_save:
-        save_api_key(api_key)
-        print("Saved API key authentication.")
+        save_ctxfs_api_key(api_key, endpoint=endpoint)
+        print(f"Saved ctxfs authentication for {endpoint}.")
     else:
-        print("API key authentication is valid.")
+        print(f"ctxfs authentication is valid for {endpoint}.")
     return 0
 
 
 def _handle_logout(args: argparse.Namespace) -> int:
-    if args.endpoint:
-        endpoint = resolve_ctxfs_endpoint_details(url=args.endpoint).endpoint
-        clear_ctxfs_api_key(endpoint=endpoint)
-        print(f"Cleared stored ctxfs authentication for {endpoint}.")
-        return 0
-    clear_api_key()
-    print("Cleared stored ctxd API key.")
+    endpoint = resolve_ctxfs_endpoint_details(url=args.endpoint).endpoint
+    clear_ctxfs_api_key(endpoint=endpoint)
+    print(f"Cleared stored ctxfs authentication for {endpoint}.")
     return 0
 
 
 def _handle_status(args: argparse.Namespace) -> int:
-    if args.endpoint:
-        endpoint = resolve_ctxfs_endpoint_details(url=args.endpoint).endpoint
-        api_key = resolve_ctxfs_api_key(endpoint=endpoint)
-        if not api_key:
-            print(f"Not authenticated to ctxfs at {endpoint}.", file=sys.stderr)
-            return 1
-        CtxfsClient(
-            endpoint=endpoint, api_key=api_key, timeout=5.0
-        ).validate_authentication()
-        print(f"Authenticated to ctxfs at {endpoint}.")
-        return 0
-    try:
-        api_key = resolve_api_key()
-    except CtxdError as exc:
-        print(f"Not authenticated: {exc}", file=sys.stderr)
-        return 1
-
-    if not api_key:
-        print(
-            "Not authenticated: Missing API key. Set `CTXD_API_KEY` or run `ctxd login`.",
-            file=sys.stderr,
-        )
-        return 1
-
-    print("Authenticated to ctxd.")
+    resolution = resolve_ctxfs_endpoint_details(url=args.endpoint)
+    if resolution.managed_local:
+        ensure_started()
+    endpoint = resolution.endpoint
+    CtxfsClient(endpoint=endpoint, timeout=5.0).status()
+    print(f"ctxfs endpoint: {endpoint}")
+    print("ctxfs healthy: true")
     return 0
 
 
-def _resolve_login_api_key() -> tuple[str | None, bool]:
-    env_api_key = os.getenv("CTXD_API_KEY")
-    if env_api_key and env_api_key.strip():
-        return env_api_key.strip(), False
-
-    try:
-        stored_api_key = resolve_api_key()
-    except CtxdError:
-        stored_api_key = None
-    if stored_api_key:
-        return stored_api_key, False
-
-    prompted_api_key = _prompt_api_key()
-    if prompted_api_key:
-        return prompted_api_key, True
-
-    return None, False
-
-
-def _prompt_api_key() -> str | None:
-    if not sys.stdin.isatty():
-        return None
-
-    try:
-        api_key = getpass.getpass("ctxd API key: ")
-    except (EOFError, KeyboardInterrupt):
-        return None
-
-    if api_key and api_key.strip():
-        return api_key.strip()
-    return None
+def _handle_endpoint(args: argparse.Namespace) -> int:
+    if args.endpoint_command == "set":
+        endpoint = resolve_ctxfs_endpoint_details(url=args.url).endpoint
+        CtxfsClient(endpoint=endpoint, timeout=2.0).validate_authentication()
+        save_ctxfs_endpoint(endpoint)
+        print(f"ctxfs endpoint set to {endpoint}.")
+        return 0
+    if args.endpoint_command == "status":
+        args.endpoint = None
+        return _handle_status(args)
+    raise ValueError("Unsupported endpoint command.")
 
 
 def _resolve_ctxfs_login_api_key(endpoint: str) -> tuple[str | None, bool]:
@@ -657,31 +421,6 @@ def _resolve_ctxfs_login_api_key(endpoint: str) -> tuple[str | None, bool]:
     except (EOFError, KeyboardInterrupt):
         return None, False
     return (value.strip(), True) if value and value.strip() else (None, False)
-
-
-def _handle_install_app(args: argparse.Namespace) -> int:
-    auth_url = "https://app.ctxd.dev/knowledge-base/add-application"
-
-    print("To install an app, go to:")
-    print(auth_url)
-
-    if not args.no_browser:
-        webbrowser.open(auth_url)
-    return 0
-
-
-def _handle_config(args: argparse.Namespace) -> int:
-    if args.config_command == "get" and args.key == "backend":
-        print(_display_backend(resolve_backend()))
-        return 0
-
-    if args.config_command == "set" and args.key == "backend":
-        backend = resolve_backend(args.value)
-        save_backend(backend)
-        print(f"Backend set to {_display_backend(backend)}.")
-        return 0
-
-    raise ValueError("Unsupported config command.")
 
 
 def _handle_folders(args: argparse.Namespace) -> int:
@@ -727,92 +466,6 @@ def _handle_tracker(args: argparse.Namespace) -> int:
         return 0
 
     raise ValueError("Unsupported tracker command.")
-
-
-def _handle_backend(args: argparse.Namespace) -> int:
-    if args.backend_command == "get":
-        print(_display_backend(resolve_backend()))
-        return 0
-
-    if args.backend_command == "set":
-        backend = resolve_backend(args.backend)
-        if args.endpoint and backend != "ctxfs":
-            raise ValueError("`--endpoint` is only supported with the ctxfs backend.")
-        if backend == "ctxfs":
-            resolution = resolve_ctxfs_endpoint_details(url=args.endpoint)
-            if resolution.managed_local:
-                service = ensure_started()
-            else:
-                CtxfsClient(
-                    endpoint=resolution.endpoint, timeout=2.0
-                ).validate_authentication()
-                service = None
-            save_backend(backend)
-            if args.endpoint:
-                save_ctxfs_endpoint(args.endpoint)
-            print(f"Backend set to {_display_backend(backend)}.")
-            print(f"ctxfs endpoint: {resolution.endpoint}")
-            print(f"ctxfs endpoint source: {resolution.source}")
-            print(f"ctxfs managed locally: {resolution.managed_local}")
-            if service is not None:
-                print(f"ctxfs root: {service['root']}")
-        else:
-            save_backend(backend)
-            print(f"Backend set to {_display_backend(backend)}.")
-        return 0
-
-    if args.backend_command == "status":
-        backend = resolve_backend()
-        print(f"Backend: {_display_backend(backend)}")
-        if backend == "ctxfs":
-            resolution = resolve_ctxfs_endpoint_details()
-            endpoint = resolution.endpoint
-            service = ctxfs_service_status() if resolution.managed_local else None
-            healthy = False
-            error = None
-            try:
-                CtxfsClient(endpoint=endpoint, timeout=2.0).status()
-                healthy = True
-            except Exception as exc:
-                error = str(exc)
-            print(f"ctxfs managed locally: {resolution.managed_local}")
-            print(f"ctxfs endpoint source: {resolution.source}")
-            if resolution.managed_local:
-                assert service is not None
-                print(f"ctxfs running: {service['running']}")
-            print(f"ctxfs healthy: {healthy}")
-            print(f"ctxfs endpoint: {endpoint}")
-            if resolution.managed_local:
-                assert service is not None
-                print(f"ctxfs root: {service['root']}")
-            if error:
-                print(f"ctxfs error: {error}")
-        else:
-            print("Remote backend configured.")
-        return 0
-
-    raise ValueError("Unsupported backend command.")
-
-
-def _display_backend(backend: str) -> str:
-    if backend == "hosted":
-        return "remote"
-    return backend
-
-
-def _ctxfs_search_kwargs(args: argparse.Namespace) -> dict:
-    kwargs = {}
-    prefix = getattr(args, "prefix", None)
-    folder = getattr(args, "folder", None)
-    if prefix and folder:
-        raise ValueError("Use either `--prefix` or `--folder`, not both.")
-    if folder:
-        kwargs["prefix"] = resolve_folder_prefix(folder)
-    elif prefix:
-        kwargs["prefix"] = args.prefix
-    if getattr(args, "limit", None) is not None:
-        kwargs["limit"] = args.limit
-    return kwargs
 
 
 def _handle_files(args: argparse.Namespace, client: Client) -> int:

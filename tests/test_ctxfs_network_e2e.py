@@ -194,7 +194,6 @@ def _client_environment(home: Path, endpoint: str, token: str) -> dict[str, str]
     environment.update(
         {
             "HOME": str(home),
-            "CTXD_BACKEND": "ctxfs",
             "CTXD_CTXFS_URL": endpoint,
             "CTXD_CTXFS_API_KEY": token,
             "CTXD_CONFIG_PATH": str(home / ".ctxd" / "config.json"),
@@ -426,10 +425,10 @@ def test_managed_ctxfs_full_cli_lifecycle(tmp_path: Path) -> None:
 
     try:
         initialized = _run_module(
-            "ctxd.cli", "backend", "set", "ctxfs", environment=environment
+            "ctxd.cli", "endpoint", "status", environment=environment
         )
         assert initialized.returncode == 0, initialized.stderr
-        assert "ctxfs managed locally: True" in initialized.stdout
+        assert "ctxfs healthy: true" in initialized.stdout
 
         registered = _run_module(
             "ctxd.cli",
@@ -652,7 +651,6 @@ def test_isolated_tracker_server_and_cli_network_topology(tmp_path: Path) -> Non
         writer_config.write_text(
             json.dumps(
                 {
-                    "backend": "ctxfs",
                     "ctxfs_url": endpoint,
                     "folders": {
                         "Documents": {

@@ -8,17 +8,11 @@ from typing import Any
 
 from ctxd.secure_store import (
     clear_ctxfs_api_key as clear_stored_ctxfs_api_key,
-    clear_secret_bundle,
     load_ctxfs_api_key,
-    load_secret_bundle,
-    save_secret_bundle,
     save_ctxfs_api_key as save_stored_ctxfs_api_key,
 )
 
-DEFAULT_BASE_URL = "https://mcp.ctxd.dev"
 DEFAULT_CONFIG_PATH = Path.home() / ".ctxd" / "config.json"
-DEFAULT_BACKEND = "remote"
-SUPPORTED_BACKENDS = frozenset({"hosted", "remote", "ctxfs"})
 DEFAULT_CTXFS_SOCKET = Path.home() / ".ctxd" / "local" / "ctxfs.sock"
 
 
@@ -36,26 +30,6 @@ def get_config_path() -> Path:
     if configured:
         return Path(configured).expanduser()
     return DEFAULT_CONFIG_PATH
-
-
-def resolve_api_key(
-    api_key: str | None = None, *, base_url: str | None = None
-) -> str | None:
-    if api_key and api_key.strip():
-        return api_key.strip()
-
-    env_api_key = os.getenv("CTXD_API_KEY")
-    if env_api_key and env_api_key.strip():
-        return env_api_key.strip()
-
-    secret_bundle = load_secret_bundle(
-        base_url=resolve_base_url(base_url), client_id=None
-    )
-    stored_api_key = secret_bundle.get("api_key")
-    if isinstance(stored_api_key, str) and stored_api_key.strip():
-        return stored_api_key.strip()
-
-    return None
 
 
 def load_config() -> dict[str, Any]:
@@ -86,28 +60,6 @@ def save_config(config: dict[str, Any]) -> Path:
     except OSError:
         pass
     return path
-
-
-def resolve_backend(backend: str | None = None) -> str:
-    if backend and backend.strip():
-        return _validate_backend(backend.strip())
-
-    env_backend = os.getenv("CTXD_BACKEND")
-    if env_backend and env_backend.strip():
-        return _validate_backend(env_backend.strip())
-
-    config_backend = load_config().get("backend")
-    if isinstance(config_backend, str) and config_backend.strip():
-        return _validate_backend(config_backend.strip())
-
-    return DEFAULT_BACKEND
-
-
-def save_backend(backend: str) -> Path:
-    resolved_backend = _validate_backend(backend)
-    config = load_config()
-    config["backend"] = resolved_backend
-    return save_config(config)
 
 
 def save_ctxfs_endpoint(endpoint: str) -> Path:
@@ -230,60 +182,6 @@ def resolve_ctxfs_endpoint_details(
     )
 
 
-def save_api_key(api_key: str, *, base_url: str | None = None) -> Path:
-    resolved_base_url = resolve_base_url(base_url)
-    config = load_config()
-    config["base_url"] = resolved_base_url
-    bundle = load_secret_bundle(base_url=resolved_base_url, client_id=None)
-    bundle["api_key"] = api_key.strip()
-    save_secret_bundle(
-        bundle,
-        base_url=resolved_base_url,
-        client_id=None,
-    )
-    return save_config(config)
-
-
-def clear_api_key(*, base_url: str | None = None, keep_base_url: bool = True) -> Path:
-    resolved_base_url = resolve_base_url(base_url)
-    clear_secret_bundle(base_url=resolved_base_url, client_id=None)
-
-    retained = load_config()
-    if keep_base_url:
-        retained["base_url"] = resolved_base_url
-    else:
-        retained.pop("base_url", None)
-
-    return save_config(retained)
-
-
-def resolve_base_url(base_url: str | None = None) -> str:
-    if base_url and base_url.strip():
-        return base_url.strip()
-
-    env_base_url = os.getenv("CTXD_BASE_URL")
-    if env_base_url and env_base_url.strip():
-        return env_base_url.strip()
-
-    config_base_url = load_config().get("base_url")
-    if isinstance(config_base_url, str) and config_base_url.strip():
-        return config_base_url.strip()
-
-    return DEFAULT_BASE_URL
-
-
-def _validate_backend(backend: str) -> str:
-    normalized = backend.strip().lower()
-    if normalized not in SUPPORTED_BACKENDS:
-        supported = ", ".join(sorted(SUPPORTED_BACKENDS))
-        raise ValueError(
-            f"Unsupported ctxd backend `{backend}`. Supported: {supported}."
-        )
-    if normalized == "hosted":
-        return "remote"
-    return normalized
-
-
 def _socket_endpoint(socket_path: str) -> str:
     if socket_path.startswith("unix://"):
         return socket_path
@@ -324,10 +222,3 @@ def _resolve_local_daemon_ctxfs_endpoint() -> str | None:
             return f"http://{host.strip()}:{port}"
 
     return None
-
-
-def _resolve_base_url_from_config(config: dict[str, Any]) -> str:
-    config_base_url = config.get("base_url")
-    if isinstance(config_base_url, str) and config_base_url.strip():
-        return config_base_url.strip()
-    return DEFAULT_BASE_URL
