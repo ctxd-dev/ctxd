@@ -4,16 +4,16 @@ title: 'Overview'
 ---
 
 ctxd makes indexed content available as agent-readable context. A deployment
-can use two pieces:
+can use two components:
 
-1. The optional **local tracker** watches only the folders you choose and sends
-   their content to ctxfs.
-2. **ctxfs** stores indexed content and exposes it through filesystem-shaped
+1. **ctxfs** stores indexed content and exposes it through filesystem-shaped
    paths with bounded read tools.
+2. The optional **local tracker** watches only the folders you choose and sends
+   their content to ctxfs.
 
 Add a folder when this machine should contribute local content.
 
-## How it works
+## Basic workflow
 
 1. **Install** the `ctxd` command and select the local `ctxfs` backend.
 2. **Optionally choose folders** with `ctxd folders add` when this machine should
@@ -34,10 +34,14 @@ Add a folder when this machine should contribute local content.
 | [ctxfs API](/docs/api) | Provides REST and MCP access | Unix socket or HTTPS endpoint |
 
 The tracker and ctxfs server are separate processes. With the default managed
-local endpoint, starting the tracker ensures ctxfs is running. An explicitly
-configured endpoint is checked without starting another server. The managed
-local Unix socket uses operating-system peer trust; HTTP endpoints require a
-scoped API key, and non-loopback serving requires HTTPS.
+local endpoint, starting the tracker ensures ctxfs is running. When configured
+to use an external endpoint, starting the tracker verifies that it can
+authenticate to that server instead of launching a local ctxfs process.
+
+## Authentication
+
+The managed local Unix socket uses operating-system peer trust. HTTP endpoints
+require a scoped API key, and non-loopback serving requires HTTPS.
 
 ## What agents can do
 
