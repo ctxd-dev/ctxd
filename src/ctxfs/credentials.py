@@ -163,6 +163,8 @@ class CredentialStore:
         if not normalized_scopes:
             raise ValueError("credential must have at least one scope")
         key_id = secrets.token_urlsafe(12)
+        while key_id.startswith("-"):
+            key_id = secrets.token_urlsafe(12)
         # 32 random bytes provides 256 bits of secret material.
         secret = secrets.token_urlsafe(32)
         token = f"{TOKEN_PREFIX}.{key_id}.{secret}"

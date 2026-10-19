@@ -15,7 +15,7 @@ Add a folder when this machine should contribute local content.
 
 ## Basic workflow
 
-1. **Install** the `ctxd` command and select the local `ctxfs` backend.
+1. **Install** the `ctxd` command. ctxfs is the only storage and retrieval service.
 2. **Optionally choose folders** with `ctxd folders add` when this machine should
    contribute content. Nothing outside those folders is tracked.
 3. **Keep contributed folders current.** The tracker detects file changes and

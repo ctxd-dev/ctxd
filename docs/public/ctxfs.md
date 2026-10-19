@@ -8,19 +8,18 @@ operations. The server can run independently of a tracker or configured folder.
 
 ## Install and start
 
-ctxfs ships in the ctxd package. Install ctxd, then select the backend:
+ctxfs ships in the ctxd package and is ready without selecting a backend:
 
 ```bash
 pip install ctxd
-ctxd backend set ctxfs
-ctxd backend status
+ctxd endpoint status
 ```
 
 The default data root is `~/.ctxd/ctxfs`. The managed server listens through the
-Unix socket `~/.ctxd/local/ctxfs.sock`; `ctxd backend status` prints the effective
-endpoint and whether ctxd manages it. An explicitly configured URL or socket is
-treated as externally managed and is checked without launching a second server.
-Do not launch a second server against the same data root.
+Unix socket `~/.ctxd/local/ctxfs.sock`; `ctxd endpoint status` checks that endpoint
+and prints its URL and health. An explicitly configured URL or socket is checked
+without launching a second server. Do not launch a second server against the same
+data root.
 
 ## Deployment roles
 
@@ -78,9 +77,9 @@ print generated prefixes. On a reader or writer client:
 
 ```bash
 ctxd login --endpoint https://ctxfs.example.net:8443
-ctxd backend set ctxfs --endpoint https://ctxfs.example.net:8443
+ctxd endpoint set https://ctxfs.example.net:8443
 ctxd status --endpoint https://ctxfs.example.net:8443
-ctxd backend status
+ctxd endpoint status
 ```
 
 `read` permits REST reads plus MCP tool discovery and calls. `submit` permits

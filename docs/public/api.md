@@ -10,7 +10,7 @@ at `POST /mcp`. The managed server listens on the Unix socket
 Check the active URL with:
 
 ```bash
-ctxd backend status
+ctxd endpoint status
 ```
 
 The managed Unix socket uses local peer trust. Every TCP HTTP request requires
@@ -67,4 +67,4 @@ Directory, tree, glob, and grep responses are bounded by `limit`. Check the resp
 - `401` — bearer credential is missing, invalid, expired, or revoked
 - `403` — the credential lacks the required scope or submission prefix
 - `404` — requested path does not exist
-- `503` — ctxfs is unavailable; check `ctxd backend status`
+- `503` — ctxfs is unavailable; check `ctxd endpoint status`
