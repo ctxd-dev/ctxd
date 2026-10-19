@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import Mock
 
 import httpx
 import pytest
@@ -7,6 +8,7 @@ import ctxd
 from ctxd import AsyncClient, Client, CtxfsClient
 from ctxd.config import (
     DEFAULT_CTXFS_SOCKET,
+    CtxfsEndpointResolution,
     clear_ctxfs_api_key,
     normalize_ctxfs_endpoint,
     resolve_ctxfs_api_key,
@@ -32,6 +34,103 @@ def test_removed_sdk_interfaces_are_absent() -> None:
 
 def test_client_accepts_ctxfs_endpoint_without_backend() -> None:
     assert Client(ctxfs_endpoint="https://ctxfs.example", ctxfs_api_key="token").files
+
+
+def test_sync_files_start_managed_local_service_on_first_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    start = Mock()
+    monkeypatch.setattr(
+        "ctxd.ctxfs_client.resolve_ctxfs_endpoint_details",
+        lambda **kwargs: CtxfsEndpointResolution(
+            "unix:///tmp/managed-ctxfs.sock", "default-managed-socket", True
+        ),
+    )
+    monkeypatch.setattr("ctxd.ctxfs_client._ensure_managed_local_started", start)
+
+    async def mock_request(self, method, url, **kwargs):
+        del self, kwargs
+        assert method == "GET" and url == "/api/ctxfs/stat"
+        return httpx.Response(200, json={"path": "doc.txt", "kind": "file", "size": 3})
+
+    monkeypatch.setattr("httpx.AsyncClient.request", mock_request)
+
+    client = Client()
+    start.assert_not_called()
+    client.files.stat("doc.txt")
+
+    start.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_async_files_start_managed_local_service_on_first_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    start = Mock()
+    monkeypatch.setattr(
+        "ctxd.ctxfs_client.resolve_ctxfs_endpoint_details",
+        lambda **kwargs: CtxfsEndpointResolution(
+            "unix:///tmp/managed-ctxfs.sock", "default-managed-socket", True
+        ),
+    )
+    monkeypatch.setattr("ctxd.ctxfs_client._ensure_managed_local_started", start)
+
+    async def mock_request(self, method, url, **kwargs):
+        del self, kwargs
+        assert method == "GET" and url == "/api/ctxfs/stat"
+        return httpx.Response(200, json={"path": "doc.txt", "kind": "file", "size": 3})
+
+    monkeypatch.setattr("httpx.AsyncClient.request", mock_request)
+    client = AsyncClient()
+    start.assert_not_called()
+    await client.files.stat("doc.txt")
+
+    start.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    ("client_kwargs"),
+    (
+        {"ctxfs_endpoint": "https://ctxfs.example"},
+        {"ctxfs_socket": "/tmp/explicit-ctxfs.sock"},
+    ),
+)
+def test_sync_files_do_not_start_service_for_explicit_endpoints(
+    monkeypatch: pytest.MonkeyPatch, client_kwargs: dict[str, str]
+) -> None:
+    start = Mock()
+    monkeypatch.setattr("ctxd.ctxfs_client._ensure_managed_local_started", start)
+
+    async def mock_request(self, method, url, **kwargs):
+        del self, method, url, kwargs
+        return httpx.Response(200, json={"path": "doc.txt", "kind": "file", "size": 3})
+
+    monkeypatch.setattr("httpx.AsyncClient.request", mock_request)
+    Client(**client_kwargs).files.stat("doc.txt")
+    start.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("client_kwargs"),
+    (
+        {"ctxfs_endpoint": "https://ctxfs.example"},
+        {"ctxfs_socket": "/tmp/explicit-ctxfs.sock"},
+    ),
+)
+async def test_async_files_do_not_start_service_for_explicit_endpoints(
+    monkeypatch: pytest.MonkeyPatch, client_kwargs: dict[str, str]
+) -> None:
+    start = Mock()
+    monkeypatch.setattr("ctxd.ctxfs_client._ensure_managed_local_started", start)
+
+    async def mock_request(self, method, url, **kwargs):
+        del self, method, url, kwargs
+        return httpx.Response(200, json={"path": "doc.txt", "kind": "file", "size": 3})
+
+    monkeypatch.setattr("httpx.AsyncClient.request", mock_request)
+    await AsyncClient(**client_kwargs).files.stat("doc.txt")
+    start.assert_not_called()
 
 
 def test_ctxfs_endpoint_prefers_socket_env(monkeypatch: pytest.MonkeyPatch) -> None:

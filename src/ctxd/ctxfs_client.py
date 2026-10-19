@@ -1,9 +1,10 @@
+import asyncio
 from typing import Any
 
 import httpx
 
 from ctxd._metadata import get_user_agent
-from ctxd.config import resolve_ctxfs_api_key, resolve_ctxfs_endpoint
+from ctxd.config import resolve_ctxfs_api_key, resolve_ctxfs_endpoint_details
 from ctxd.exceptions import CtxdError, CtxdProtocolError
 from ctxd.models import (
     CtxfsBounded,
@@ -27,7 +28,12 @@ class AsyncCtxfsClient:
         api_key: str | None = None,
         timeout: float = 30.0,
     ) -> None:
-        self._endpoint = resolve_ctxfs_endpoint(url=endpoint, socket_path=socket_path)
+        resolution = resolve_ctxfs_endpoint_details(
+            url=endpoint, socket_path=socket_path
+        )
+        self._endpoint = resolution.endpoint
+        self._managed_local = resolution.managed_local
+        self._managed_local_ready = False
         self._timeout = timeout
         self._api_key = resolve_ctxfs_api_key(api_key, endpoint=self._endpoint)
         self._client: httpx.AsyncClient | None = None
@@ -153,6 +159,10 @@ class AsyncCtxfsClient:
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if self._managed_local and not self._managed_local_ready:
+            await asyncio.to_thread(_ensure_managed_local_started)
+            self._managed_local_ready = True
+
         headers = {"User-Agent": get_user_agent(), "Accept": "application/json"}
         if self._api_key and not self._endpoint.startswith("unix://"):
             headers["Authorization"] = f"Bearer {self._api_key}"
@@ -323,6 +333,15 @@ def _run(coro):
     from ctxd.client import Client
 
     return Client._run(coro)
+
+
+def _ensure_managed_local_started() -> None:
+    # Imported only when the SDK owns the selected endpoint. The service module
+    # uses this client for its own explicit-socket health checks, so importing it
+    # at module load time would create a cycle.
+    from ctxd.local_ctxfs_service import ensure_started
+
+    ensure_started()
 
 
 def _drop_none(params: dict[str, Any]) -> dict[str, Any]:
