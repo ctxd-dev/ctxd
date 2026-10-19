@@ -74,9 +74,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ctxd",
-        description=(
-            "Track local folders and inspect indexed content through ctxfs."
-        ),
+        description=("Track local folders and inspect indexed content through ctxfs."),
         epilog=(
             "Examples:\n"
             "  ctxd folders add ~/Documents --name docs\n"
@@ -117,11 +115,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     status_parser = subparsers.add_parser(
         "status",
-        help="Show whether ctxd authentication is configured.",
-        description="Check whether an API key is available from the environment or stored credentials.",
+        help="Check ctxfs endpoint health.",
+        description=(
+            "Check ctxfs endpoint health, starting the default local ctxfs service "
+            "when needed."
+        ),
     )
     status_parser.add_argument(
-        "--endpoint", help="Show authentication status for this ctxfs HTTP endpoint."
+        "--endpoint", help="Check this ctxfs HTTP(S) URL or Unix socket."
     )
 
     endpoint_parser = subparsers.add_parser(
@@ -364,7 +365,9 @@ def _handle_login(args: argparse.Namespace) -> int:
             "Missing ctxfs API key. Set `CTXD_CTXFS_API_KEY` or run "
             "`ctxd login --endpoint URL` in an interactive terminal."
         )
-    CtxfsClient(endpoint=endpoint, api_key=api_key, timeout=5.0).validate_authentication()
+    CtxfsClient(
+        endpoint=endpoint, api_key=api_key, timeout=5.0
+    ).validate_authentication()
     if should_save:
         save_ctxfs_api_key(api_key, endpoint=endpoint)
         print(f"Saved ctxfs authentication for {endpoint}.")

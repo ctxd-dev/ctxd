@@ -40,6 +40,18 @@ def test_cli_help_only_describes_ctxfs_commands() -> None:
         assert removed not in output
 
 
+def test_status_help_describes_endpoint_health_not_authentication() -> None:
+    stdout = StringIO()
+    with redirect_stdout(stdout), pytest.raises(SystemExit) as exc:
+        main(["status", "--help"])
+    assert exc.value.code == 0
+    output = stdout.getvalue()
+    assert "endpoint health" in output
+    assert "default local ctxfs service" in output
+    assert "authentication" not in output
+    assert "API key" not in output
+
+
 @pytest.mark.parametrize("command", ["search", "fetch", "profile", "backend"])
 def test_removed_commands_are_unknown(command: str) -> None:
     with pytest.raises(SystemExit) as exc:

@@ -16,10 +16,10 @@ ctxd endpoint status
 ```
 
 The default data root is `~/.ctxd/ctxfs`. The managed server listens through the
-Unix socket `~/.ctxd/local/ctxfs.sock`; `ctxd endpoint status` prints the effective
-endpoint and whether ctxd manages it. An explicitly configured URL or socket is
-treated as externally managed and is checked without launching a second server.
-Do not launch a second server against the same data root.
+Unix socket `~/.ctxd/local/ctxfs.sock`; `ctxd endpoint status` checks that endpoint
+and prints its URL and health. An explicitly configured URL or socket is checked
+without launching a second server. Do not launch a second server against the same
+data root.
 
 ## Deployment roles
 
