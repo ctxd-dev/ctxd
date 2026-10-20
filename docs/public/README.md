@@ -4,10 +4,10 @@ This directory is the source of truth for the user-facing documentation rendered
 at `ctxd.dev/docs`. Edit these files in the same pull request as any public CLI,
 API, security, or behavior change.
 
-After a change merges to `main`, `dispatch-docs.yml` sends the exact commit SHA to
-`ctxd-landing`. That repository copies this directory, regenerates documentation
-visual baselines, runs its site checks, and maintains an auto-merge pull request.
-A scheduled reconciliation in `ctxd-landing` catches missed dispatches.
+`ctxd-landing` periodically reads this public directory from `main`, regenerates
+documentation visual baselines, runs its site checks, and maintains a
+synchronization pull request. The landing repository owns its workflow and
+credentials; this public repository has no access to the landing repository.
 
 Do not edit the generated copies in `ctxd-landing/src/content/docs/docs` directly.
 The sync process replaces that directory from this one.
