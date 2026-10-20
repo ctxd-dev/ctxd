@@ -5,6 +5,7 @@ import fnmatch
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import selectors
@@ -12,6 +13,7 @@ import shutil
 import sqlite3
 import subprocess
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -25,7 +27,10 @@ from ctxfs.models import (
     DeleteOperation,
     DirectoryEntry,
     Entry,
+    FolderState,
     GrepMatch,
+    Machine,
+    MachineState,
     MoveOperation,
     OperationKind,
     Provenance,
@@ -34,6 +39,7 @@ from ctxfs.models import (
     ReadResult,
     Submission,
     SubmissionState,
+    TrackedFolder,
     WriterStatusSummary,
 )
 
@@ -58,6 +64,10 @@ class PrefixAuthorizationError(PermissionError):
 
 
 class ContentHashMismatchError(ValueError):
+    pass
+
+
+class CatalogConflictError(ValueError):
     pass
 
 
@@ -125,6 +135,299 @@ class CtxfsStore:
                 )
                 """
             )
+            self.connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS machines (
+                    user_id TEXT NOT NULL,
+                    machine_id TEXT NOT NULL,
+                    machine_key TEXT NOT NULL,
+                    local_registration_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    state TEXT NOT NULL,
+                    platform TEXT,
+                    ctxd_version TEXT,
+                    credential_key_id TEXT,
+                    registered_at REAL NOT NULL,
+                    PRIMARY KEY(user_id, machine_id),
+                    UNIQUE(user_id, machine_key),
+                    UNIQUE(user_id, local_registration_id)
+                )
+                """
+            )
+            self.connection.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS machines_credential_key
+                ON machines(user_id, credential_key_id)
+                WHERE credential_key_id IS NOT NULL
+                """
+            )
+            self.connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS machines_listing
+                ON machines(user_id, registered_at, machine_id)
+                """
+            )
+            self.connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tracked_folders (
+                    user_id TEXT NOT NULL,
+                    machine_id TEXT NOT NULL,
+                    folder_id TEXT NOT NULL,
+                    folder_key TEXT NOT NULL,
+                    local_registration_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    state TEXT NOT NULL,
+                    registered_at REAL NOT NULL,
+                    PRIMARY KEY(user_id, machine_id, folder_id),
+                    UNIQUE(user_id, machine_id, folder_key),
+                    UNIQUE(user_id, machine_id, local_registration_id),
+                    FOREIGN KEY(user_id, machine_id)
+                        REFERENCES machines(user_id, machine_id)
+                )
+                """
+            )
+            self.connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS tracked_folders_listing
+                ON tracked_folders(
+                    user_id, machine_id, registered_at, folder_id
+                )
+                """
+            )
+
+    def register_machine(
+        self,
+        user_id: str,
+        *,
+        local_registration_id: str,
+        name: str,
+        description: str | None = None,
+        platform: str | None = None,
+        ctxd_version: str | None = None,
+        now: float | None = None,
+    ) -> Machine:
+        registration_id = _catalog_text(
+            local_registration_id, "local_registration_id", 128
+        )
+        clean_name = _catalog_text(name, "name", 128)
+        clean_description = _optional_catalog_text(description, "description", 1024)
+        clean_platform = _optional_catalog_text(platform, "platform", 128)
+        clean_version = _optional_catalog_text(ctxd_version, "ctxd_version", 128)
+        registered_at = time.time() if now is None else now
+        if not math.isfinite(registered_at) or registered_at <= 0:
+            raise ValueError("registered_at must be positive")
+        requested = (clean_name, clean_description, clean_platform, clean_version)
+        with self.connection:
+            existing = self.connection.execute(
+                """
+                SELECT * FROM machines
+                WHERE user_id = ? AND local_registration_id = ?
+                """,
+                (user_id, registration_id),
+            ).fetchone()
+            if existing is not None:
+                return _replay_machine(existing, requested)
+            base_key = _catalog_key(clean_name, fallback="machine")
+            suffix = 1
+            while True:
+                machine_key = _suffixed_key(base_key, suffix)
+                try:
+                    machine_id = str(uuid.uuid4())
+                    self.connection.execute(
+                        """
+                        INSERT INTO machines(
+                            user_id, machine_id, machine_key,
+                            local_registration_id, name, description, state,
+                            platform, ctxd_version, credential_key_id,
+                            registered_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+                        """,
+                        (
+                            user_id,
+                            machine_id,
+                            machine_key,
+                            registration_id,
+                            clean_name,
+                            clean_description,
+                            MachineState.UNKNOWN.value,
+                            clean_platform,
+                            clean_version,
+                            registered_at,
+                        ),
+                    )
+                    return self.machine(user_id, machine_id)
+                except sqlite3.IntegrityError:
+                    existing = self.connection.execute(
+                        """
+                        SELECT * FROM machines
+                        WHERE user_id = ? AND local_registration_id = ?
+                        """,
+                        (user_id, registration_id),
+                    ).fetchone()
+                    if existing is not None:
+                        return _replay_machine(existing, requested)
+                    suffix += 1
+
+    def register_folder(
+        self,
+        user_id: str,
+        machine_id: str,
+        *,
+        local_registration_id: str,
+        name: str,
+        description: str | None = None,
+        now: float | None = None,
+    ) -> TrackedFolder:
+        registration_id = _catalog_text(
+            local_registration_id, "local_registration_id", 128
+        )
+        clean_name = _catalog_text(name, "name", 128)
+        clean_description = _optional_catalog_text(description, "description", 1024)
+        registered_at = time.time() if now is None else now
+        if not math.isfinite(registered_at) or registered_at <= 0:
+            raise ValueError("registered_at must be positive")
+        requested = (clean_name, clean_description)
+        with self.connection:
+            self.machine(user_id, machine_id)
+            existing = self.connection.execute(
+                """
+                SELECT * FROM tracked_folders
+                WHERE user_id = ? AND machine_id = ?
+                  AND local_registration_id = ?
+                """,
+                (user_id, machine_id, registration_id),
+            ).fetchone()
+            if existing is not None:
+                return _replay_folder(existing, requested)
+            base_key = _catalog_key(clean_name, fallback="folder")
+            suffix = 1
+            while True:
+                folder_key = _suffixed_key(base_key, suffix)
+                try:
+                    folder_id = str(uuid.uuid4())
+                    self.connection.execute(
+                        """
+                        INSERT INTO tracked_folders(
+                            user_id, machine_id, folder_id, folder_key,
+                            local_registration_id, name, description, state,
+                            registered_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            user_id,
+                            machine_id,
+                            folder_id,
+                            folder_key,
+                            registration_id,
+                            clean_name,
+                            clean_description,
+                            FolderState.UNKNOWN.value,
+                            registered_at,
+                        ),
+                    )
+                    return self.folder(user_id, machine_id, folder_id)
+                except sqlite3.IntegrityError:
+                    existing = self.connection.execute(
+                        """
+                        SELECT * FROM tracked_folders
+                        WHERE user_id = ? AND machine_id = ?
+                          AND local_registration_id = ?
+                        """,
+                        (user_id, machine_id, registration_id),
+                    ).fetchone()
+                    if existing is not None:
+                        return _replay_folder(existing, requested)
+                    suffix += 1
+
+    def machine(self, user_id: str, machine_id: str) -> Machine:
+        row = self.connection.execute(
+            "SELECT * FROM machines WHERE user_id = ? AND machine_id = ?",
+            (user_id, machine_id),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown machine_id: {machine_id}")
+        return _machine_from_row(row)
+
+    def machines(self, user_id: str) -> list[Machine]:
+        rows = self.connection.execute(
+            """
+            SELECT * FROM machines WHERE user_id = ?
+            ORDER BY registered_at, machine_id
+            """,
+            (user_id,),
+        ).fetchall()
+        return [_machine_from_row(row) for row in rows]
+
+    def folder(
+        self, user_id: str, machine_id: str, folder_id: str
+    ) -> TrackedFolder:
+        row = self.connection.execute(
+            """
+            SELECT * FROM tracked_folders
+            WHERE user_id = ? AND machine_id = ? AND folder_id = ?
+            """,
+            (user_id, machine_id, folder_id),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown folder_id: {folder_id}")
+        return _folder_from_row(row)
+
+    def folders(self, user_id: str, machine_id: str) -> list[TrackedFolder]:
+        self.machine(user_id, machine_id)
+        rows = self.connection.execute(
+            """
+            SELECT * FROM tracked_folders
+            WHERE user_id = ? AND machine_id = ?
+            ORDER BY registered_at, folder_id
+            """,
+            (user_id, machine_id),
+        ).fetchall()
+        return [_folder_from_row(row) for row in rows]
+
+    def update_machine_metadata(
+        self,
+        user_id: str,
+        machine_id: str,
+        *,
+        name: str,
+        description: str | None,
+    ) -> Machine:
+        clean_name = _catalog_text(name, "name", 128)
+        clean_description = _optional_catalog_text(description, "description", 1024)
+        with self.connection:
+            self.machine(user_id, machine_id)
+            self.connection.execute(
+                """
+                UPDATE machines SET name = ?, description = ?
+                WHERE user_id = ? AND machine_id = ?
+                """,
+                (clean_name, clean_description, user_id, machine_id),
+            )
+            return self.machine(user_id, machine_id)
+
+    def update_folder_metadata(
+        self,
+        user_id: str,
+        machine_id: str,
+        folder_id: str,
+        *,
+        name: str,
+        description: str | None,
+    ) -> TrackedFolder:
+        clean_name = _catalog_text(name, "name", 128)
+        clean_description = _optional_catalog_text(description, "description", 1024)
+        with self.connection:
+            self.folder(user_id, machine_id, folder_id)
+            self.connection.execute(
+                """
+                UPDATE tracked_folders SET name = ?, description = ?
+                WHERE user_id = ? AND machine_id = ? AND folder_id = ?
+                """,
+                (clean_name, clean_description, user_id, machine_id, folder_id),
+            )
+            return self.folder(user_id, machine_id, folder_id)
 
     def register_prefix(self, user_id: str, writer_id: str, prefix: str) -> None:
         normalized = _normalize_path(prefix)
@@ -1983,6 +2286,89 @@ def _unlink_if_exists(path: Path | None) -> None:
         path.unlink()
     except FileNotFoundError:
         return
+
+
+def _catalog_text(value: str, field: str, maximum: int) -> str:
+    clean = value.strip()
+    if not clean:
+        raise ValueError(f"{field} must be non-empty")
+    if len(clean) > maximum:
+        raise ValueError(f"{field} must be at most {maximum} characters")
+    if any(ord(character) < 32 or ord(character) == 127 for character in clean):
+        raise ValueError(f"{field} cannot contain control characters")
+    return clean
+
+
+def _optional_catalog_text(
+    value: str | None, field: str, maximum: int
+) -> str | None:
+    if value is None:
+        return None
+    return _catalog_text(value, field, maximum)
+
+
+def _catalog_key(name: str, *, fallback: str) -> str:
+    ascii_name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    normalized = re.sub(r"[^a-z0-9]+", "-", ascii_name.lower()).strip("-")
+    return (normalized or fallback)[:63].rstrip("-")
+
+
+def _suffixed_key(base: str, suffix: int) -> str:
+    if suffix == 1:
+        return base
+    ending = f"-{suffix}"
+    return f"{base[: 63 - len(ending)].rstrip('-')}{ending}"
+
+
+def _machine_from_row(row: sqlite3.Row) -> Machine:
+    return Machine(
+        machine_id=row["machine_id"],
+        machine_key=row["machine_key"],
+        name=row["name"],
+        description=row["description"],
+        state=MachineState(row["state"]),
+        platform=row["platform"],
+        ctxd_version=row["ctxd_version"],
+        credential_key_id=row["credential_key_id"],
+        registered_at=row["registered_at"],
+    )
+
+
+def _folder_from_row(row: sqlite3.Row) -> TrackedFolder:
+    return TrackedFolder(
+        folder_id=row["folder_id"],
+        machine_id=row["machine_id"],
+        folder_key=row["folder_key"],
+        name=row["name"],
+        description=row["description"],
+        state=FolderState(row["state"]),
+        local_registration_id=row["local_registration_id"],
+        registered_at=row["registered_at"],
+    )
+
+
+def _replay_machine(
+    row: sqlite3.Row,
+    requested: tuple[str, str | None, str | None, str | None],
+) -> Machine:
+    stored = (row["name"], row["description"], row["platform"], row["ctxd_version"])
+    if stored != requested:
+        raise CatalogConflictError(
+            "local_registration_id is already registered with different machine metadata"
+        )
+    return _machine_from_row(row)
+
+
+def _replay_folder(
+    row: sqlite3.Row,
+    requested: tuple[str, str | None],
+) -> TrackedFolder:
+    stored = (row["name"], row["description"])
+    if stored != requested:
+        raise CatalogConflictError(
+            "local_registration_id is already registered with different folder metadata"
+        )
+    return _folder_from_row(row)
 
 
 def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
