@@ -7,6 +7,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+
 import ctxfs.store as store_module
 from ctxfs import (
     CatalogConflictError,
@@ -1541,6 +1542,66 @@ def test_machine_registration_validates_catalog_text(tmp_path, field, value):
         store.register_machine("user-1", **arguments)
 
     assert store.machines("user-1") == []
+
+
+@pytest.mark.parametrize(
+    ("entry_point", "field", "value"),
+    [
+        ("register_folder", "name", "n" * 129),
+        ("register_folder", "name", "bad\nname"),
+        ("register_folder", "description", "d" * 1025),
+        ("register_folder", "description", "bad\tdescription"),
+        ("update_machine_metadata", "name", "n" * 129),
+        ("update_machine_metadata", "name", "bad\nname"),
+        ("update_machine_metadata", "description", "d" * 1025),
+        ("update_machine_metadata", "description", "bad\tdescription"),
+        ("update_folder_metadata", "name", "n" * 129),
+        ("update_folder_metadata", "name", "bad\nname"),
+        ("update_folder_metadata", "description", "d" * 1025),
+        ("update_folder_metadata", "description", "bad\tdescription"),
+    ],
+)
+def test_folder_and_metadata_entry_points_reject_invalid_text_without_mutation(
+    tmp_path, entry_point, field, value
+):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    machine = store.register_machine(
+        "user-1",
+        local_registration_id="machine-1",
+        name="Laptop",
+        description="Original machine",
+        now=10,
+    )
+    folder = store.register_folder(
+        "user-1",
+        machine.machine_id,
+        local_registration_id="folder-1",
+        name="Documents",
+        description="Original folder",
+        now=11,
+    )
+    metadata = {"name": "Updated", "description": "Updated description"}
+    metadata[field] = value
+
+    with pytest.raises(ValueError):
+        if entry_point == "register_folder":
+            store.register_folder(
+                "user-1",
+                machine.machine_id,
+                local_registration_id="folder-2",
+                **metadata,
+            )
+        elif entry_point == "update_machine_metadata":
+            store.update_machine_metadata(
+                "user-1", machine.machine_id, **metadata
+            )
+        else:
+            store.update_folder_metadata(
+                "user-1", machine.machine_id, folder.folder_id, **metadata
+            )
+
+    assert store.machines("user-1") == [machine]
+    assert store.folders("user-1", machine.machine_id) == [folder]
 
 
 def test_catalog_access_is_tenant_scoped(tmp_path):
