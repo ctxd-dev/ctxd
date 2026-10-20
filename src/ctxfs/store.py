@@ -142,6 +142,10 @@ class CtxfsStore:
                     machine_id TEXT NOT NULL,
                     machine_key TEXT NOT NULL,
                     local_registration_id TEXT NOT NULL,
+                    registration_name TEXT NOT NULL,
+                    registration_description TEXT,
+                    registration_platform TEXT,
+                    registration_ctxd_version TEXT,
                     name TEXT NOT NULL,
                     description TEXT,
                     state TEXT NOT NULL,
@@ -153,6 +157,28 @@ class CtxfsStore:
                     UNIQUE(user_id, machine_key),
                     UNIQUE(user_id, local_registration_id)
                 )
+                """
+            )
+            _add_column_if_missing(
+                self.connection, "machines", "registration_name", "TEXT"
+            )
+            _add_column_if_missing(
+                self.connection, "machines", "registration_description", "TEXT"
+            )
+            _add_column_if_missing(
+                self.connection, "machines", "registration_platform", "TEXT"
+            )
+            _add_column_if_missing(
+                self.connection, "machines", "registration_ctxd_version", "TEXT"
+            )
+            self.connection.execute(
+                """
+                UPDATE machines
+                SET registration_name = name,
+                    registration_description = description,
+                    registration_platform = platform,
+                    registration_ctxd_version = ctxd_version
+                WHERE registration_name IS NULL
                 """
             )
             self.connection.execute(
@@ -176,6 +202,8 @@ class CtxfsStore:
                     folder_id TEXT NOT NULL,
                     folder_key TEXT NOT NULL,
                     local_registration_id TEXT NOT NULL,
+                    registration_name TEXT NOT NULL,
+                    registration_description TEXT,
                     name TEXT NOT NULL,
                     description TEXT,
                     state TEXT NOT NULL,
@@ -186,6 +214,23 @@ class CtxfsStore:
                     FOREIGN KEY(user_id, machine_id)
                         REFERENCES machines(user_id, machine_id)
                 )
+                """
+            )
+            _add_column_if_missing(
+                self.connection, "tracked_folders", "registration_name", "TEXT"
+            )
+            _add_column_if_missing(
+                self.connection,
+                "tracked_folders",
+                "registration_description",
+                "TEXT",
+            )
+            self.connection.execute(
+                """
+                UPDATE tracked_folders
+                SET registration_name = name,
+                    registration_description = description
+                WHERE registration_name IS NULL
                 """
             )
             self.connection.execute(
@@ -239,16 +284,22 @@ class CtxfsStore:
                         """
                         INSERT INTO machines(
                             user_id, machine_id, machine_key,
-                            local_registration_id, name, description, state,
-                            platform, ctxd_version, credential_key_id,
+                            local_registration_id, registration_name,
+                            registration_description, registration_platform,
+                            registration_ctxd_version, name, description,
+                            state, platform, ctxd_version, credential_key_id,
                             registered_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
                         """,
                         (
                             user_id,
                             machine_id,
                             machine_key,
                             registration_id,
+                            clean_name,
+                            clean_description,
+                            clean_platform,
+                            clean_version,
                             clean_name,
                             clean_description,
                             MachineState.UNKNOWN.value,
@@ -311,9 +362,10 @@ class CtxfsStore:
                         """
                         INSERT INTO tracked_folders(
                             user_id, machine_id, folder_id, folder_key,
-                            local_registration_id, name, description, state,
-                            registered_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            local_registration_id, registration_name,
+                            registration_description, name, description,
+                            state, registered_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             user_id,
@@ -321,6 +373,8 @@ class CtxfsStore:
                             folder_id,
                             folder_key,
                             registration_id,
+                            clean_name,
+                            clean_description,
                             clean_name,
                             clean_description,
                             FolderState.UNKNOWN.value,
@@ -2351,7 +2405,12 @@ def _replay_machine(
     row: sqlite3.Row,
     requested: tuple[str, str | None, str | None, str | None],
 ) -> Machine:
-    stored = (row["name"], row["description"], row["platform"], row["ctxd_version"])
+    stored = (
+        row["registration_name"],
+        row["registration_description"],
+        row["registration_platform"],
+        row["registration_ctxd_version"],
+    )
     if stored != requested:
         raise CatalogConflictError(
             "local_registration_id is already registered with different machine metadata"
@@ -2363,7 +2422,7 @@ def _replay_folder(
     row: sqlite3.Row,
     requested: tuple[str, str | None],
 ) -> TrackedFolder:
-    stored = (row["name"], row["description"])
+    stored = (row["registration_name"], row["registration_description"])
     if stored != requested:
         raise CatalogConflictError(
             "local_registration_id is already registered with different folder metadata"
@@ -2381,6 +2440,15 @@ def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
         (table_name,),
     ).fetchone()
     return row is not None
+
+
+def _add_column_if_missing(
+    connection: sqlite3.Connection, table_name: str, column_name: str, sql_type: str
+) -> None:
+    if column_name not in _table_columns(connection, table_name):
+        connection.execute(
+            f"ALTER TABLE {table_name} ADD COLUMN {column_name} {sql_type}"
+        )
 
 
 def _table_columns(connection: sqlite3.Connection, table_name: str) -> set[str]:

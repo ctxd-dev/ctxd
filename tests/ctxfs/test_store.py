@@ -1149,6 +1149,66 @@ def test_catalog_registration_persists_and_is_idempotent_across_reopen(tmp_path)
     assert reopened.folders("user-1", machine.machine_id) == [folder]
 
 
+def test_catalog_migration_backfills_immutable_registration_metadata(tmp_path):
+    root = tmp_path / "ctxfs"
+    store = CtxfsStore(root)
+    machine = store.register_machine(
+        "user-1",
+        local_registration_id="machine-local-1",
+        name="Laptop",
+        description="Original machine",
+        platform="linux",
+        ctxd_version="1.0",
+        now=10,
+    )
+    folder = store.register_folder(
+        "user-1",
+        machine.machine_id,
+        local_registration_id="folder-local-1",
+        name="Documents",
+        description="Original folder",
+        now=11,
+    )
+    for table, columns in (
+        (
+            "machines",
+            (
+                "registration_name",
+                "registration_description",
+                "registration_platform",
+                "registration_ctxd_version",
+            ),
+        ),
+        (
+            "tracked_folders",
+            ("registration_name", "registration_description"),
+        ),
+    ):
+        for column in columns:
+            store.connection.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+    store.connection.commit()
+    store.close()
+
+    reopened = CtxfsStore(root)
+    assert reopened.register_machine(
+        "user-1",
+        local_registration_id="machine-local-1",
+        name="Laptop",
+        description="Original machine",
+        platform="linux",
+        ctxd_version="1.0",
+        now=20,
+    ) == machine
+    assert reopened.register_folder(
+        "user-1",
+        machine.machine_id,
+        local_registration_id="folder-local-1",
+        name="Documents",
+        description="Original folder",
+        now=21,
+    ) == folder
+
+
 def test_catalog_keys_are_unique_in_their_intended_scopes(tmp_path):
     store = CtxfsStore(tmp_path / "ctxfs")
     first = store.register_machine(
@@ -1225,7 +1285,8 @@ def test_catalog_registration_rejects_conflicting_idempotency_reuse(tmp_path):
 
 
 def test_catalog_metadata_updates_preserve_identity_and_keys(tmp_path):
-    store = CtxfsStore(tmp_path / "ctxfs")
+    root = tmp_path / "ctxfs"
+    store = CtxfsStore(root)
     machine = store.register_machine(
         "user-1",
         local_registration_id="machine-1",
@@ -1261,6 +1322,41 @@ def test_catalog_metadata_updates_preserve_identity_and_keys(tmp_path):
     assert renamed_folder.folder_key == folder.folder_key
     assert renamed_folder.name == "Research"
     assert renamed_folder.description is None
+
+    store.close()
+    reopened = CtxfsStore(root)
+    assert reopened.register_machine(
+        "user-1",
+        local_registration_id="machine-1",
+        name="Laptop",
+        description="Old",
+        now=12,
+    ) == renamed_machine
+    assert reopened.register_folder(
+        "user-1",
+        machine.machine_id,
+        local_registration_id="folder-1",
+        name="Documents",
+        description="Old",
+        now=12,
+    ) == renamed_folder
+    with pytest.raises(CatalogConflictError):
+        reopened.register_machine(
+            "user-1",
+            local_registration_id="machine-1",
+            name="Studio Mac",
+            description=None,
+            now=12,
+        )
+    with pytest.raises(CatalogConflictError):
+        reopened.register_folder(
+            "user-1",
+            machine.machine_id,
+            local_registration_id="folder-1",
+            name="Research",
+            description=None,
+            now=12,
+        )
 
 
 def test_catalog_normalizes_fallback_and_bounded_suffixed_keys(tmp_path):
