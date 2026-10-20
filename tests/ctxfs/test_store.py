@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+import ctxfs.store as store_module
 from ctxfs import (
     CatalogConflictError,
     ContentHashMismatchError,
@@ -34,6 +37,37 @@ def _put(path: str, source_key: str, text: str) -> PutOperation:
         text=text,
         provenance=Provenance(producer="test", producer_version="1"),
     )
+
+
+def _race_catalog_registrations(monkeypatch, root, registration_ids, register):
+    """Start both inserts after both connections have completed their lookup."""
+    CtxfsStore(root).close()
+    insert_barrier = threading.Barrier(2)
+    uuid_lock = threading.Lock()
+    uuid_calls = 0
+    real_uuid4 = store_module.uuid.uuid4
+
+    def synchronized_uuid4():
+        nonlocal uuid_calls
+        with uuid_lock:
+            uuid_calls += 1
+            call_number = uuid_calls
+        if call_number <= 2:
+            insert_barrier.wait(timeout=5)
+        return real_uuid4()
+
+    monkeypatch.setattr(store_module.uuid, "uuid4", synchronized_uuid4)
+
+    def worker(registration_id):
+        store = CtxfsStore(root)
+        try:
+            return register(store, registration_id)
+        finally:
+            store.close()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(worker, value) for value in registration_ids]
+        return [future.result(timeout=10) for future in futures]
 
 
 def test_move_preserves_source_identity_and_object_without_rewriting(tmp_path):
@@ -1252,6 +1286,108 @@ def test_catalog_keys_are_unique_in_their_intended_scopes(tmp_path):
         "documents-2",
         "documents",
     )
+
+
+def test_concurrent_machine_name_collision_allocates_suffix(monkeypatch, tmp_path):
+    root = tmp_path / "ctxfs"
+
+    machines = _race_catalog_registrations(
+        monkeypatch,
+        root,
+        ["machine-1", "machine-2"],
+        lambda store, registration_id: store.register_machine(
+            "user-1",
+            local_registration_id=registration_id,
+            name="Build Laptop",
+            now=10,
+        ),
+    )
+
+    assert {machine.machine_key for machine in machines} == {
+        "build-laptop",
+        "build-laptop-2",
+    }
+    reopened = CtxfsStore(root)
+    assert {machine.machine_id for machine in reopened.machines("user-1")} == {
+        machine.machine_id for machine in machines
+    }
+
+
+def test_concurrent_machine_registration_replay_converges(monkeypatch, tmp_path):
+    root = tmp_path / "ctxfs"
+
+    machines = _race_catalog_registrations(
+        monkeypatch,
+        root,
+        ["machine-1", "machine-1"],
+        lambda store, registration_id: store.register_machine(
+            "user-1",
+            local_registration_id=registration_id,
+            name="Build Laptop",
+            now=10,
+        ),
+    )
+
+    assert machines[0] == machines[1]
+    reopened = CtxfsStore(root)
+    assert reopened.machines("user-1") == [machines[0]]
+
+
+def test_concurrent_folder_name_collision_allocates_suffix(monkeypatch, tmp_path):
+    root = tmp_path / "ctxfs"
+    setup_store = CtxfsStore(root)
+    machine = setup_store.register_machine(
+        "user-1", local_registration_id="machine-1", name="Build Laptop", now=10
+    )
+    setup_store.close()
+
+    folders = _race_catalog_registrations(
+        monkeypatch,
+        root,
+        ["folder-1", "folder-2"],
+        lambda store, registration_id: store.register_folder(
+            "user-1",
+            machine.machine_id,
+            local_registration_id=registration_id,
+            name="Documents",
+            now=11,
+        ),
+    )
+
+    assert {folder.folder_key for folder in folders} == {
+        "documents",
+        "documents-2",
+    }
+    reopened = CtxfsStore(root)
+    assert {
+        folder.folder_id for folder in reopened.folders("user-1", machine.machine_id)
+    } == {folder.folder_id for folder in folders}
+
+
+def test_concurrent_folder_registration_replay_converges(monkeypatch, tmp_path):
+    root = tmp_path / "ctxfs"
+    setup_store = CtxfsStore(root)
+    machine = setup_store.register_machine(
+        "user-1", local_registration_id="machine-1", name="Build Laptop", now=10
+    )
+    setup_store.close()
+
+    folders = _race_catalog_registrations(
+        monkeypatch,
+        root,
+        ["folder-1", "folder-1"],
+        lambda store, registration_id: store.register_folder(
+            "user-1",
+            machine.machine_id,
+            local_registration_id=registration_id,
+            name="Documents",
+            now=11,
+        ),
+    )
+
+    assert folders[0] == folders[1]
+    reopened = CtxfsStore(root)
+    assert reopened.folders("user-1", machine.machine_id) == [folders[0]]
 
 
 def test_catalog_registration_rejects_conflicting_idempotency_reuse(tmp_path):
