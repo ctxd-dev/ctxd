@@ -34,6 +34,10 @@ class PreparedMachineCredential:
     token: str
 
 
+class MachineCredentialNotCurrentError(PermissionError):
+    """The verified machine principal no longer owns the catalog binding."""
+
+
 class MachineCredentialCoordinator:
     def __init__(self, catalog_root: Path, credential_root: Path, user_id: str):
         self.catalog_root = catalog_root
@@ -174,7 +178,11 @@ class MachineCredentialCoordinator:
             with credentials.immediate_transaction():
                 with _catalog(self.catalog_root) as catalog:
                     machine = _require_current(
-                        catalog, self.user_id, principal, machine_id
+                        catalog,
+                        self.user_id,
+                        principal,
+                        machine_id,
+                        allow_cleared=True,
                     )
                     key_id = machine.credential_key_id
                     if key_id is None:
@@ -228,16 +236,21 @@ def _require_current(
     user_id: str,
     principal: Principal,
     machine_id: str,
+    *,
+    allow_cleared: bool = False,
 ) -> Machine:
     machine = catalog.machine(user_id, machine_id)
     if Scope.ADMIN in principal.scopes:
         return machine
+    binding_matches = machine.credential_key_id == principal.key_id or (
+        allow_cleared and machine.credential_key_id is None
+    )
     if (
         principal.machine_id != machine_id
         or principal.key_id is None
-        or machine.credential_key_id != principal.key_id
+        or not binding_matches
     ):
-        raise PermissionError("machine_credential_not_current")
+        raise MachineCredentialNotCurrentError("machine_credential_not_current")
     return machine
 
 

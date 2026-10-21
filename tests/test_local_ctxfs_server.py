@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from ctxd.local_ctxfs_server import CtxfsAuthMode, create_ctxfs_app
-from ctxfs import CtxfsStore
+from ctxfs import (
+    CtxfsStore,
+    MachineCredentialCoordinator,
+    MachineCredentialNotCurrentError,
+)
 from ctxfs.credentials import CredentialStore
 
 
@@ -517,6 +522,91 @@ def test_machine_enrollment_rotation_and_revocation_are_bound_to_catalog(tmp_pat
     assert revoked.status_code == 204
     assert client.get("/not-a-route", headers=replacement_headers).status_code == 401
     assert client.get("/api/ctxfs/tree", headers=_auth(reader.token)).status_code == 200
+
+
+def test_machine_revoke_http_retry_repairs_catalog_clear_after_rollback(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "ctxfs"
+    with CredentialStore(root) as credentials:
+        enrollment = credentials.create(name="enroll", scopes=["enroll"])
+    client = TestClient(
+        create_ctxfs_app(root, auth_mode=CtxfsAuthMode.BEARER),
+        raise_server_exceptions=False,
+    )
+    registered = client.post(
+        "/api/ctxfs/machines/register",
+        headers=_auth(enrollment.token),
+        json={"local_registration_id": "retry-1", "name": "Laptop"},
+    ).json()
+    machine_id = registered["machine"]["machine_id"]
+    headers = _auth(registered["token"])
+    original_clear = CtxfsStore.clear_machine_credential
+    failed = False
+
+    def clear_then_fail(self, *args, **kwargs):
+        nonlocal failed
+        result = original_clear(self, *args, **kwargs)
+        if not failed:
+            failed = True
+            raise RuntimeError("injected failure after catalog clear")
+        return result
+
+    monkeypatch.setattr(CtxfsStore, "clear_machine_credential", clear_then_fail)
+    route = f"/api/ctxfs/machines/{machine_id}/credential"
+    assert client.delete(route, headers=headers).status_code == 500
+
+    # The still-valid credential is admitted only to its cleanup route.
+    assert client.get("/health", headers=headers).status_code == 403
+    assert (
+        client.post(
+            f"/api/ctxfs/machines/{machine_id}/credentials/prepare", headers=headers
+        ).status_code
+        == 403
+    )
+    assert client.delete(route, headers=headers).status_code == 204
+    assert client.delete(route, headers=headers).status_code == 401
+    with CredentialStore(root) as credentials:
+        assert credentials.verify(registered["token"]) is None
+
+
+@pytest.mark.parametrize(
+    ("operation", "method", "suffix", "kwargs"),
+    [
+        ("prepare_rotation", "post", "credentials/prepare", {}),
+        (
+            "confirm_rotation",
+            "post",
+            "credentials/confirm",
+            {"json": {"replacement_key_id": "stale-key"}},
+        ),
+        ("revoke", "delete", "credential", {}),
+    ],
+)
+def test_lifecycle_stale_authority_is_bounded_to_403(
+    tmp_path, monkeypatch, operation, method, suffix, kwargs
+):
+    root = tmp_path / "ctxfs"
+    with CredentialStore(root) as credentials:
+        enrollment = credentials.create(name="enroll", scopes=["enroll"])
+    client = TestClient(create_ctxfs_app(root, auth_mode=CtxfsAuthMode.BEARER))
+    registered = client.post(
+        "/api/ctxfs/machines/register",
+        headers=_auth(enrollment.token),
+        json={"local_registration_id": "stale-1", "name": "Laptop"},
+    ).json()
+    machine_id = registered["machine"]["machine_id"]
+
+    def stale(*_args, **_kwargs):
+        raise MachineCredentialNotCurrentError("machine_credential_not_current")
+
+    monkeypatch.setattr(MachineCredentialCoordinator, operation, stale)
+    path = f"/api/ctxfs/machines/{machine_id}/{suffix}"
+    response = getattr(client, method)(
+        path, headers=_auth(registered["token"]), **kwargs
+    )
+    assert response.status_code == 403
+    assert response.json() == {"detail": "machine_credential_not_current"}
 
 
 def test_admin_can_enroll_without_consuming_single_use_credential(tmp_path):

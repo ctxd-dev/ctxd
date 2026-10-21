@@ -12,6 +12,7 @@ from ctxfs.auth import (
     local_socket_principal,
 )
 from ctxfs.enrollment import (
+    MachineCredentialNotCurrentError,
     MachineCredentialCoordinator,
     MachineRegistrationRequest,
     MachineRegistrationResult,
@@ -88,6 +89,7 @@ __all__ = [
     "GrepMatch",
     "LocalSocketTrust",
     "Machine",
+    "MachineCredentialNotCurrentError",
     "MachineCredentialCoordinator",
     "MachineRegistrationRequest",
     "MachineRegistrationResult",

@@ -21,6 +21,7 @@ from ctxfs import (
     GrepMatch,
     LocalSocketTrust,
     Machine,
+    MachineCredentialNotCurrentError,
     MachineCredentialCoordinator,
     MachineRegistrationRequest,
     MoveOperation,
@@ -150,8 +151,8 @@ def create_ctxfs_app(
             principal = grant.principal() if grant is not None else None
         if principal is None:
             return _auth_response("missing or invalid bearer credential")
-        if principal.machine_id is not None and not _machine_credential_is_current(
-            root, principal
+        if principal.machine_id is not None and not _machine_credential_is_admissible(
+            root, principal, request.method, request.url.path
         ):
             return JSONResponse(
                 status_code=403,
@@ -231,7 +232,9 @@ def create_ctxfs_app(
     ) -> MachineCredentialResponse:
         try:
             prepared = coordinator().prepare_rotation(principal, machine_id)
-        except (KeyError, ValueError) as exc:
+        except MachineCredentialNotCurrentError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except (KeyError, ValueError, CatalogBindingConflictError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         machine = _with_store(
             root, lambda store: store.machine(LOCAL_CTXFS_USER_ID, machine_id)
@@ -255,7 +258,9 @@ def create_ctxfs_app(
             return coordinator().confirm_rotation(
                 principal, machine_id, payload.replacement_key_id
             )
-        except (KeyError, ValueError) as exc:
+        except MachineCredentialNotCurrentError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except (KeyError, ValueError, CatalogBindingConflictError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.delete(
@@ -268,7 +273,9 @@ def create_ctxfs_app(
     ) -> Response:
         try:
             coordinator().revoke(principal, machine_id)
-        except (KeyError, ValueError) as exc:
+        except MachineCredentialNotCurrentError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except (KeyError, ValueError, CatalogBindingConflictError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return Response(status_code=204)
 
@@ -483,7 +490,9 @@ def _call_store(operation: Callable[..., T], *args: Any, **kwargs: Any) -> T:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-def _machine_credential_is_current(root: Path, principal: Principal) -> bool:
+def _machine_credential_is_admissible(
+    root: Path, principal: Principal, method: str, path: str
+) -> bool:
     if principal.machine_id is None or principal.key_id is None:
         return False
     try:
@@ -493,7 +502,14 @@ def _machine_credential_is_current(root: Path, principal: Principal) -> bool:
         )
     except KeyError:
         return False
-    return machine.credential_key_id == principal.key_id
+    if machine.credential_key_id == principal.key_id:
+        return True
+    revoke_path = f"/api/ctxfs/machines/{principal.machine_id}/credential"
+    return (
+        machine.credential_key_id is None
+        and method == "DELETE"
+        and path == revoke_path
+    )
 
 
 def _stat_or_404(store: CtxfsStore, user_id: str, path: str) -> Entry:
