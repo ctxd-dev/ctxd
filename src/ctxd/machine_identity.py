@@ -7,13 +7,14 @@ from typing import Any
 
 from ctxd._metadata import SDK_VERSION
 from ctxd.config import (
-    load_config,
+    load_config_strict,
     normalize_ctxfs_endpoint,
     resolve_ctxfs_endpoint,
     save_config,
 )
 from ctxd.ctxfs_client import CtxfsClient
 from ctxd.exceptions import CtxdAuthError, CtxdProtocolError
+from ctxd.models import CtxfsMachineRegistration
 from ctxd.secure_store import (
     load_ctxfs_machine_registration,
     load_installation_proof,
@@ -52,7 +53,7 @@ class LocalMachineStatus:
 
 
 def load_or_create_machine_identity() -> LocalMachineIdentity:
-    config = load_config()
+    config = load_config_strict()
     raw = config.get("machine")
     proof = load_installation_proof()
     if raw is None:
@@ -79,7 +80,9 @@ def configure_machine(
     if name is None and description is _UNSET:
         raise ValueError("Specify --name, --description, or --clear-description.")
     identity = load_or_create_machine_identity()
-    new_name = identity.name if name is None else _validate_text(name, "machine name", 128)
+    new_name = (
+        identity.name if name is None else _validate_text(name, "machine name", 128)
+    )
     new_description = (
         identity.description
         if description is _UNSET
@@ -92,7 +95,7 @@ def configure_machine(
         name=new_name,
         description=new_description,
     )
-    config = load_config()
+    config = load_config_strict()
     config["machine"] = _identity_dict(updated)
     save_config(config)
     return updated
@@ -120,6 +123,9 @@ def register_machine(
     result = CtxfsClient(endpoint=resolved_endpoint, timeout=30.0).register_machine(
         **request, enrollment_token=enrollment_token
     )
+    # Revalidate at the persistence boundary as callers and test doubles can return
+    # constructed or subsequently mutated model instances.
+    result = CtxfsMachineRegistration.model_validate(result.model_dump(mode="python"))
     if result.machine.credential_key_id != result.key_id:
         raise CtxdProtocolError(
             "ctxfs registration response credential binding did not match"

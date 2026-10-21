@@ -56,15 +56,41 @@ class FolderState(str, Enum):
 
 
 class Machine(_CtxfsModel):
-    machine_id: str = Field(min_length=1)
-    machine_key: str = Field(min_length=1)
-    name: str = Field(min_length=1)
-    description: str | None = None
+    machine_id: str = Field(min_length=1, max_length=128)
+    machine_key: str = Field(min_length=1, max_length=128)
+    name: str = Field(min_length=1, max_length=128)
+    description: str | None = Field(default=None, max_length=1024)
     state: MachineState
-    platform: str | None = Field(default=None, min_length=1)
-    ctxd_version: str | None = Field(default=None, min_length=1)
-    credential_key_id: str | None = Field(default=None, min_length=1)
-    registered_at: float = Field(gt=0)
+    platform: str | None = Field(default=None, min_length=1, max_length=128)
+    ctxd_version: str | None = Field(default=None, min_length=1, max_length=128)
+    credential_key_id: str | None = Field(default=None, min_length=1, max_length=128)
+    registered_at: float = Field(gt=0, allow_inf_nan=False)
+
+    @field_validator(
+        "machine_id",
+        "machine_key",
+        "name",
+        "platform",
+        "ctxd_version",
+        "credential_key_id",
+    )
+    @classmethod
+    def validate_catalog_text(cls, value: str | None) -> str | None:
+        if value is not None:
+            if not value.strip():
+                raise ValueError("must be non-empty after trimming whitespace")
+            if any(ord(character) < 32 or ord(character) == 127 for character in value):
+                raise ValueError("cannot contain control characters")
+        return value
+
+    @field_validator("description")
+    @classmethod
+    def validate_description(cls, value: str | None) -> str | None:
+        if value is not None and any(
+            ord(character) < 32 or ord(character) == 127 for character in value
+        ):
+            raise ValueError("cannot contain control characters")
+        return value
 
 
 class TrackedFolder(_CtxfsModel):

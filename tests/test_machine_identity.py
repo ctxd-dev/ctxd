@@ -235,3 +235,56 @@ def test_malformed_machine_config_fails_closed(local_paths: Path) -> None:
     local_paths.write_text('{"machine":{"schema_version":1}}')
     with pytest.raises(ValueError, match="machine configuration"):
         load_or_create_machine_identity()
+
+
+@pytest.mark.parametrize("contents", ["{", "[]", '"scalar"'])
+def test_invalid_config_is_not_overwritten_or_used(
+    local_paths: Path, tmp_path: Path, contents: str
+) -> None:
+    local_paths.write_text(contents)
+    credentials = tmp_path / "credentials.json"
+    with patch("ctxd.machine_identity.CtxfsClient") as client:
+        with pytest.raises(ValueError, match="configuration"):
+            register_machine(endpoint="https://ctxfs.example", enrollment_token="one")
+    assert local_paths.read_text() == contents
+    assert not credentials.exists()
+    client.assert_not_called()
+
+
+def test_unreadable_config_is_not_treated_as_missing(local_paths: Path) -> None:
+    local_paths.write_text('{"unrelated":true}')
+    original = local_paths.read_bytes()
+    with patch("pathlib.Path.read_text", side_effect=OSError("denied")), patch(
+        "ctxd.machine_identity.CtxfsClient"
+    ) as client:
+        with pytest.raises(ValueError, match="could not be read"):
+            register_machine(endpoint="https://ctxfs.example", enrollment_token="one")
+    assert local_paths.read_bytes() == original
+    client.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("state", "compromised"),
+        ("registered_at", float("inf")),
+        ("registered_at", 0.0),
+        ("platform", ""),
+        ("platform", "   "),
+        ("ctxd_version", "bad\nversion"),
+        ("name", "x" * 129),
+        ("description", "bad\x7fdescription"),
+    ],
+)
+def test_invalid_registration_response_keeps_pending_without_token(
+    local_paths: Path, field: str, value: object
+) -> None:
+    result = _result()
+    object.__setattr__(result.machine, field, value)
+    with patch("ctxd.machine_identity.CtxfsClient") as client:
+        client.return_value.register_machine.return_value = result
+        with pytest.raises(Exception):
+            register_machine(endpoint="https://ctxfs.example", enrollment_token="one")
+    stored = load_ctxfs_machine_registration(endpoint="https://ctxfs.example")
+    assert stored is not None and stored["state"] == "pending"
+    assert "token" not in stored
