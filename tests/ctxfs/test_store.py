@@ -1184,66 +1184,6 @@ def test_catalog_registration_persists_and_is_idempotent_across_reopen(tmp_path)
     assert reopened.folders("user-1", machine.machine_id) == [folder]
 
 
-def test_catalog_migration_backfills_immutable_registration_metadata(tmp_path):
-    root = tmp_path / "ctxfs"
-    store = CtxfsStore(root)
-    machine = store.register_machine(
-        "user-1",
-        local_registration_id="machine-local-1",
-        name="Laptop",
-        description="Original machine",
-        platform="linux",
-        ctxd_version="1.0",
-        now=10,
-    )
-    folder = store.register_folder(
-        "user-1",
-        machine.machine_id,
-        local_registration_id="folder-local-1",
-        name="Documents",
-        description="Original folder",
-        now=11,
-    )
-    for table, columns in (
-        (
-            "machines",
-            (
-                "registration_name",
-                "registration_description",
-                "registration_platform",
-                "registration_ctxd_version",
-            ),
-        ),
-        (
-            "tracked_folders",
-            ("registration_name", "registration_description"),
-        ),
-    ):
-        for column in columns:
-            store.connection.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
-    store.connection.commit()
-    store.close()
-
-    reopened = CtxfsStore(root)
-    assert reopened.register_machine(
-        "user-1",
-        local_registration_id="machine-local-1",
-        name="Laptop",
-        description="Original machine",
-        platform="linux",
-        ctxd_version="1.0",
-        now=20,
-    ) == machine
-    assert reopened.register_folder(
-        "user-1",
-        machine.machine_id,
-        local_registration_id="folder-local-1",
-        name="Documents",
-        description="Original folder",
-        now=21,
-    ) == folder
-
-
 def test_catalog_keys_are_unique_in_their_intended_scopes(tmp_path):
     store = CtxfsStore(tmp_path / "ctxfs")
     first = store.register_machine(

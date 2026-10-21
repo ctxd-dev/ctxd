@@ -159,28 +159,6 @@ class CtxfsStore:
                 )
                 """
             )
-            _add_column_if_missing(
-                self.connection, "machines", "registration_name", "TEXT"
-            )
-            _add_column_if_missing(
-                self.connection, "machines", "registration_description", "TEXT"
-            )
-            _add_column_if_missing(
-                self.connection, "machines", "registration_platform", "TEXT"
-            )
-            _add_column_if_missing(
-                self.connection, "machines", "registration_ctxd_version", "TEXT"
-            )
-            self.connection.execute(
-                """
-                UPDATE machines
-                SET registration_name = name,
-                    registration_description = description,
-                    registration_platform = platform,
-                    registration_ctxd_version = ctxd_version
-                WHERE registration_name IS NULL
-                """
-            )
             self.connection.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS machines_credential_key
@@ -214,23 +192,6 @@ class CtxfsStore:
                     FOREIGN KEY(user_id, machine_id)
                         REFERENCES machines(user_id, machine_id)
                 )
-                """
-            )
-            _add_column_if_missing(
-                self.connection, "tracked_folders", "registration_name", "TEXT"
-            )
-            _add_column_if_missing(
-                self.connection,
-                "tracked_folders",
-                "registration_description",
-                "TEXT",
-            )
-            self.connection.execute(
-                """
-                UPDATE tracked_folders
-                SET registration_name = name,
-                    registration_description = description
-                WHERE registration_name IS NULL
                 """
             )
             self.connection.execute(
@@ -2440,15 +2401,6 @@ def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
         (table_name,),
     ).fetchone()
     return row is not None
-
-
-def _add_column_if_missing(
-    connection: sqlite3.Connection, table_name: str, column_name: str, sql_type: str
-) -> None:
-    if column_name not in _table_columns(connection, table_name):
-        connection.execute(
-            f"ALTER TABLE {table_name} ADD COLUMN {column_name} {sql_type}"
-        )
 
 
 def _table_columns(connection: sqlite3.Connection, table_name: str) -> set[str]:
