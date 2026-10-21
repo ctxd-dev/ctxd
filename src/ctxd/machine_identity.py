@@ -105,8 +105,7 @@ def register_machine(
     resolved_endpoint = normalize_ctxfs_endpoint(endpoint or resolve_ctxfs_endpoint())
     stored = load_ctxfs_machine_registration(endpoint=resolved_endpoint)
     request = _registration_request(identity)
-    if stored is not None:
-        _require_same_installation(stored, identity)
+    if stored is not None and stored.get("installation_id") == identity.installation_id:
         request = _parse_stored_request(stored.get("request"))
     else:
         save_ctxfs_machine_registration(
@@ -250,15 +249,6 @@ def _parse_stored_request(raw: Any) -> dict[str, Any]:
         }
     except (TypeError, ValueError) as exc:
         raise CtxdAuthError("Stored ctxd machine registration is invalid.") from exc
-
-
-def _require_same_installation(
-    stored: dict[str, Any], identity: LocalMachineIdentity
-) -> None:
-    if stored.get("installation_id") != identity.installation_id:
-        raise CtxdAuthError(
-            "Stored machine registration belongs to a different installation."
-        )
 
 
 def _status(

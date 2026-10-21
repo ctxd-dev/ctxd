@@ -15,6 +15,8 @@ from ctxd.secure_store import (
     load_ctxfs_api_key,
     load_ctxfs_machine_registration,
     save_ctxfs_api_key,
+    save_ctxfs_machine_registration,
+    save_installation_proof,
 )
 
 
@@ -103,6 +105,82 @@ def test_retry_reuses_exact_pending_request_after_client_failure(
     }
     assert status.registration_state == "registered"
     assert status.metadata_sync == "pending_server_update"
+
+
+@pytest.mark.parametrize("stale_state", ["pending", "registered"])
+def test_copied_config_supersedes_same_endpoint_registration(
+    local_paths: Path, stale_state: str
+) -> None:
+    endpoint = "https://ctxfs.example"
+    other_endpoint = "https://other.example"
+    original = load_or_create_machine_identity()
+    stale_request = {
+        "local_registration_id": original.local_registration_id,
+        "name": original.name,
+        "description": original.description,
+        "platform": "old-platform",
+        "ctxd_version": "old-version",
+    }
+    stale_registration = {
+        "state": stale_state,
+        "installation_id": original.installation_id,
+        "request": stale_request,
+    }
+    if stale_state == "registered":
+        stale_registration.update(
+            {
+                "machine": _result().machine.model_dump(mode="json"),
+                "key_id": "machine-key-1",
+                "token": "stale-machine-secret",
+            }
+        )
+    save_ctxfs_machine_registration(endpoint=endpoint, registration=stale_registration)
+    other_registration = {
+        "state": "pending",
+        "installation_id": original.installation_id,
+        "request": stale_request,
+    }
+    save_ctxfs_machine_registration(
+        endpoint=other_endpoint, registration=other_registration
+    )
+    save_ctxfs_api_key(endpoint=endpoint, api_key="reader-key")
+    save_installation_proof("00000000-0000-0000-0000-000000000001")
+
+    def assert_pending_replacement(**request):
+        pending = load_ctxfs_machine_registration(endpoint=endpoint)
+        assert pending == {
+            "state": "pending",
+            "installation_id": request_identity.installation_id,
+            "request": {
+                key: value
+                for key, value in request.items()
+                if key != "enrollment_token"
+            },
+        }
+        assert "token" not in pending
+        return _result()
+
+    request_identity = load_or_create_machine_identity()
+    assert request_identity.installation_id != original.installation_id
+    assert request_identity.local_registration_id != original.local_registration_id
+    with patch("ctxd.machine_identity.CtxfsClient") as client:
+        client.return_value.register_machine.side_effect = assert_pending_replacement
+        status, _ = register_machine(endpoint=endpoint, enrollment_token="enroll")
+
+    request = client.return_value.register_machine.call_args.kwargs
+    assert request["local_registration_id"] == request_identity.local_registration_id
+    assert request["enrollment_token"] == "enroll"
+    assert status.installation_id == request_identity.installation_id
+    assert status.registration_state == "registered"
+    current = load_ctxfs_machine_registration(endpoint=endpoint)
+    assert current is not None
+    assert current["installation_id"] == request_identity.installation_id
+    assert current["state"] == "registered"
+    assert current["token"] == "machine-secret"
+    assert (
+        load_ctxfs_machine_registration(endpoint=other_endpoint) == other_registration
+    )
+    assert load_ctxfs_api_key(endpoint=endpoint) == "reader-key"
 
 
 def test_mismatched_registration_response_keeps_pending_state(
