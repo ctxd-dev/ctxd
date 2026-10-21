@@ -35,23 +35,27 @@ ctxd folders list
 ```
 
 Do this only when this machine should contribute content. The name `Documents`
-is also its CLI path alias. A server can instead run with an empty store or
-serve content submitted by other authorized tracker clients.
+is also its CLI path alias.
 
-## 4. Verify the service
+## 4. Start the tracker
+
+```bash
+ctxd tracker start
+```
+
+The tracker runs separately from ctxfs and keeps the folders you added
+synchronized.
+
+Verify both processes:
 
 ```bash
 ctxd backend status
 ctxd tracker status
 ```
 
-Look for `Backend: ctxfs` and `ctxfs healthy: True`.
-
-Start the separate folder-tracker process:
-
-```bash
-ctxd tracker start
-```
+Look for `Backend: ctxfs`, `ctxfs healthy: True`, and `tracker running: True`.
+The status commands only report current state; they do not start either
+process.
 
 ## 5. Read from ctxfs
 

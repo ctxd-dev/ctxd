@@ -4,11 +4,13 @@ title: 'ctxfs'
 
 ctxfs stores indexed content and metadata and exposes them through a
 filesystem-shaped tree that agents can inspect with explicit, bounded
-operations. The server can run independently of a tracker or configured folder.
+operations.
 
 ## Install and start
 
-ctxfs ships in the ctxd package. Install ctxd, then select the backend:
+ctxfs ships in the ctxd package. After installation, select `ctxfs` as the
+backend used by `ctxd` commands. When no external endpoint is configured, this
+also starts the local ctxfs process:
 
 ```bash
 pip install ctxd
@@ -168,12 +170,3 @@ is the stdio bridge installed by the same `ctxd` package:
 The bridge resolves the configured ctxfs endpoint and endpoint-scoped
 credential itself. MCP tools do not accept endpoint, filesystem-root, or
 user-identity arguments.
-
-## Local data
-
-For tracker-contributed content, the source folder remains authoritative. The
-tracker observes it and applies changes to the configured ctxfs server. Removing
-a tracked root does not delete the source folder. An external endpoint is
-checked by `ctxd tracker start`; it does not cause ctxd to launch a local server.
-
-Stop tracking with `ctxd tracker stop` before uninstalling the package.
