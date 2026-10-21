@@ -2,16 +2,23 @@ from __future__ import annotations
 
 import hashlib
 import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+
+import ctxfs.store as store_module
 from ctxfs import (
+    CatalogConflictError,
     ContentHashMismatchError,
     CtxfsStore,
     DecisionOperation,
     DecisionState,
     DeleteOperation,
     DocClass,
+    FolderState,
+    MachineState,
     MoveOperation,
     PrefixAuthorizationError,
     Provenance,
@@ -31,6 +38,37 @@ def _put(path: str, source_key: str, text: str) -> PutOperation:
         text=text,
         provenance=Provenance(producer="test", producer_version="1"),
     )
+
+
+def _race_catalog_registrations(monkeypatch, root, registration_ids, register):
+    """Start both inserts after both connections have completed their lookup."""
+    CtxfsStore(root).close()
+    insert_barrier = threading.Barrier(2)
+    uuid_lock = threading.Lock()
+    uuid_calls = 0
+    real_uuid4 = store_module.uuid.uuid4
+
+    def synchronized_uuid4():
+        nonlocal uuid_calls
+        with uuid_lock:
+            uuid_calls += 1
+            call_number = uuid_calls
+        if call_number <= 2:
+            insert_barrier.wait(timeout=5)
+        return real_uuid4()
+
+    monkeypatch.setattr(store_module.uuid, "uuid4", synchronized_uuid4)
+
+    def worker(registration_id):
+        store = CtxfsStore(root)
+        try:
+            return register(store, registration_id)
+        finally:
+            store.close()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(worker, value) for value in registration_ids]
+        return [future.result(timeout=10) for future in futures]
 
 
 def test_move_preserves_source_identity_and_object_without_rewriting(tmp_path):
@@ -1093,3 +1131,574 @@ def test_put_normalizes_line_endings_before_storing_and_hashing(tmp_path):
     assert lf_entry.content_hash == crlf_entry.content_hash
     assert lf_entry.size_bytes == crlf_entry.size_bytes
     assert store.read("user-1", path).text == normalized_text
+
+
+def test_catalog_registration_persists_and_is_idempotent_across_reopen(tmp_path):
+    root = tmp_path / "ctxfs"
+    store = CtxfsStore(root)
+    machine = store.register_machine(
+        "user-1",
+        local_registration_id="machine-local-1",
+        name="Alice's Mac",
+        description="Research laptop",
+        platform="macOS arm64",
+        ctxd_version="0.1.16",
+        now=10,
+    )
+    folder = store.register_folder(
+        "user-1",
+        machine.machine_id,
+        local_registration_id="folder-local-1",
+        name="Documents",
+        description="Notes",
+        now=11,
+    )
+    store.close()
+
+    reopened = CtxfsStore(root)
+    replayed_machine = reopened.register_machine(
+        "user-1",
+        local_registration_id="machine-local-1",
+        name="Alice's Mac",
+        description="Research laptop",
+        platform="macOS arm64",
+        ctxd_version="0.1.16",
+        now=99,
+    )
+    replayed_folder = reopened.register_folder(
+        "user-1",
+        machine.machine_id,
+        local_registration_id="folder-local-1",
+        name="Documents",
+        description="Notes",
+        now=99,
+    )
+
+    assert replayed_machine == machine
+    assert replayed_folder == folder
+    assert machine.machine_key == "alice-s-mac"
+    assert machine.state is MachineState.UNKNOWN
+    assert folder.folder_key == "documents"
+    assert folder.state is FolderState.UNKNOWN
+    assert reopened.machines("user-1") == [machine]
+    assert reopened.folders("user-1", machine.machine_id) == [folder]
+
+
+def test_catalog_registration_allows_normalized_empty_descriptions_and_replays(
+    tmp_path,
+):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    machine = store.register_machine(
+        "user-1",
+        local_registration_id="machine-1",
+        name="Laptop",
+        description="   ",
+        platform=" macOS ",
+        ctxd_version=" 1.0 ",
+        now=10,
+    )
+    folder = store.register_folder(
+        "user-1",
+        machine.machine_id,
+        local_registration_id="folder-1",
+        name="Documents",
+        description="   ",
+        now=11,
+    )
+
+    assert machine.description == ""
+    assert machine.platform == "macOS"
+    assert machine.ctxd_version == "1.0"
+    assert folder.description == ""
+    assert store.register_machine(
+        "user-1",
+        local_registration_id="machine-1",
+        name=" Laptop ",
+        description="",
+        platform="macOS",
+        ctxd_version="1.0",
+        now=12,
+    ) == machine
+    assert store.register_folder(
+        "user-1",
+        machine.machine_id,
+        local_registration_id="folder-1",
+        name=" Documents ",
+        description="",
+        now=12,
+    ) == folder
+
+
+def test_catalog_keys_are_unique_in_their_intended_scopes(tmp_path):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    first = store.register_machine(
+        "user-1", local_registration_id="machine-1", name="Build Laptop", now=10
+    )
+    second = store.register_machine(
+        "user-1", local_registration_id="machine-2", name="Build Laptop", now=11
+    )
+    other_user = store.register_machine(
+        "user-2", local_registration_id="machine-1", name="Build Laptop", now=12
+    )
+    first_docs = store.register_folder(
+        "user-1",
+        first.machine_id,
+        local_registration_id="folder-1",
+        name="Documents",
+        now=20,
+    )
+    first_docs_2 = store.register_folder(
+        "user-1",
+        first.machine_id,
+        local_registration_id="folder-2",
+        name="Documents",
+        now=21,
+    )
+    second_docs = store.register_folder(
+        "user-1",
+        second.machine_id,
+        local_registration_id="folder-1",
+        name="Documents",
+        now=22,
+    )
+
+    assert (first.machine_key, second.machine_key, other_user.machine_key) == (
+        "build-laptop",
+        "build-laptop-2",
+        "build-laptop",
+    )
+    assert (first_docs.folder_key, first_docs_2.folder_key, second_docs.folder_key) == (
+        "documents",
+        "documents-2",
+        "documents",
+    )
+
+
+def test_concurrent_machine_name_collision_allocates_suffix(monkeypatch, tmp_path):
+    root = tmp_path / "ctxfs"
+
+    machines = _race_catalog_registrations(
+        monkeypatch,
+        root,
+        ["machine-1", "machine-2"],
+        lambda store, registration_id: store.register_machine(
+            "user-1",
+            local_registration_id=registration_id,
+            name="Build Laptop",
+            now=10,
+        ),
+    )
+
+    assert {machine.machine_key for machine in machines} == {
+        "build-laptop",
+        "build-laptop-2",
+    }
+    reopened = CtxfsStore(root)
+    assert {machine.machine_id for machine in reopened.machines("user-1")} == {
+        machine.machine_id for machine in machines
+    }
+
+
+def test_concurrent_machine_registration_replay_converges(monkeypatch, tmp_path):
+    root = tmp_path / "ctxfs"
+
+    machines = _race_catalog_registrations(
+        monkeypatch,
+        root,
+        ["machine-1", "machine-1"],
+        lambda store, registration_id: store.register_machine(
+            "user-1",
+            local_registration_id=registration_id,
+            name="Build Laptop",
+            now=10,
+        ),
+    )
+
+    assert machines[0] == machines[1]
+    reopened = CtxfsStore(root)
+    assert reopened.machines("user-1") == [machines[0]]
+
+
+def test_concurrent_folder_name_collision_allocates_suffix(monkeypatch, tmp_path):
+    root = tmp_path / "ctxfs"
+    setup_store = CtxfsStore(root)
+    machine = setup_store.register_machine(
+        "user-1", local_registration_id="machine-1", name="Build Laptop", now=10
+    )
+    setup_store.close()
+
+    folders = _race_catalog_registrations(
+        monkeypatch,
+        root,
+        ["folder-1", "folder-2"],
+        lambda store, registration_id: store.register_folder(
+            "user-1",
+            machine.machine_id,
+            local_registration_id=registration_id,
+            name="Documents",
+            now=11,
+        ),
+    )
+
+    assert {folder.folder_key for folder in folders} == {
+        "documents",
+        "documents-2",
+    }
+    reopened = CtxfsStore(root)
+    assert {
+        folder.folder_id for folder in reopened.folders("user-1", machine.machine_id)
+    } == {folder.folder_id for folder in folders}
+
+
+def test_concurrent_folder_registration_replay_converges(monkeypatch, tmp_path):
+    root = tmp_path / "ctxfs"
+    setup_store = CtxfsStore(root)
+    machine = setup_store.register_machine(
+        "user-1", local_registration_id="machine-1", name="Build Laptop", now=10
+    )
+    setup_store.close()
+
+    folders = _race_catalog_registrations(
+        monkeypatch,
+        root,
+        ["folder-1", "folder-1"],
+        lambda store, registration_id: store.register_folder(
+            "user-1",
+            machine.machine_id,
+            local_registration_id=registration_id,
+            name="Documents",
+            now=11,
+        ),
+    )
+
+    assert folders[0] == folders[1]
+    reopened = CtxfsStore(root)
+    assert reopened.folders("user-1", machine.machine_id) == [folders[0]]
+
+
+def test_catalog_registration_rejects_conflicting_idempotency_reuse(tmp_path):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    machine = store.register_machine(
+        "user-1", local_registration_id="machine-1", name="Laptop", now=10
+    )
+    folder = store.register_folder(
+        "user-1",
+        machine.machine_id,
+        local_registration_id="folder-1",
+        name="Documents",
+        now=11,
+    )
+
+    with pytest.raises(CatalogConflictError):
+        store.register_machine(
+            "user-1", local_registration_id="machine-1", name="Other", now=12
+        )
+    with pytest.raises(CatalogConflictError):
+        store.register_folder(
+            "user-1",
+            machine.machine_id,
+            local_registration_id="folder-1",
+            name="Other",
+            now=12,
+        )
+
+    assert store.machines("user-1") == [machine]
+    assert store.folders("user-1", machine.machine_id) == [folder]
+
+
+def test_catalog_metadata_updates_preserve_identity_and_keys(tmp_path):
+    root = tmp_path / "ctxfs"
+    store = CtxfsStore(root)
+    machine = store.register_machine(
+        "user-1",
+        local_registration_id="machine-1",
+        name="Laptop",
+        description="Old",
+        now=10,
+    )
+    folder = store.register_folder(
+        "user-1",
+        machine.machine_id,
+        local_registration_id="folder-1",
+        name="Documents",
+        description="Old",
+        now=11,
+    )
+
+    renamed_machine = store.update_machine_metadata(
+        "user-1", machine.machine_id, name="Studio Mac", description=None
+    )
+    renamed_folder = store.update_folder_metadata(
+        "user-1",
+        machine.machine_id,
+        folder.folder_id,
+        name="Research",
+        description=None,
+    )
+
+    assert renamed_machine.machine_id == machine.machine_id
+    assert renamed_machine.machine_key == machine.machine_key
+    assert renamed_machine.name == "Studio Mac"
+    assert renamed_machine.description is None
+    assert renamed_folder.folder_id == folder.folder_id
+    assert renamed_folder.folder_key == folder.folder_key
+    assert renamed_folder.name == "Research"
+    assert renamed_folder.description is None
+
+    store.close()
+    reopened = CtxfsStore(root)
+    assert reopened.register_machine(
+        "user-1",
+        local_registration_id="machine-1",
+        name="Laptop",
+        description="Old",
+        now=12,
+    ) == renamed_machine
+    assert reopened.register_folder(
+        "user-1",
+        machine.machine_id,
+        local_registration_id="folder-1",
+        name="Documents",
+        description="Old",
+        now=12,
+    ) == renamed_folder
+    with pytest.raises(CatalogConflictError):
+        reopened.register_machine(
+            "user-1",
+            local_registration_id="machine-1",
+            name="Studio Mac",
+            description=None,
+            now=12,
+        )
+    with pytest.raises(CatalogConflictError):
+        reopened.register_folder(
+            "user-1",
+            machine.machine_id,
+            local_registration_id="folder-1",
+            name="Research",
+            description=None,
+            now=12,
+        )
+
+
+def test_catalog_metadata_updates_allow_normalized_empty_descriptions(tmp_path):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    machine = store.register_machine(
+        "user-1",
+        local_registration_id="machine-1",
+        name="Laptop",
+        description="Original machine",
+        now=10,
+    )
+    folder = store.register_folder(
+        "user-1",
+        machine.machine_id,
+        local_registration_id="folder-1",
+        name="Documents",
+        description="Original folder",
+        now=11,
+    )
+
+    updated_machine = store.update_machine_metadata(
+        "user-1", machine.machine_id, name=" Laptop ", description="   "
+    )
+    updated_folder = store.update_folder_metadata(
+        "user-1",
+        machine.machine_id,
+        folder.folder_id,
+        name=" Documents ",
+        description="   ",
+    )
+
+    assert updated_machine.description == ""
+    assert updated_folder.description == ""
+    assert store.machine("user-1", machine.machine_id) == updated_machine
+    assert store.folder("user-1", machine.machine_id, folder.folder_id) == updated_folder
+
+
+def test_catalog_normalizes_fallback_and_bounded_suffixed_keys(tmp_path):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    fallback = store.register_machine(
+        "user-1", local_registration_id="machine-1", name="你好 !!!", now=10
+    )
+    long_name = "A" * 128
+    long_first = store.register_machine(
+        "user-1", local_registration_id="machine-2", name=long_name, now=11
+    )
+    long_second = store.register_machine(
+        "user-1", local_registration_id="machine-3", name=long_name, now=12
+    )
+
+    assert fallback.machine_key == "machine"
+    assert len(long_first.machine_key) == 63
+    assert len(long_second.machine_key) == 63
+    assert long_second.machine_key.endswith("-2")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("name", " "),
+        ("name", "bad\nname"),
+        ("name", "n" * 129),
+        ("description", "d" * 1025),
+        ("description", "bad\tdescription"),
+        ("platform", " "),
+        ("platform", "bad\tplatform"),
+        ("ctxd_version", " "),
+        ("ctxd_version", "v" * 129),
+        ("local_registration_id", "bad\x7fid"),
+    ],
+)
+def test_machine_registration_validates_catalog_text(tmp_path, field, value):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    arguments = {
+        "local_registration_id": "machine-1",
+        "name": "Laptop",
+        "description": None,
+        "platform": None,
+        "ctxd_version": None,
+    }
+    arguments[field] = value
+
+    with pytest.raises(ValueError):
+        store.register_machine("user-1", **arguments)
+
+    assert store.machines("user-1") == []
+
+
+@pytest.mark.parametrize(
+    ("entry_point", "field", "value"),
+    [
+        ("register_folder", "name", "n" * 129),
+        ("register_folder", "name", "bad\nname"),
+        ("register_folder", "description", "d" * 1025),
+        ("register_folder", "description", "bad\tdescription"),
+        ("update_machine_metadata", "name", "n" * 129),
+        ("update_machine_metadata", "name", "bad\nname"),
+        ("update_machine_metadata", "description", "d" * 1025),
+        ("update_machine_metadata", "description", "bad\tdescription"),
+        ("update_folder_metadata", "name", "n" * 129),
+        ("update_folder_metadata", "name", "bad\nname"),
+        ("update_folder_metadata", "description", "d" * 1025),
+        ("update_folder_metadata", "description", "bad\tdescription"),
+    ],
+)
+def test_folder_and_metadata_entry_points_reject_invalid_text_without_mutation(
+    tmp_path, entry_point, field, value
+):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    machine = store.register_machine(
+        "user-1",
+        local_registration_id="machine-1",
+        name="Laptop",
+        description="Original machine",
+        now=10,
+    )
+    folder = store.register_folder(
+        "user-1",
+        machine.machine_id,
+        local_registration_id="folder-1",
+        name="Documents",
+        description="Original folder",
+        now=11,
+    )
+    metadata = {"name": "Updated", "description": "Updated description"}
+    metadata[field] = value
+
+    with pytest.raises(ValueError):
+        if entry_point == "register_folder":
+            store.register_folder(
+                "user-1",
+                machine.machine_id,
+                local_registration_id="folder-2",
+                **metadata,
+            )
+        elif entry_point == "update_machine_metadata":
+            store.update_machine_metadata(
+                "user-1", machine.machine_id, **metadata
+            )
+        else:
+            store.update_folder_metadata(
+                "user-1", machine.machine_id, folder.folder_id, **metadata
+            )
+
+    assert store.machines("user-1") == [machine]
+    assert store.folders("user-1", machine.machine_id) == [folder]
+
+
+def test_catalog_access_is_tenant_scoped(tmp_path):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    machine = store.register_machine(
+        "user-1", local_registration_id="machine-1", name="Laptop", now=10
+    )
+    folder = store.register_folder(
+        "user-1",
+        machine.machine_id,
+        local_registration_id="folder-1",
+        name="Documents",
+        now=11,
+    )
+
+    calls = [
+        lambda: store.machine("user-2", machine.machine_id),
+        lambda: store.folder("user-2", machine.machine_id, folder.folder_id),
+        lambda: store.folders("user-2", machine.machine_id),
+        lambda: store.register_folder(
+            "user-2",
+            machine.machine_id,
+            local_registration_id="folder-2",
+            name="Documents",
+        ),
+        lambda: store.update_machine_metadata(
+            "user-2", machine.machine_id, name="Other", description=None
+        ),
+        lambda: store.update_folder_metadata(
+            "user-2",
+            machine.machine_id,
+            folder.folder_id,
+            name="Other",
+            description=None,
+        ),
+    ]
+    for call in calls:
+        with pytest.raises(KeyError):
+            call()
+
+
+def test_catalog_lists_deterministically_and_preserves_existing_store_flow(tmp_path):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    later = store.register_machine(
+        "user-1", local_registration_id="machine-later", name="Later", now=20
+    )
+    earlier = store.register_machine(
+        "user-1", local_registration_id="machine-earlier", name="Earlier", now=10
+    )
+    later_folder = store.register_folder(
+        "user-1",
+        earlier.machine_id,
+        local_registration_id="folder-later",
+        name="Later",
+        now=20,
+    )
+    earlier_folder = store.register_folder(
+        "user-1",
+        earlier.machine_id,
+        local_registration_id="folder-earlier",
+        name="Earlier",
+        now=10,
+    )
+
+    assert store.machines("user-1") == [earlier, later]
+    assert store.folders("user-1", earlier.machine_id) == [
+        earlier_folder,
+        later_folder,
+    ]
+
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [_put("local_files/root/notes.md", "inode-1", "still works")],
+    )
+    assert store.read("user-1", "local_files/root/notes.md").text == "still works"
