@@ -92,9 +92,10 @@ def test_different_enrollment_cannot_claim_existing_registration(tmp_path):
     assert active == [registered.key_id]
     catalog = CtxfsStore(root)
     try:
-        assert catalog.machine(
-            "local", registered.machine.machine_id
-        ).credential_key_id == registered.key_id
+        assert (
+            catalog.machine("local", registered.machine.machine_id).credential_key_id
+            == registered.key_id
+        )
     finally:
         catalog.close()
 

@@ -653,9 +653,12 @@ def test_fresh_enrollment_cannot_take_over_matching_registration(tmp_path):
         assert credentials.verify(attacker_enrollment.token) is not None
     catalog = CtxfsStore(root)
     try:
-        assert catalog.machine(
-            "local", registered["machine"]["machine_id"]
-        ).credential_key_id == registered["key_id"]
+        assert (
+            catalog.machine(
+                "local", registered["machine"]["machine_id"]
+            ).credential_key_id
+            == registered["key_id"]
+        )
     finally:
         catalog.close()
 

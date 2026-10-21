@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ctxfs.auth import Principal, Scope
-from ctxfs.credentials import CredentialStore, EnrollmentConsumedError
+from ctxfs.credentials import CredentialStore
 from ctxfs.models import Machine
 from ctxfs.store import CtxfsStore
 
@@ -163,7 +163,9 @@ class MachineCredentialCoordinator:
                         _require_machine_credential(replacement, machine)
                         predecessors = [
                             credential
-                            for credential in credentials.machine_credentials(machine_id)
+                            for credential in credentials.machine_credentials(
+                                machine_id
+                            )
                             if credential.key_id != replacement_key_id
                             and credential.created_at < replacement.created_at
                             and (
@@ -177,9 +179,7 @@ class MachineCredentialCoordinator:
                         ):
                             raise ValueError("invalid rotation confirmation retry")
                         for credential in predecessors:
-                            if (
-                                credential.active
-                            ):
+                            if credential.active:
                                 credentials.revoke_machine_key(
                                     credential.key_id,
                                     machine_id,
