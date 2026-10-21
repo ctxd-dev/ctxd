@@ -1,10 +1,10 @@
 import fcntl
 import hashlib
 import json
+import math
 import os
 import tempfile
 import uuid
-import math
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -113,8 +113,10 @@ def load_ctxfs_machine_registration(*, endpoint: str) -> dict[str, Any] | None:
 def save_ctxfs_machine_registration(
     *, endpoint: str, registration: dict[str, Any]
 ) -> None:
-    if registration.get("state") not in {"pending", "registered"}:
-        raise ValueError("machine registration state must be pending or registered")
+    # Validate before taking the write lock (and, importantly, before touching the
+    # bundle).  Keep one validator for reads and writes so a value accepted here
+    # can never make the credentials bundle unloadable later.
+    registration = _validate_machine_registration(registration)
     with _credentials_write_lock():
         payload = _load_credentials()
         registrations = payload.get("ctxfs_machine_registrations")
@@ -125,6 +127,22 @@ def save_ctxfs_machine_registration(
         registrations[endpoint] = registration
         payload["ctxfs_machine_registrations"] = registrations
         _save_credentials(payload)
+
+
+@contextmanager
+def installation_identity_lock(*, config_path: Path):
+    """Serialize identity/proof initialization for one local installation."""
+    credentials_path = get_credentials_path()
+    scope = "\0".join(
+        (
+            str(config_path.expanduser().absolute()),
+            str(credentials_path.expanduser().absolute()),
+        )
+    )
+    digest = hashlib.sha256(scope.encode("utf-8")).hexdigest()
+    lock_path = credentials_path.parent / ".ctxd-locks" / f"identity-{digest}.lock"
+    with _exclusive_file_lock(lock_path):
+        yield
 
 
 @contextmanager

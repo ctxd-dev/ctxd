@@ -7,6 +7,7 @@ from typing import Any
 
 from ctxd._metadata import SDK_VERSION
 from ctxd.config import (
+    get_config_path,
     load_config_strict,
     normalize_ctxfs_endpoint,
     resolve_ctxfs_endpoint,
@@ -17,6 +18,7 @@ from ctxd.exceptions import CtxdAuthError, CtxdProtocolError
 from ctxd.models import CtxfsMachineRegistration
 from ctxd.secure_store import (
     ctxfs_machine_registration_lock,
+    installation_identity_lock,
     load_ctxfs_machine_registration,
     load_installation_proof,
     save_ctxfs_machine_registration,
@@ -54,6 +56,11 @@ class LocalMachineStatus:
 
 
 def load_or_create_machine_identity() -> LocalMachineIdentity:
+    with installation_identity_lock(config_path=get_config_path()):
+        return _load_or_create_machine_identity_unlocked()
+
+
+def _load_or_create_machine_identity_unlocked() -> LocalMachineIdentity:
     config = load_config_strict()
     raw = config.get("machine")
     proof = load_installation_proof()
@@ -80,26 +87,27 @@ def configure_machine(
 ) -> LocalMachineIdentity:
     if name is None and description is _UNSET:
         raise ValueError("Specify --name, --description, or --clear-description.")
-    identity = load_or_create_machine_identity()
-    new_name = (
-        identity.name if name is None else _validate_text(name, "machine name", 128)
-    )
-    new_description = (
-        identity.description
-        if description is _UNSET
-        else _validate_description(description)
-    )
-    updated = LocalMachineIdentity(
-        schema_version=identity.schema_version,
-        installation_id=identity.installation_id,
-        local_registration_id=identity.local_registration_id,
-        name=new_name,
-        description=new_description,
-    )
-    config = load_config_strict()
-    config["machine"] = _identity_dict(updated)
-    save_config(config)
-    return updated
+    with installation_identity_lock(config_path=get_config_path()):
+        identity = _load_or_create_machine_identity_unlocked()
+        new_name = (
+            identity.name if name is None else _validate_text(name, "machine name", 128)
+        )
+        new_description = (
+            identity.description
+            if description is _UNSET
+            else _validate_description(description)
+        )
+        updated = LocalMachineIdentity(
+            schema_version=identity.schema_version,
+            installation_id=identity.installation_id,
+            local_registration_id=identity.local_registration_id,
+            name=new_name,
+            description=new_description,
+        )
+        config = load_config_strict()
+        config["machine"] = _identity_dict(updated)
+        save_config(config)
+        return updated
 
 
 def register_machine(

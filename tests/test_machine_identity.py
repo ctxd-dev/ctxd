@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
+from ctxd.exceptions import CtxdAuthError, CtxdProtocolError
 from ctxd.machine_identity import (
     configure_machine,
     load_or_create_machine_identity,
@@ -12,10 +13,10 @@ from ctxd.machine_identity import (
     register_machine,
 )
 from ctxd.models import CtxfsMachine, CtxfsMachineRegistration
-from ctxd.exceptions import CtxdAuthError, CtxdProtocolError
 from ctxd.secure_store import (
     load_ctxfs_api_key,
     load_ctxfs_machine_registration,
+    load_installation_proof,
     save_ctxfs_api_key,
     save_ctxfs_machine_registration,
     save_installation_proof,
@@ -63,6 +64,56 @@ def test_identity_is_stable_and_preserves_unrelated_config(local_paths: Path) ->
     second = load_or_create_machine_identity()
     assert second == first
     assert json.loads(local_paths.read_text())["unrelated"] is True
+
+
+def test_two_process_first_use_has_one_identity_and_registration(
+    local_paths: Path,
+) -> None:
+    context = multiprocessing.get_context("fork")
+    start = context.Event()
+    results = context.Queue()
+    manager = context.Manager()
+    seen = manager.list()
+    recoveries = manager.list()
+    endpoint = "https://ctxfs.example"
+
+    def registration_response(**request):
+        local_id = request["local_registration_id"]
+        recovered = bool(seen)
+        seen.append(local_id)
+        recoveries.append(recovered)
+        result = _result(recovered=recovered).model_copy(deep=True)
+        result.machine.machine_id = f"machine-{local_id}"
+        return result
+
+    def register_after_start():
+        start.wait(5)
+        _register_process(endpoint, "enroll", results)
+
+    with patch("ctxd.machine_identity.CtxfsClient") as client:
+        client.return_value.register_machine.side_effect = registration_response
+        processes = [context.Process(target=register_after_start) for _ in range(2)]
+        for process in processes:
+            process.start()
+        start.set()
+        for process in processes:
+            process.join(5)
+
+    assert [process.exitcode for process in processes] == [0, 0]
+    assert results.get(timeout=1) is None
+    assert results.get(timeout=1) is None
+    assert len(set(seen)) == 1
+    identity = load_or_create_machine_identity()
+    assert seen[0] == identity.local_registration_id
+    assert list(recoveries) == [False, True]
+    assert load_installation_proof() == identity.installation_id
+    stored = load_ctxfs_machine_registration(endpoint=endpoint)
+    assert stored is not None
+    assert stored["installation_id"] == identity.installation_id
+    assert stored["request"]["local_registration_id"] == identity.local_registration_id
+    assert (
+        stored["machine"]["machine_id"] == f"machine-{identity.local_registration_id}"
+    )
 
 
 def test_copied_config_without_secure_proof_rotates_ids(
@@ -269,9 +320,12 @@ def test_response_save_failure_keeps_pending_state_for_retry(
             raise OSError("disk full")
         return real_save(**kwargs)
 
-    with patch("ctxd.machine_identity.CtxfsClient") as client, patch(
-        "ctxd.machine_identity.save_ctxfs_machine_registration",
-        side_effect=fail_second_save,
+    with (
+        patch("ctxd.machine_identity.CtxfsClient") as client,
+        patch(
+            "ctxd.machine_identity.save_ctxfs_machine_registration",
+            side_effect=fail_second_save,
+        ),
     ):
         client.return_value.register_machine.return_value = _result()
         with pytest.raises(OSError, match="disk full"):
@@ -312,9 +366,10 @@ def test_invalid_config_is_not_overwritten_or_used(
 def test_unreadable_config_is_not_treated_as_missing(local_paths: Path) -> None:
     local_paths.write_text('{"unrelated":true}')
     original = local_paths.read_bytes()
-    with patch("pathlib.Path.read_text", side_effect=OSError("denied")), patch(
-        "ctxd.machine_identity.CtxfsClient"
-    ) as client:
+    with (
+        patch("pathlib.Path.read_text", side_effect=OSError("denied")),
+        patch("ctxd.machine_identity.CtxfsClient") as client,
+    ):
         with pytest.raises(ValueError, match="could not be read"):
             register_machine(endpoint="https://ctxfs.example", enrollment_token="one")
     assert local_paths.read_bytes() == original
@@ -395,3 +450,51 @@ def test_stored_registration_schema_fails_closed(
         load_ctxfs_machine_registration(endpoint=endpoint)
     with pytest.raises(CtxdAuthError, match="registration is invalid"):
         machine_status(endpoint=endpoint)
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("extra",), True),
+        (("installation_id",), "not-a-uuid"),
+        (("request", "extra"), True),
+        (("request", "local_registration_id"), "not-a-uuid"),
+        (("machine", "extra"), True),
+        (("machine", "registered_at"), float("inf")),
+        (("machine", "credential_key_id"), "other-key"),
+        (("key_id",), ""),
+        (("token",), "bad\ntoken"),
+    ],
+)
+def test_direct_save_rejects_invalid_registration_without_changing_bundle(
+    local_paths: Path, path: tuple[str, ...], value: object
+) -> None:
+    identity = load_or_create_machine_identity()
+    endpoint = "https://ctxfs.example"
+    valid = {
+        "state": "registered",
+        "installation_id": identity.installation_id,
+        "request": {
+            "local_registration_id": identity.local_registration_id,
+            "name": identity.name,
+            "description": identity.description,
+            "platform": "test-platform",
+            "ctxd_version": "1.0",
+        },
+        "machine": _result().machine.model_dump(mode="json"),
+        "key_id": "machine-key-1",
+        "token": "machine-secret",
+    }
+    save_ctxfs_machine_registration(endpoint=endpoint, registration=valid)
+    credentials = local_paths.with_name("credentials.json")
+    original = credentials.read_bytes()
+    invalid = json.loads(json.dumps(valid))
+    target = invalid
+    for component in path[:-1]:
+        target = target[component]
+    target[path[-1]] = value
+
+    with pytest.raises(CtxdAuthError, match="registration is invalid"):
+        save_ctxfs_machine_registration(endpoint=endpoint, registration=invalid)
+    assert credentials.read_bytes() == original
+    assert load_ctxfs_machine_registration(endpoint=endpoint) == valid
