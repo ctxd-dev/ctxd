@@ -7,7 +7,7 @@ from typing import Any, TypeVar
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from ctxd.mcp_server import handle_message
 from ctxfs import (
@@ -70,6 +70,27 @@ class MachineRegistrationBody(BaseModel):
     description: str | None = Field(default=None, max_length=1024)
     platform: str | None = Field(default=None, max_length=128)
     ctxd_version: str | None = Field(default=None, max_length=128)
+
+    @field_validator("local_registration_id", "name", "platform", "ctxd_version")
+    @classmethod
+    def validate_catalog_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        clean = value.strip()
+        if not clean:
+            raise ValueError("must be non-empty after trimming whitespace")
+        if any(ord(character) < 32 or ord(character) == 127 for character in clean):
+            raise ValueError("cannot contain control characters")
+        return value
+
+    @field_validator("description")
+    @classmethod
+    def validate_description(cls, value: str | None) -> str | None:
+        if value is not None and any(
+            ord(character) < 32 or ord(character) == 127 for character in value
+        ):
+            raise ValueError("cannot contain control characters")
+        return value
 
 
 class MachineCredentialResponse(BaseModel):

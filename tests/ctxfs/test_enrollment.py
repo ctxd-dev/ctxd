@@ -159,3 +159,77 @@ def test_prepare_confirm_rotation_and_revoke(tmp_path):
     )
     with CredentialStore(root) as credentials:
         assert credentials.verify(prepared.token) is None
+
+
+def test_confirm_rotation_retry_reconciles_credential_rollback(tmp_path, monkeypatch):
+    root = tmp_path / "ctxfs"
+    coordinator = MachineCredentialCoordinator(root, root, "local")
+    registered = coordinator.register(
+        _principal(_enrollment(root)),
+        MachineRegistrationRequest("local-1", "Laptop"),
+    )
+    with CredentialStore(root) as credentials:
+        current = credentials.verify(registered.token)
+    assert current is not None
+    prepared = coordinator.prepare_rotation(
+        current.principal(), registered.machine.machine_id
+    )
+    original_bind = CtxfsStore.bind_machine_credential
+
+    def bind_then_fail(self, *args, **kwargs):
+        original_bind(self, *args, **kwargs)
+        raise RuntimeError("injected failure after catalog bind")
+
+    monkeypatch.setattr(CtxfsStore, "bind_machine_credential", bind_then_fail)
+    with pytest.raises(RuntimeError, match="injected failure"):
+        coordinator.confirm_rotation(
+            current.principal(), registered.machine.machine_id, prepared.key_id
+        )
+    monkeypatch.setattr(CtxfsStore, "bind_machine_credential", original_bind)
+
+    with CredentialStore(root) as credentials:
+        replacement = credentials.verify(prepared.token)
+        assert credentials.verify(registered.token) is not None
+    assert replacement is not None
+    coordinator.confirm_rotation(
+        replacement.principal(), registered.machine.machine_id, prepared.key_id
+    )
+    with CredentialStore(root) as credentials:
+        assert credentials.verify(registered.token) is None
+        assert credentials.verify(prepared.token) is not None
+
+
+def test_admin_revoke_retry_reconciles_credential_rollback(tmp_path, monkeypatch):
+    root = tmp_path / "ctxfs"
+    coordinator = MachineCredentialCoordinator(root, root, "local")
+    registered = coordinator.register(
+        _principal(_enrollment(root)),
+        MachineRegistrationRequest("local-1", "Laptop"),
+    )
+    with CredentialStore(root) as credentials:
+        current = credentials.verify(registered.token)
+    assert current is not None
+    original_clear = CtxfsStore.clear_machine_credential
+
+    def clear_then_fail(self, *args, **kwargs):
+        original_clear(self, *args, **kwargs)
+        raise RuntimeError("injected failure after catalog clear")
+
+    monkeypatch.setattr(CtxfsStore, "clear_machine_credential", clear_then_fail)
+    with pytest.raises(RuntimeError, match="injected failure"):
+        coordinator.revoke(current.principal(), registered.machine.machine_id)
+    monkeypatch.setattr(CtxfsStore, "clear_machine_credential", original_clear)
+
+    with CredentialStore(root) as credentials:
+        assert credentials.verify(registered.token) is not None
+    admin = CredentialGrant(
+        principal_id="admin-key",
+        key_id="admin-key",
+        scopes=frozenset({Scope.ADMIN}),
+    ).principal()
+    assert (
+        coordinator.revoke(admin, registered.machine.machine_id).credential_key_id
+        is None
+    )
+    with CredentialStore(root) as credentials:
+        assert credentials.verify(registered.token) is None

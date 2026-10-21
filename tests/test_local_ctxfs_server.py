@@ -535,3 +535,28 @@ def test_admin_can_enroll_without_consuming_single_use_credential(tmp_path):
             },
         )
         assert response.status_code == 201
+
+
+def test_authenticated_registration_rejects_invalid_catalog_text_at_boundary(tmp_path):
+    root = tmp_path / "ctxfs"
+    with CredentialStore(root) as credentials:
+        admin = credentials.create(name="admin", scopes=["admin"])
+    client = TestClient(create_ctxfs_app(root, auth_mode=CtxfsAuthMode.BEARER))
+
+    for field, value in (
+        ("name", " \t "),
+        ("name", "bad\nname"),
+        ("platform", "   "),
+        ("platform", "bad\tplatform"),
+        ("ctxd_version", " \n"),
+        ("ctxd_version", "bad\x7fversion"),
+    ):
+        body = {"local_registration_id": "machine-1", "name": "Laptop"}
+        body[field] = value
+        response = client.post(
+            "/api/ctxfs/machines/register",
+            headers=_auth(admin.token),
+            json=body,
+        )
+        assert response.status_code == 422
+        assert len(response.content) < 2048

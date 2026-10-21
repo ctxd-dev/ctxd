@@ -138,6 +138,19 @@ class MachineCredentialCoordinator:
                         catalog, self.user_id, principal, machine_id
                     )
                     if machine.credential_key_id == replacement_key_id:
+                        # The catalog commit and credential transaction are not
+                        # atomic.  A retry can therefore arrive authenticated as
+                        # the replacement while the former key is still active.
+                        for credential in credentials.machine_credentials(machine_id):
+                            if (
+                                credential.key_id != replacement_key_id
+                                and credential.active
+                            ):
+                                credentials.revoke_machine_key(
+                                    credential.key_id,
+                                    machine_id,
+                                    replaced_by=replacement_key_id,
+                                )
                         return machine
                     replacement = credentials.get(replacement_key_id)
                     _require_machine_credential(replacement, machine)
@@ -165,6 +178,15 @@ class MachineCredentialCoordinator:
                     )
                     key_id = machine.credential_key_id
                     if key_id is None:
+                        # Reconcile a catalog clear that committed before the
+                        # credential transaction rolled back.  machine_id is
+                        # server-owned credential metadata, so no caller can
+                        # nominate a key for revocation here.
+                        for credential in credentials.machine_credentials(machine_id):
+                            if credential.active:
+                                credentials.revoke_machine_key(
+                                    credential.key_id, machine_id
+                                )
                         return machine
                     credentials.revoke_machine_key(key_id, machine_id)
                     return catalog.clear_machine_credential(
