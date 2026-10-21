@@ -21,8 +21,8 @@ from ctxfs import (
     GrepMatch,
     LocalSocketTrust,
     Machine,
-    MachineCredentialNotCurrentError,
     MachineCredentialCoordinator,
+    MachineCredentialNotCurrentError,
     MachineRegistrationRequest,
     MoveOperation,
     Principal,
@@ -506,9 +506,7 @@ def _machine_credential_is_admissible(
         return True
     revoke_path = f"/api/ctxfs/machines/{principal.machine_id}/credential"
     return (
-        machine.credential_key_id is None
-        and method == "DELETE"
-        and path == revoke_path
+        machine.credential_key_id is None and method == "DELETE" and path == revoke_path
     )
 
 
