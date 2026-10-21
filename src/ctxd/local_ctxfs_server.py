@@ -35,7 +35,7 @@ from ctxfs import (
     local_socket_principal,
 )
 from ctxfs.credentials import CredentialStore, EnrollmentConsumedError
-from ctxfs.store import CatalogBindingConflictError
+from ctxfs.store import CatalogBindingConflictError, CatalogConflictError
 
 LOCAL_CTXFS_USER_ID = "local"
 DEFAULT_CTXFS_HOST = "127.0.0.1"
@@ -209,6 +209,10 @@ def create_ctxfs_app(
         except EnrollmentConsumedError as exc:
             raise HTTPException(
                 status_code=409, detail="enrollment_credential_consumed"
+            ) from exc
+        except CatalogConflictError as exc:
+            raise HTTPException(
+                status_code=409, detail="machine_registration_conflict"
             ) from exc
         except CatalogBindingConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc

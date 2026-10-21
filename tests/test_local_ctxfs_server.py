@@ -627,6 +627,55 @@ def test_admin_can_enroll_without_consuming_single_use_credential(tmp_path):
         assert response.status_code == 201
 
 
+@pytest.mark.parametrize("authority", ["admin", "enroll"])
+def test_registration_metadata_conflict_is_bounded_and_does_not_mutate_binding(
+    tmp_path, authority
+):
+    root = tmp_path / "ctxfs"
+    with CredentialStore(root) as credentials:
+        admin = credentials.create(name="admin", scopes=["admin"])
+        enrollment = credentials.create(name="enroll", scopes=["enroll"])
+    client = TestClient(create_ctxfs_app(root, auth_mode=CtxfsAuthMode.BEARER))
+    registration = {
+        "local_registration_id": "same-local-registration",
+        "name": "Laptop",
+        "platform": "darwin",
+    }
+    registered = client.post(
+        "/api/ctxfs/machines/register",
+        headers=_auth(admin.token),
+        json=registration,
+    )
+    assert registered.status_code == 201
+    machine = registered.json()["machine"]
+
+    with CredentialStore(root) as credentials:
+        credentials_before = credentials.list()
+    catalog = CtxfsStore(root)
+    try:
+        catalog_before = catalog.machine("local", machine["machine_id"])
+    finally:
+        catalog.close()
+
+    credential = admin if authority == "admin" else enrollment
+    conflict = client.post(
+        "/api/ctxfs/machines/register",
+        headers=_auth(credential.token),
+        json={**registration, "name": "Different Laptop"},
+    )
+
+    assert conflict.status_code == 409
+    assert conflict.json() == {"detail": "machine_registration_conflict"}
+    assert len(conflict.content) < 128
+    with CredentialStore(root) as credentials:
+        assert credentials.list() == credentials_before
+    catalog = CtxfsStore(root)
+    try:
+        assert catalog.machine("local", machine["machine_id"]) == catalog_before
+    finally:
+        catalog.close()
+
+
 def test_authenticated_registration_rejects_invalid_catalog_text_at_boundary(tmp_path):
     root = tmp_path / "ctxfs"
     with CredentialStore(root) as credentials:
