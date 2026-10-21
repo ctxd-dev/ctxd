@@ -10,6 +10,7 @@ import pytest
 
 import ctxfs.store as store_module
 from ctxfs import (
+    CatalogBindingConflictError,
     CatalogConflictError,
     ContentHashMismatchError,
     CtxfsStore,
@@ -1210,23 +1211,29 @@ def test_catalog_registration_allows_normalized_empty_descriptions_and_replays(
     assert machine.platform == "macOS"
     assert machine.ctxd_version == "1.0"
     assert folder.description == ""
-    assert store.register_machine(
-        "user-1",
-        local_registration_id="machine-1",
-        name=" Laptop ",
-        description="",
-        platform="macOS",
-        ctxd_version="1.0",
-        now=12,
-    ) == machine
-    assert store.register_folder(
-        "user-1",
-        machine.machine_id,
-        local_registration_id="folder-1",
-        name=" Documents ",
-        description="",
-        now=12,
-    ) == folder
+    assert (
+        store.register_machine(
+            "user-1",
+            local_registration_id="machine-1",
+            name=" Laptop ",
+            description="",
+            platform="macOS",
+            ctxd_version="1.0",
+            now=12,
+        )
+        == machine
+    )
+    assert (
+        store.register_folder(
+            "user-1",
+            machine.machine_id,
+            local_registration_id="folder-1",
+            name=" Documents ",
+            description="",
+            now=12,
+        )
+        == folder
+    )
 
 
 def test_catalog_keys_are_unique_in_their_intended_scopes(tmp_path):
@@ -1447,21 +1454,27 @@ def test_catalog_metadata_updates_preserve_identity_and_keys(tmp_path):
 
     store.close()
     reopened = CtxfsStore(root)
-    assert reopened.register_machine(
-        "user-1",
-        local_registration_id="machine-1",
-        name="Laptop",
-        description="Old",
-        now=12,
-    ) == renamed_machine
-    assert reopened.register_folder(
-        "user-1",
-        machine.machine_id,
-        local_registration_id="folder-1",
-        name="Documents",
-        description="Old",
-        now=12,
-    ) == renamed_folder
+    assert (
+        reopened.register_machine(
+            "user-1",
+            local_registration_id="machine-1",
+            name="Laptop",
+            description="Old",
+            now=12,
+        )
+        == renamed_machine
+    )
+    assert (
+        reopened.register_folder(
+            "user-1",
+            machine.machine_id,
+            local_registration_id="folder-1",
+            name="Documents",
+            description="Old",
+            now=12,
+        )
+        == renamed_folder
+    )
     with pytest.raises(CatalogConflictError):
         reopened.register_machine(
             "user-1",
@@ -1513,7 +1526,9 @@ def test_catalog_metadata_updates_allow_normalized_empty_descriptions(tmp_path):
     assert updated_machine.description == ""
     assert updated_folder.description == ""
     assert store.machine("user-1", machine.machine_id) == updated_machine
-    assert store.folder("user-1", machine.machine_id, folder.folder_id) == updated_folder
+    assert (
+        store.folder("user-1", machine.machine_id, folder.folder_id) == updated_folder
+    )
 
 
 def test_catalog_normalizes_fallback_and_bounded_suffixed_keys(tmp_path):
@@ -1615,9 +1630,7 @@ def test_folder_and_metadata_entry_points_reject_invalid_text_without_mutation(
                 **metadata,
             )
         elif entry_point == "update_machine_metadata":
-            store.update_machine_metadata(
-                "user-1", machine.machine_id, **metadata
-            )
+            store.update_machine_metadata("user-1", machine.machine_id, **metadata)
         else:
             store.update_folder_metadata(
                 "user-1", machine.machine_id, folder.folder_id, **metadata
@@ -1702,3 +1715,43 @@ def test_catalog_lists_deterministically_and_preserves_existing_store_flow(tmp_p
         [_put("local_files/root/notes.md", "inode-1", "still works")],
     )
     assert store.read("user-1", "local_files/root/notes.md").text == "still works"
+
+
+def test_machine_credential_binding_is_compare_and_set_and_tenant_scoped(tmp_path):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    machine = store.register_machine(
+        "user-1", local_registration_id="machine-1", name="Laptop", now=10
+    )
+
+    bound = store.bind_machine_credential(
+        "user-1",
+        machine.machine_id,
+        expected_key_id=None,
+        new_key_id="key-1",
+    )
+    assert bound.credential_key_id == "key-1"
+    with pytest.raises(CatalogBindingConflictError):
+        store.bind_machine_credential(
+            "user-1",
+            machine.machine_id,
+            expected_key_id=None,
+            new_key_id="key-2",
+        )
+    with pytest.raises(KeyError):
+        store.bind_machine_credential(
+            "user-2",
+            machine.machine_id,
+            expected_key_id="key-1",
+            new_key_id="key-2",
+        )
+
+    cleared = store.clear_machine_credential(
+        "user-1", machine.machine_id, expected_key_id="key-1"
+    )
+    assert cleared.credential_key_id is None
+    assert (
+        store.clear_machine_credential(
+            "user-1", machine.machine_id, expected_key_id="key-1"
+        ).credential_key_id
+        is None
+    )

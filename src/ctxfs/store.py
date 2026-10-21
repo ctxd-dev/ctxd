@@ -71,6 +71,10 @@ class CatalogConflictError(ValueError):
     pass
 
 
+class CatalogBindingConflictError(ValueError):
+    pass
+
+
 class CtxfsStore:
     def __init__(self, root: Path):
         self.root = root
@@ -375,9 +379,7 @@ class CtxfsStore:
         ).fetchall()
         return [_machine_from_row(row) for row in rows]
 
-    def folder(
-        self, user_id: str, machine_id: str, folder_id: str
-    ) -> TrackedFolder:
+    def folder(self, user_id: str, machine_id: str, folder_id: str) -> TrackedFolder:
         row = self.connection.execute(
             """
             SELECT * FROM tracked_folders
@@ -420,6 +422,58 @@ class CtxfsStore:
                 """,
                 (clean_name, clean_description, user_id, machine_id),
             )
+            return self.machine(user_id, machine_id)
+
+    def bind_machine_credential(
+        self,
+        user_id: str,
+        machine_id: str,
+        *,
+        expected_key_id: str | None,
+        new_key_id: str,
+    ) -> Machine:
+        if not new_key_id or new_key_id.strip() != new_key_id:
+            raise ValueError("new_key_id must be a non-empty, trimmed string")
+        with self.connection:
+            machine = self.machine(user_id, machine_id)
+            if machine.credential_key_id != expected_key_id:
+                raise CatalogBindingConflictError("machine credential binding changed")
+            cursor = self.connection.execute(
+                """
+                UPDATE machines SET credential_key_id = ?
+                WHERE user_id = ? AND machine_id = ?
+                  AND credential_key_id IS ?
+                """,
+                (new_key_id, user_id, machine_id, expected_key_id),
+            )
+            if cursor.rowcount != 1:
+                raise CatalogBindingConflictError("machine credential binding changed")
+            return self.machine(user_id, machine_id)
+
+    def clear_machine_credential(
+        self,
+        user_id: str,
+        machine_id: str,
+        *,
+        expected_key_id: str,
+    ) -> Machine:
+        if not expected_key_id or expected_key_id.strip() != expected_key_id:
+            raise ValueError("expected_key_id must be a non-empty, trimmed string")
+        with self.connection:
+            machine = self.machine(user_id, machine_id)
+            if machine.credential_key_id is None:
+                return machine
+            if machine.credential_key_id != expected_key_id:
+                raise CatalogBindingConflictError("machine credential binding changed")
+            cursor = self.connection.execute(
+                """
+                UPDATE machines SET credential_key_id = NULL
+                WHERE user_id = ? AND machine_id = ? AND credential_key_id = ?
+                """,
+                (user_id, machine_id, expected_key_id),
+            )
+            if cursor.rowcount != 1:
+                raise CatalogBindingConflictError("machine credential binding changed")
             return self.machine(user_id, machine_id)
 
     def update_folder_metadata(
@@ -896,8 +950,7 @@ class CtxfsStore:
         actual_hash = _sha256(data)
         if actual_hash != entry.content_hash:
             raise ContentHashMismatchError(
-                f"entry {entry.path} has {actual_hash}, "
-                f"expected {entry.content_hash}"
+                f"entry {entry.path} has {actual_hash}, expected {entry.content_hash}"
             )
         limited = data if complete else _truncate_utf8(data, max_bytes)
         return ReadResult(
@@ -924,8 +977,7 @@ class CtxfsStore:
         actual_hash = _sha256(data)
         if actual_hash != entry.content_hash:
             raise ContentHashMismatchError(
-                f"entry {entry.path} has {actual_hash}, "
-                f"expected {entry.content_hash}"
+                f"entry {entry.path} has {actual_hash}, expected {entry.content_hash}"
             )
         lines = data.decode("utf-8", "replace").splitlines()
         selected = lines[start_line - 1 : end_line]
@@ -2314,9 +2366,7 @@ def _catalog_text(value: str, field: str, maximum: int) -> str:
     return clean
 
 
-def _optional_catalog_text(
-    value: str | None, field: str, maximum: int
-) -> str | None:
+def _optional_catalog_text(value: str | None, field: str, maximum: int) -> str | None:
     if value is None:
         return None
     return _catalog_text(value, field, maximum)
