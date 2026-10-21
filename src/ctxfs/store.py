@@ -218,7 +218,7 @@ class CtxfsStore:
             local_registration_id, "local_registration_id", 128
         )
         clean_name = _catalog_text(name, "name", 128)
-        clean_description = _optional_catalog_text(description, "description", 1024)
+        clean_description = _optional_description(description)
         clean_platform = _optional_catalog_text(platform, "platform", 128)
         clean_version = _optional_catalog_text(ctxd_version, "ctxd_version", 128)
         registered_at = time.time() if now is None else now
@@ -296,7 +296,7 @@ class CtxfsStore:
             local_registration_id, "local_registration_id", 128
         )
         clean_name = _catalog_text(name, "name", 128)
-        clean_description = _optional_catalog_text(description, "description", 1024)
+        clean_description = _optional_description(description)
         registered_at = time.time() if now is None else now
         if not math.isfinite(registered_at) or registered_at <= 0:
             raise ValueError("registered_at must be positive")
@@ -410,7 +410,7 @@ class CtxfsStore:
         description: str | None,
     ) -> Machine:
         clean_name = _catalog_text(name, "name", 128)
-        clean_description = _optional_catalog_text(description, "description", 1024)
+        clean_description = _optional_description(description)
         with self.connection:
             self.machine(user_id, machine_id)
             self.connection.execute(
@@ -432,7 +432,7 @@ class CtxfsStore:
         description: str | None,
     ) -> TrackedFolder:
         clean_name = _catalog_text(name, "name", 128)
-        clean_description = _optional_catalog_text(description, "description", 1024)
+        clean_description = _optional_description(description)
         with self.connection:
             self.folder(user_id, machine_id, folder_id)
             self.connection.execute(
@@ -2320,6 +2320,17 @@ def _optional_catalog_text(
     if value is None:
         return None
     return _catalog_text(value, field, maximum)
+
+
+def _optional_description(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise ValueError("description cannot contain control characters")
+    clean = value.strip()
+    if len(clean) > 1024:
+        raise ValueError("description must be at most 1024 characters")
+    return clean
 
 
 def _catalog_key(name: str, *, fallback: str) -> str:

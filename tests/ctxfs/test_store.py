@@ -1184,6 +1184,51 @@ def test_catalog_registration_persists_and_is_idempotent_across_reopen(tmp_path)
     assert reopened.folders("user-1", machine.machine_id) == [folder]
 
 
+def test_catalog_registration_allows_normalized_empty_descriptions_and_replays(
+    tmp_path,
+):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    machine = store.register_machine(
+        "user-1",
+        local_registration_id="machine-1",
+        name="Laptop",
+        description="   ",
+        platform=" macOS ",
+        ctxd_version=" 1.0 ",
+        now=10,
+    )
+    folder = store.register_folder(
+        "user-1",
+        machine.machine_id,
+        local_registration_id="folder-1",
+        name="Documents",
+        description="   ",
+        now=11,
+    )
+
+    assert machine.description == ""
+    assert machine.platform == "macOS"
+    assert machine.ctxd_version == "1.0"
+    assert folder.description == ""
+    assert store.register_machine(
+        "user-1",
+        local_registration_id="machine-1",
+        name=" Laptop ",
+        description="",
+        platform="macOS",
+        ctxd_version="1.0",
+        now=12,
+    ) == machine
+    assert store.register_folder(
+        "user-1",
+        machine.machine_id,
+        local_registration_id="folder-1",
+        name=" Documents ",
+        description="",
+        now=12,
+    ) == folder
+
+
 def test_catalog_keys_are_unique_in_their_intended_scopes(tmp_path):
     store = CtxfsStore(tmp_path / "ctxfs")
     first = store.register_machine(
@@ -1436,6 +1481,41 @@ def test_catalog_metadata_updates_preserve_identity_and_keys(tmp_path):
         )
 
 
+def test_catalog_metadata_updates_allow_normalized_empty_descriptions(tmp_path):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    machine = store.register_machine(
+        "user-1",
+        local_registration_id="machine-1",
+        name="Laptop",
+        description="Original machine",
+        now=10,
+    )
+    folder = store.register_folder(
+        "user-1",
+        machine.machine_id,
+        local_registration_id="folder-1",
+        name="Documents",
+        description="Original folder",
+        now=11,
+    )
+
+    updated_machine = store.update_machine_metadata(
+        "user-1", machine.machine_id, name=" Laptop ", description="   "
+    )
+    updated_folder = store.update_folder_metadata(
+        "user-1",
+        machine.machine_id,
+        folder.folder_id,
+        name=" Documents ",
+        description="   ",
+    )
+
+    assert updated_machine.description == ""
+    assert updated_folder.description == ""
+    assert store.machine("user-1", machine.machine_id) == updated_machine
+    assert store.folder("user-1", machine.machine_id, folder.folder_id) == updated_folder
+
+
 def test_catalog_normalizes_fallback_and_bounded_suffixed_keys(tmp_path):
     store = CtxfsStore(tmp_path / "ctxfs")
     fallback = store.register_machine(
@@ -1462,7 +1542,10 @@ def test_catalog_normalizes_fallback_and_bounded_suffixed_keys(tmp_path):
         ("name", "bad\nname"),
         ("name", "n" * 129),
         ("description", "d" * 1025),
+        ("description", "bad\tdescription"),
+        ("platform", " "),
         ("platform", "bad\tplatform"),
+        ("ctxd_version", " "),
         ("ctxd_version", "v" * 129),
         ("local_registration_id", "bad\x7fid"),
     ],
