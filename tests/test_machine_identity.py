@@ -1,4 +1,5 @@
 import json
+import multiprocessing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,6 +12,7 @@ from ctxd.machine_identity import (
     register_machine,
 )
 from ctxd.models import CtxfsMachine, CtxfsMachineRegistration
+from ctxd.exceptions import CtxdAuthError, CtxdProtocolError
 from ctxd.secure_store import (
     load_ctxfs_api_key,
     load_ctxfs_machine_registration,
@@ -47,6 +49,14 @@ def _result(*, recovered: bool = False) -> CtxfsMachineRegistration:
     )
 
 
+def _register_process(endpoint: str, enrollment_token: str, results) -> None:
+    try:
+        register_machine(endpoint=endpoint, enrollment_token=enrollment_token)
+        results.put(None)
+    except BaseException as exc:  # pragma: no cover - reported in parent process
+        results.put(repr(exc))
+
+
 def test_identity_is_stable_and_preserves_unrelated_config(local_paths: Path) -> None:
     local_paths.write_text('{"unrelated":true}')
     first = load_or_create_machine_identity()
@@ -77,6 +87,54 @@ def test_endpoint_records_preserve_reader_keys_and_are_isolated(
     assert load_ctxfs_api_key(endpoint="https://one.example") == "reader"
     assert load_ctxfs_machine_registration(endpoint="https://one.example") is not None
     assert load_ctxfs_machine_registration(endpoint="https://two.example") is None
+
+
+def test_two_process_registrations_cannot_persist_a_stale_response(
+    local_paths: Path,
+) -> None:
+    load_or_create_machine_identity()
+    context = multiprocessing.get_context("fork")
+    old_entered = context.Event()
+    release_old = context.Event()
+    new_entered = context.Event()
+    results = context.Queue()
+    endpoint = "https://ctxfs.example"
+
+    def registration_response(**request):
+        enrollment_token = request.pop("enrollment_token")
+        if enrollment_token == "old":
+            old_entered.set()
+            assert release_old.wait(5)
+        else:
+            new_entered.set()
+        result = _result(recovered=enrollment_token == "new").model_copy(deep=True)
+        result.key_id = f"{enrollment_token}-key"
+        result.token = f"{enrollment_token}-secret"
+        result.machine.credential_key_id = result.key_id
+        return result
+
+    with patch("ctxd.machine_identity.CtxfsClient") as client:
+        client.return_value.register_machine.side_effect = registration_response
+        old = context.Process(target=_register_process, args=(endpoint, "old", results))
+        newer = context.Process(
+            target=_register_process, args=(endpoint, "new", results)
+        )
+        old.start()
+        assert old_entered.wait(5)
+        newer.start()
+        assert not new_entered.wait(0.2)
+        release_old.set()
+        old.join(5)
+        newer.join(5)
+
+    assert old.exitcode == 0
+    assert newer.exitcode == 0
+    assert results.get(timeout=1) is None
+    assert results.get(timeout=1) is None
+    stored = load_ctxfs_machine_registration(endpoint=endpoint)
+    assert stored is not None
+    assert stored["key_id"] == "new-key"
+    assert stored["token"] == "new-secret"
 
 
 def test_retry_reuses_exact_pending_request_after_client_failure(
@@ -190,7 +248,7 @@ def test_mismatched_registration_response_keeps_pending_state(
     result.machine.credential_key_id = "different-key"
     with patch("ctxd.machine_identity.CtxfsClient") as client:
         client.return_value.register_machine.return_value = result
-        with pytest.raises(Exception, match="credential binding"):
+        with pytest.raises(CtxdProtocolError, match="credential binding"):
             register_machine(endpoint="https://ctxfs.example", enrollment_token="one")
     stored = load_ctxfs_machine_registration(endpoint="https://ctxfs.example")
     assert stored is not None and stored["state"] == "pending"
@@ -283,8 +341,57 @@ def test_invalid_registration_response_keeps_pending_without_token(
     object.__setattr__(result.machine, field, value)
     with patch("ctxd.machine_identity.CtxfsClient") as client:
         client.return_value.register_machine.return_value = result
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError):
             register_machine(endpoint="https://ctxfs.example", enrollment_token="one")
     stored = load_ctxfs_machine_registration(endpoint="https://ctxfs.example")
     assert stored is not None and stored["state"] == "pending"
     assert "token" not in stored
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("extra",), True),
+        (("installation_id",), "not-a-uuid"),
+        (("request", "extra"), True),
+        (("request", "local_registration_id"), "not-a-uuid"),
+        (("request", "name"), "bad\nname"),
+        (("machine", "extra"), True),
+        (("machine", "registered_at"), float("inf")),
+        (("machine", "credential_key_id"), "other-key"),
+        (("key_id",), ""),
+        (("token",), "bad\ntoken"),
+    ],
+)
+def test_stored_registration_schema_fails_closed(
+    local_paths: Path, path: tuple[str, ...], value: object
+) -> None:
+    identity = load_or_create_machine_identity()
+    endpoint = "https://ctxfs.example"
+    record = {
+        "state": "registered",
+        "installation_id": identity.installation_id,
+        "request": {
+            "local_registration_id": identity.local_registration_id,
+            "name": identity.name,
+            "description": identity.description,
+            "platform": "test-platform",
+            "ctxd_version": "1.0",
+        },
+        "machine": _result().machine.model_dump(mode="json"),
+        "key_id": "machine-key-1",
+        "token": "machine-secret",
+    }
+    target = record
+    for component in path[:-1]:
+        target = target[component]
+    target[path[-1]] = value
+    credentials = Path(local_paths).with_name("credentials.json")
+    credentials.write_text(
+        json.dumps({"ctxfs_machine_registrations": {endpoint: record}})
+    )
+
+    with pytest.raises(CtxdAuthError, match="registration is invalid"):
+        load_ctxfs_machine_registration(endpoint=endpoint)
+    with pytest.raises(CtxdAuthError, match="registration is invalid"):
+        machine_status(endpoint=endpoint)

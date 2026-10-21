@@ -16,6 +16,7 @@ from ctxd.ctxfs_client import CtxfsClient
 from ctxd.exceptions import CtxdAuthError, CtxdProtocolError
 from ctxd.models import CtxfsMachineRegistration
 from ctxd.secure_store import (
+    ctxfs_machine_registration_lock,
     load_ctxfs_machine_registration,
     load_installation_proof,
     save_ctxfs_machine_registration,
@@ -106,42 +107,48 @@ def register_machine(
 ) -> tuple[LocalMachineStatus, bool]:
     identity = load_or_create_machine_identity()
     resolved_endpoint = normalize_ctxfs_endpoint(endpoint or resolve_ctxfs_endpoint())
-    stored = load_ctxfs_machine_registration(endpoint=resolved_endpoint)
-    request = _registration_request(identity)
-    if stored is not None and stored.get("installation_id") == identity.installation_id:
-        request = _parse_stored_request(stored.get("request"))
-    else:
+    with ctxfs_machine_registration_lock(endpoint=resolved_endpoint):
+        stored = load_ctxfs_machine_registration(endpoint=resolved_endpoint)
+        request = _registration_request(identity)
+        if (
+            stored is not None
+            and stored.get("installation_id") == identity.installation_id
+        ):
+            request = _parse_stored_request(stored.get("request"))
+            if request["local_registration_id"] != identity.local_registration_id:
+                raise CtxdAuthError("Stored ctxd machine registration is invalid.")
+        else:
+            save_ctxfs_machine_registration(
+                endpoint=resolved_endpoint,
+                registration={
+                    "state": "pending",
+                    "installation_id": identity.installation_id,
+                    "request": request,
+                },
+            )
+
+        result = CtxfsClient(endpoint=resolved_endpoint, timeout=30.0).register_machine(
+            **request, enrollment_token=enrollment_token
+        )
+        result = CtxfsMachineRegistration.model_validate(
+            result.model_dump(mode="python")
+        )
+        if result.machine.credential_key_id != result.key_id:
+            raise CtxdProtocolError(
+                "ctxfs registration response credential binding did not match"
+            )
         save_ctxfs_machine_registration(
             endpoint=resolved_endpoint,
             registration={
-                "state": "pending",
+                "state": "registered",
                 "installation_id": identity.installation_id,
                 "request": request,
+                "machine": result.machine.model_dump(mode="json"),
+                "key_id": result.key_id,
+                "token": result.token,
             },
         )
-
-    result = CtxfsClient(endpoint=resolved_endpoint, timeout=30.0).register_machine(
-        **request, enrollment_token=enrollment_token
-    )
-    # Revalidate at the persistence boundary as callers and test doubles can return
-    # constructed or subsequently mutated model instances.
-    result = CtxfsMachineRegistration.model_validate(result.model_dump(mode="python"))
-    if result.machine.credential_key_id != result.key_id:
-        raise CtxdProtocolError(
-            "ctxfs registration response credential binding did not match"
-        )
-    save_ctxfs_machine_registration(
-        endpoint=resolved_endpoint,
-        registration={
-            "state": "registered",
-            "installation_id": identity.installation_id,
-            "request": request,
-            "machine": result.machine.model_dump(mode="json"),
-            "key_id": result.key_id,
-            "token": result.token,
-        },
-    )
-    return machine_status(endpoint=resolved_endpoint), result.recovered
+        return machine_status(endpoint=resolved_endpoint), result.recovered
 
 
 def machine_status(*, endpoint: str | None = None) -> LocalMachineStatus:
@@ -153,6 +160,8 @@ def machine_status(*, endpoint: str | None = None) -> LocalMachineStatus:
         return _status(identity, resolved_endpoint, "unregistered", proof_matches)
 
     request = _parse_stored_request(stored.get("request"))
+    if request["local_registration_id"] != identity.local_registration_id:
+        raise CtxdAuthError("Stored ctxd machine registration is invalid.")
     metadata_sync = (
         "current"
         if request["name"] == identity.name

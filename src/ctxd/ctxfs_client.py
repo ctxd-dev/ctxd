@@ -100,6 +100,10 @@ class AsyncCtxfsClient:
             bearer_token=enrollment_token,
             response_status=response_status,
         )
+        if response_status not in ([200], [201]):
+            raise CtxdProtocolError(
+                "ctxfs registration response had an unexpected HTTP status"
+            )
         registration = CtxfsMachineRegistration.model_validate(payload)
         return registration.model_copy(update={"recovered": response_status == [200]})
 
