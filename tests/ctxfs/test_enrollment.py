@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from ctxfs import (
+    CredentialGrant,
     CtxfsStore,
     MachineCredentialCoordinator,
     MachineRegistrationRequest,
@@ -136,8 +137,25 @@ def test_prepare_confirm_rotation_and_revoke(tmp_path):
         assert credentials.verify(registered.token) is None
         replacement = credentials.verify(prepared.token)
     assert replacement is not None
+    assert (
+        coordinator.confirm_rotation(
+            replacement.principal(),
+            registered.machine.machine_id,
+            prepared.key_id,
+        ).credential_key_id
+        == prepared.key_id
+    )
 
     revoked = coordinator.revoke(replacement.principal(), registered.machine.machine_id)
     assert revoked.credential_key_id is None
+    admin = CredentialGrant(
+        principal_id="admin-key",
+        key_id="admin-key",
+        scopes=frozenset({Scope.ADMIN}),
+    ).principal()
+    assert (
+        coordinator.revoke(admin, registered.machine.machine_id).credential_key_id
+        is None
+    )
     with CredentialStore(root) as credentials:
         assert credentials.verify(prepared.token) is None
