@@ -10,14 +10,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-
 _ASCII_LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 
 class Scope(str, Enum):
     STATUS = "status"
+    STATUS_WRITE = "status:write"
     READ = "read"
     SUBMIT = "submit"
+    ENROLL = "enroll"
     ADMIN = "admin"
 
 
@@ -48,11 +49,14 @@ class CredentialGrant:
     key_id: str
     scopes: frozenset[Scope]
     prefixes: tuple[str, ...] = ()
+    machine_id: str | None = None
 
     def __post_init__(self) -> None:
         _require_identifier(self.principal_id, "principal_id")
         _require_identifier(self.key_id, "key_id")
-        normalized = _validate_grants(self.scopes, self.prefixes)
+        if self.machine_id is not None:
+            _require_identifier(self.machine_id, "machine_id")
+        normalized = _validate_grants(self.scopes, self.prefixes, self.machine_id)
         object.__setattr__(self, "prefixes", normalized)
 
     def principal(self) -> Principal:
@@ -62,6 +66,7 @@ class CredentialGrant:
             key_id=self.key_id,
             scopes=self.scopes,
             prefixes=self.prefixes,
+            machine_id=self.machine_id,
         )
 
 
@@ -74,6 +79,7 @@ class Principal:
     scopes: frozenset[Scope]
     key_id: str | None = None
     prefixes: tuple[str, ...] = ()
+    machine_id: str | None = None
 
     def __post_init__(self) -> None:
         _require_identifier(self.principal_id, "principal_id")
@@ -85,7 +91,9 @@ class Principal:
             raise ValueError("local-socket principals cannot have a key_id")
         if self.key_id is not None:
             _require_identifier(self.key_id, "key_id")
-        normalized = _validate_grants(self.scopes, self.prefixes)
+        if self.machine_id is not None:
+            _require_identifier(self.machine_id, "machine_id")
+        normalized = _validate_grants(self.scopes, self.prefixes, self.machine_id)
         object.__setattr__(self, "prefixes", normalized)
 
 
@@ -177,7 +185,7 @@ def _require_identifier(value: str, field: str) -> None:
 
 
 def _validate_grants(
-    scopes: frozenset[Scope], prefixes: tuple[str, ...]
+    scopes: frozenset[Scope], prefixes: tuple[str, ...], machine_id: str | None = None
 ) -> tuple[str, ...]:
     if any(not isinstance(scope, Scope) for scope in scopes):
         raise ValueError("scopes must contain Scope values")
@@ -188,6 +196,18 @@ def _validate_grants(
         raise ValueError("prefix grants require the submit scope")
     if Scope.ADMIN in scopes and len(scopes) != 1:
         raise ValueError("admin is an all-capability scope and must stand alone")
+    if Scope.ENROLL in scopes and len(scopes) != 1:
+        raise ValueError("enroll scope must stand alone")
+    if Scope.ENROLL in scopes and normalized:
+        raise ValueError("enroll scope cannot have prefix grants")
+    if Scope.STATUS_WRITE in scopes and machine_id is None:
+        raise ValueError("status:write scope requires a machine binding")
+    if machine_id is not None and (
+        scopes != frozenset({Scope.SUBMIT, Scope.STATUS_WRITE}) or len(normalized) != 1
+    ):
+        raise ValueError(
+            "machine credentials require submit and status:write with one prefix"
+        )
     return normalized
 
 
@@ -206,9 +226,7 @@ def _normalize_path(path: str) -> str:
         or _has_control_character(path)
         or path.startswith(tuple(f"{letter}:" for letter in _ASCII_LETTERS))
     ):
-        raise ValueError(
-            "paths must be normalized relative ctxfs paths"
-        )
+        raise ValueError("paths must be normalized relative ctxfs paths")
     parts = path.split("/")
     if any(part in {"", ".", ".."} for part in parts):
         raise ValueError("paths must be normalized relative paths")

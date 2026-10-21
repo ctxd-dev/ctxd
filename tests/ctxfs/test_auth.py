@@ -142,3 +142,40 @@ def test_authorization_rejects_paths_that_ctxfs_storage_rejects(path):
 
     with pytest.raises(ValueError, match="normalized relative ctxfs paths"):
         authorize(writer, Scope.SUBMIT, path=path)
+
+
+def test_machine_grant_propagates_identity_and_exact_authority():
+    principal = CredentialGrant(
+        principal_id="key-1",
+        key_id="key-1",
+        scopes=frozenset({Scope.SUBMIT, Scope.STATUS_WRITE}),
+        prefixes=("machines/laptop",),
+        machine_id="machine-1",
+    ).principal()
+
+    assert principal.machine_id == "machine-1"
+    assert authorize(principal, Scope.SUBMIT, path="machines/laptop/file").allowed
+    assert authorize(principal, Scope.STATUS_WRITE).allowed
+    assert not authorize(principal, Scope.READ).allowed
+
+
+@pytest.mark.parametrize(
+    ("scopes", "prefixes", "machine_id"),
+    [
+        (frozenset({Scope.STATUS_WRITE}), (), None),
+        (frozenset({Scope.SUBMIT, Scope.STATUS_WRITE}), (), "machine-1"),
+        (frozenset({Scope.SUBMIT}), ("machines/laptop",), "machine-1"),
+        (frozenset({Scope.ENROLL, Scope.READ}), (), None),
+    ],
+)
+def test_machine_and_enrollment_grant_invariants(scopes, prefixes, machine_id):
+    with pytest.raises(ValueError):
+        CredentialGrant("client-1", "key-1", scopes, prefixes, machine_id)
+
+
+def test_enrollment_scope_is_standalone_and_admin_can_authorize_it():
+    enrollment = _grant(Scope.ENROLL)
+
+    assert authorize(enrollment, Scope.ENROLL).allowed
+    assert not authorize(enrollment, Scope.SUBMIT, path="machines/x").allowed
+    assert authorize(_grant(Scope.ADMIN), Scope.ENROLL).allowed

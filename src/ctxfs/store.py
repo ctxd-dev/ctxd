@@ -71,6 +71,10 @@ class CatalogConflictError(ValueError):
     pass
 
 
+class CatalogBindingConflictError(ValueError):
+    pass
+
+
 class CtxfsStore:
     def __init__(self, root: Path):
         self.root = root
@@ -152,6 +156,7 @@ class CtxfsStore:
                     platform TEXT,
                     ctxd_version TEXT,
                     credential_key_id TEXT,
+                    enrollment_key_id TEXT,
                     registered_at REAL NOT NULL,
                     PRIMARY KEY(user_id, machine_id),
                     UNIQUE(user_id, machine_key),
@@ -159,6 +164,16 @@ class CtxfsStore:
                 )
                 """
             )
+            machine_columns = {
+                row["name"]
+                for row in self.connection.execute(
+                    "PRAGMA table_info(machines)"
+                ).fetchall()
+            }
+            if "enrollment_key_id" not in machine_columns:
+                self.connection.execute(
+                    "ALTER TABLE machines ADD COLUMN enrollment_key_id TEXT"
+                )
             self.connection.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS machines_credential_key
@@ -212,6 +227,8 @@ class CtxfsStore:
         description: str | None = None,
         platform: str | None = None,
         ctxd_version: str | None = None,
+        enrollment_key_id: str | None = None,
+        enrollment_recovered: bool = False,
         now: float | None = None,
     ) -> Machine:
         registration_id = _catalog_text(
@@ -234,6 +251,29 @@ class CtxfsStore:
                 (user_id, registration_id),
             ).fetchone()
             if existing is not None:
+                if (
+                    enrollment_key_id is not None
+                    and existing["enrollment_key_id"] is None
+                    and enrollment_recovered
+                ):
+                    self.connection.execute(
+                        """
+                        UPDATE machines SET enrollment_key_id = ?
+                        WHERE user_id = ? AND machine_id = ?
+                          AND enrollment_key_id IS NULL
+                        """,
+                        (enrollment_key_id, user_id, existing["machine_id"]),
+                    )
+                    existing = self.connection.execute(
+                        "SELECT * FROM machines WHERE user_id = ? AND machine_id = ?",
+                        (user_id, existing["machine_id"]),
+                    ).fetchone()
+                if enrollment_key_id is not None and (
+                    existing["enrollment_key_id"] != enrollment_key_id
+                ):
+                    raise CatalogConflictError(
+                        "local_registration_id belongs to another enrollment"
+                    )
                 return _replay_machine(existing, requested)
             base_key = _catalog_key(clean_name, fallback="machine")
             suffix = 1
@@ -249,8 +289,8 @@ class CtxfsStore:
                             registration_description, registration_platform,
                             registration_ctxd_version, name, description,
                             state, platform, ctxd_version, credential_key_id,
-                            registered_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+                            enrollment_key_id, registered_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
                         """,
                         (
                             user_id,
@@ -266,6 +306,7 @@ class CtxfsStore:
                             MachineState.UNKNOWN.value,
                             clean_platform,
                             clean_version,
+                            enrollment_key_id,
                             registered_at,
                         ),
                     )
@@ -279,6 +320,32 @@ class CtxfsStore:
                         (user_id, registration_id),
                     ).fetchone()
                     if existing is not None:
+                        if (
+                            enrollment_key_id is not None
+                            and existing["enrollment_key_id"] is None
+                            and enrollment_recovered
+                        ):
+                            self.connection.execute(
+                                """
+                                UPDATE machines SET enrollment_key_id = ?
+                                WHERE user_id = ? AND machine_id = ?
+                                  AND enrollment_key_id IS NULL
+                                """,
+                                (enrollment_key_id, user_id, existing["machine_id"]),
+                            )
+                            existing = self.connection.execute(
+                                """
+                                SELECT * FROM machines
+                                WHERE user_id = ? AND machine_id = ?
+                                """,
+                                (user_id, existing["machine_id"]),
+                            ).fetchone()
+                        if enrollment_key_id is not None and (
+                            existing["enrollment_key_id"] != enrollment_key_id
+                        ):
+                            raise CatalogConflictError(
+                                "local_registration_id belongs to another enrollment"
+                            )
                         return _replay_machine(existing, requested)
                     suffix += 1
 
@@ -365,6 +432,23 @@ class CtxfsStore:
             raise KeyError(f"unknown machine_id: {machine_id}")
         return _machine_from_row(row)
 
+    def machine_for_registration(
+        self, user_id: str, local_registration_id: str
+    ) -> tuple[Machine, str | None] | None:
+        registration_id = _catalog_text(
+            local_registration_id, "local_registration_id", 128
+        )
+        row = self.connection.execute(
+            """
+            SELECT * FROM machines
+            WHERE user_id = ? AND local_registration_id = ?
+            """,
+            (user_id, registration_id),
+        ).fetchone()
+        return (
+            None if row is None else (_machine_from_row(row), row["enrollment_key_id"])
+        )
+
     def machines(self, user_id: str) -> list[Machine]:
         rows = self.connection.execute(
             """
@@ -375,9 +459,7 @@ class CtxfsStore:
         ).fetchall()
         return [_machine_from_row(row) for row in rows]
 
-    def folder(
-        self, user_id: str, machine_id: str, folder_id: str
-    ) -> TrackedFolder:
+    def folder(self, user_id: str, machine_id: str, folder_id: str) -> TrackedFolder:
         row = self.connection.execute(
             """
             SELECT * FROM tracked_folders
@@ -420,6 +502,58 @@ class CtxfsStore:
                 """,
                 (clean_name, clean_description, user_id, machine_id),
             )
+            return self.machine(user_id, machine_id)
+
+    def bind_machine_credential(
+        self,
+        user_id: str,
+        machine_id: str,
+        *,
+        expected_key_id: str | None,
+        new_key_id: str,
+    ) -> Machine:
+        if not new_key_id or new_key_id.strip() != new_key_id:
+            raise ValueError("new_key_id must be a non-empty, trimmed string")
+        with self.connection:
+            machine = self.machine(user_id, machine_id)
+            if machine.credential_key_id != expected_key_id:
+                raise CatalogBindingConflictError("machine credential binding changed")
+            cursor = self.connection.execute(
+                """
+                UPDATE machines SET credential_key_id = ?
+                WHERE user_id = ? AND machine_id = ?
+                  AND credential_key_id IS ?
+                """,
+                (new_key_id, user_id, machine_id, expected_key_id),
+            )
+            if cursor.rowcount != 1:
+                raise CatalogBindingConflictError("machine credential binding changed")
+            return self.machine(user_id, machine_id)
+
+    def clear_machine_credential(
+        self,
+        user_id: str,
+        machine_id: str,
+        *,
+        expected_key_id: str,
+    ) -> Machine:
+        if not expected_key_id or expected_key_id.strip() != expected_key_id:
+            raise ValueError("expected_key_id must be a non-empty, trimmed string")
+        with self.connection:
+            machine = self.machine(user_id, machine_id)
+            if machine.credential_key_id is None:
+                return machine
+            if machine.credential_key_id != expected_key_id:
+                raise CatalogBindingConflictError("machine credential binding changed")
+            cursor = self.connection.execute(
+                """
+                UPDATE machines SET credential_key_id = NULL
+                WHERE user_id = ? AND machine_id = ? AND credential_key_id = ?
+                """,
+                (user_id, machine_id, expected_key_id),
+            )
+            if cursor.rowcount != 1:
+                raise CatalogBindingConflictError("machine credential binding changed")
             return self.machine(user_id, machine_id)
 
     def update_folder_metadata(
@@ -896,8 +1030,7 @@ class CtxfsStore:
         actual_hash = _sha256(data)
         if actual_hash != entry.content_hash:
             raise ContentHashMismatchError(
-                f"entry {entry.path} has {actual_hash}, "
-                f"expected {entry.content_hash}"
+                f"entry {entry.path} has {actual_hash}, expected {entry.content_hash}"
             )
         limited = data if complete else _truncate_utf8(data, max_bytes)
         return ReadResult(
@@ -924,8 +1057,7 @@ class CtxfsStore:
         actual_hash = _sha256(data)
         if actual_hash != entry.content_hash:
             raise ContentHashMismatchError(
-                f"entry {entry.path} has {actual_hash}, "
-                f"expected {entry.content_hash}"
+                f"entry {entry.path} has {actual_hash}, expected {entry.content_hash}"
             )
         lines = data.decode("utf-8", "replace").splitlines()
         selected = lines[start_line - 1 : end_line]
@@ -2314,9 +2446,7 @@ def _catalog_text(value: str, field: str, maximum: int) -> str:
     return clean
 
 
-def _optional_catalog_text(
-    value: str | None, field: str, maximum: int
-) -> str | None:
+def _optional_catalog_text(value: str | None, field: str, maximum: int) -> str | None:
     if value is None:
         return None
     return _catalog_text(value, field, maximum)

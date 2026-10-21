@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from ctxd.local_ctxfs_server import CtxfsAuthMode, create_ctxfs_app
-from ctxfs import CtxfsStore
+from ctxfs import (
+    CtxfsStore,
+    MachineCredentialCoordinator,
+    MachineCredentialNotCurrentError,
+)
 from ctxfs.credentials import CredentialStore
 
 
@@ -430,3 +435,344 @@ def test_mcp_and_rest_have_matching_authentication_and_scope_denials(tmp_path) -
     assert (
         client.post("/mcp", headers=_auth(read_key.token), json=call).status_code == 200
     )
+
+
+def test_machine_enrollment_rotation_and_revocation_are_bound_to_catalog(tmp_path):
+    root = tmp_path / "ctxfs"
+    with CredentialStore(root) as credentials:
+        enrollment = credentials.create(name="enroll", scopes=["enroll"])
+        reader = credentials.create(name="reader", scopes=["read"])
+    client = TestClient(create_ctxfs_app(root, auth_mode=CtxfsAuthMode.BEARER))
+    registration_body = {
+        "local_registration_id": "local-machine-1",
+        "name": "Alice's Mac",
+        "description": "Research",
+    }
+
+    registered = client.post(
+        "/api/ctxfs/machines/register",
+        headers=_auth(enrollment.token),
+        json=registration_body,
+    )
+    assert registered.status_code == 201
+    first = registered.json()
+    machine_id = first["machine"]["machine_id"]
+    prefix = f"machines/{first['machine']['machine_key']}"
+    assert set(first) == {"machine", "key_id", "token"}
+
+    assert (
+        client.post(
+            "/api/ctxfs/machines/register",
+            headers=_auth(enrollment.token),
+            json={**registration_body, "name": "Other"},
+        ).status_code
+        == 409
+    )
+    recovered = client.post(
+        "/api/ctxfs/machines/register",
+        headers=_auth(enrollment.token),
+        json=registration_body,
+    )
+    assert recovered.status_code == 200
+    current = recovered.json()
+    assert current["key_id"] != first["key_id"]
+    assert client.get("/not-a-route", headers=_auth(first["token"])).status_code == 401
+
+    current_headers = _auth(current["token"])
+    wrong_machine = client.post(
+        "/api/ctxfs/machines/not-this-machine/credentials/prepare",
+        headers=current_headers,
+    )
+    assert wrong_machine.status_code == 403
+    accepted = client.post(
+        "/api/ctxfs/submissions",
+        headers=current_headers,
+        json=_submission(prefix),
+    )
+    assert accepted.status_code == 200
+
+    prepared_response = client.post(
+        f"/api/ctxfs/machines/{machine_id}/credentials/prepare",
+        headers=current_headers,
+    )
+    assert prepared_response.status_code == 200
+    prepared = prepared_response.json()
+    assert (
+        client.post(
+            "/api/ctxfs/submissions",
+            headers=_auth(prepared["token"]),
+            json=_submission(prefix),
+        ).status_code
+        == 403
+    )
+    confirmed = client.post(
+        f"/api/ctxfs/machines/{machine_id}/credentials/confirm",
+        headers=current_headers,
+        json={"replacement_key_id": prepared["key_id"]},
+    )
+    assert confirmed.status_code == 200
+    assert confirmed.json()["credential_key_id"] == prepared["key_id"]
+    assert client.get("/not-a-route", headers=current_headers).status_code == 401
+
+    replacement_headers = _auth(prepared["token"])
+    revoked = client.delete(
+        f"/api/ctxfs/machines/{machine_id}/credential",
+        headers=replacement_headers,
+    )
+    assert revoked.status_code == 204
+    assert client.get("/not-a-route", headers=replacement_headers).status_code == 401
+    assert client.get("/api/ctxfs/tree", headers=_auth(reader.token)).status_code == 200
+
+
+def test_machine_revoke_http_retry_repairs_catalog_clear_after_rollback(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "ctxfs"
+    with CredentialStore(root) as credentials:
+        enrollment = credentials.create(name="enroll", scopes=["enroll"])
+    client = TestClient(
+        create_ctxfs_app(root, auth_mode=CtxfsAuthMode.BEARER),
+        raise_server_exceptions=False,
+    )
+    registered = client.post(
+        "/api/ctxfs/machines/register",
+        headers=_auth(enrollment.token),
+        json={"local_registration_id": "retry-1", "name": "Laptop"},
+    ).json()
+    machine_id = registered["machine"]["machine_id"]
+    headers = _auth(registered["token"])
+    original_clear = CtxfsStore.clear_machine_credential
+    failed = False
+
+    def clear_then_fail(self, *args, **kwargs):
+        nonlocal failed
+        result = original_clear(self, *args, **kwargs)
+        if not failed:
+            failed = True
+            raise RuntimeError("injected failure after catalog clear")
+        return result
+
+    monkeypatch.setattr(CtxfsStore, "clear_machine_credential", clear_then_fail)
+    route = f"/api/ctxfs/machines/{machine_id}/credential"
+    assert client.delete(route, headers=headers).status_code == 500
+
+    # The still-valid credential is admitted only to its cleanup route.
+    assert client.get("/health", headers=headers).status_code == 403
+    assert (
+        client.post(
+            f"/api/ctxfs/machines/{machine_id}/credentials/prepare", headers=headers
+        ).status_code
+        == 403
+    )
+    assert client.delete(route, headers=headers).status_code == 204
+    assert client.delete(route, headers=headers).status_code == 401
+    with CredentialStore(root) as credentials:
+        assert credentials.verify(registered["token"]) is None
+
+
+def test_machine_registration_http_retry_reports_recovery_after_catalog_commit(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "ctxfs"
+    with CredentialStore(root) as credentials:
+        enrollment = credentials.create(name="enroll", scopes=["enroll"])
+    client = TestClient(
+        create_ctxfs_app(root, auth_mode=CtxfsAuthMode.BEARER),
+        raise_server_exceptions=False,
+    )
+    original_bind = CtxfsStore.bind_machine_credential
+    failed = False
+
+    def bind_then_fail(self, *args, **kwargs):
+        nonlocal failed
+        result = original_bind(self, *args, **kwargs)
+        if not failed:
+            failed = True
+            raise RuntimeError("injected failure after catalog bind")
+        return result
+
+    monkeypatch.setattr(CtxfsStore, "bind_machine_credential", bind_then_fail)
+    body = {"local_registration_id": "retry-1", "name": "Laptop"}
+    assert (
+        client.post(
+            "/api/ctxfs/machines/register",
+            headers=_auth(enrollment.token),
+            json=body,
+        ).status_code
+        == 500
+    )
+    monkeypatch.setattr(CtxfsStore, "bind_machine_credential", original_bind)
+
+    recovered = client.post(
+        "/api/ctxfs/machines/register",
+        headers=_auth(enrollment.token),
+        json=body,
+    )
+    assert recovered.status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("operation", "method", "suffix", "kwargs"),
+    [
+        ("prepare_rotation", "post", "credentials/prepare", {}),
+        (
+            "confirm_rotation",
+            "post",
+            "credentials/confirm",
+            {"json": {"replacement_key_id": "stale-key"}},
+        ),
+        ("revoke", "delete", "credential", {}),
+    ],
+)
+def test_lifecycle_stale_authority_is_bounded_to_403(
+    tmp_path, monkeypatch, operation, method, suffix, kwargs
+):
+    root = tmp_path / "ctxfs"
+    with CredentialStore(root) as credentials:
+        enrollment = credentials.create(name="enroll", scopes=["enroll"])
+    client = TestClient(create_ctxfs_app(root, auth_mode=CtxfsAuthMode.BEARER))
+    registered = client.post(
+        "/api/ctxfs/machines/register",
+        headers=_auth(enrollment.token),
+        json={"local_registration_id": "stale-1", "name": "Laptop"},
+    ).json()
+    machine_id = registered["machine"]["machine_id"]
+
+    def stale(*_args, **_kwargs):
+        raise MachineCredentialNotCurrentError("machine_credential_not_current")
+
+    monkeypatch.setattr(MachineCredentialCoordinator, operation, stale)
+    path = f"/api/ctxfs/machines/{machine_id}/{suffix}"
+    response = getattr(client, method)(
+        path, headers=_auth(registered["token"]), **kwargs
+    )
+    assert response.status_code == 403
+    assert response.json() == {"detail": "machine_credential_not_current"}
+
+
+def test_admin_can_enroll_without_consuming_single_use_credential(tmp_path):
+    root = tmp_path / "ctxfs"
+    with CredentialStore(root) as credentials:
+        admin = credentials.create(name="admin", scopes=["admin"])
+    client = TestClient(create_ctxfs_app(root, auth_mode=CtxfsAuthMode.BEARER))
+
+    for index in range(2):
+        response = client.post(
+            "/api/ctxfs/machines/register",
+            headers=_auth(admin.token),
+            json={
+                "local_registration_id": f"machine-{index}",
+                "name": f"Machine {index}",
+            },
+        )
+        assert response.status_code == 201
+
+
+def test_fresh_enrollment_cannot_take_over_matching_registration(tmp_path):
+    root = tmp_path / "ctxfs"
+    with CredentialStore(root) as credentials:
+        first_enrollment = credentials.create(name="first", scopes=["enroll"])
+        attacker_enrollment = credentials.create(name="attacker", scopes=["enroll"])
+    client = TestClient(create_ctxfs_app(root, auth_mode=CtxfsAuthMode.BEARER))
+    body = {"local_registration_id": "machine-1", "name": "Laptop"}
+    registered = client.post(
+        "/api/ctxfs/machines/register",
+        headers=_auth(first_enrollment.token),
+        json=body,
+    ).json()
+
+    rejected = client.post(
+        "/api/ctxfs/machines/register",
+        headers=_auth(attacker_enrollment.token),
+        json=body,
+    )
+
+    assert rejected.status_code == 409
+    assert len(rejected.content) < 128
+    with CredentialStore(root) as credentials:
+        assert credentials.verify(registered["token"]) is not None
+        assert credentials.verify(attacker_enrollment.token) is not None
+    catalog = CtxfsStore(root)
+    try:
+        assert (
+            catalog.machine(
+                "local", registered["machine"]["machine_id"]
+            ).credential_key_id
+            == registered["key_id"]
+        )
+    finally:
+        catalog.close()
+
+
+@pytest.mark.parametrize("authority", ["admin", "enroll"])
+def test_registration_metadata_conflict_is_bounded_and_does_not_mutate_binding(
+    tmp_path, authority
+):
+    root = tmp_path / "ctxfs"
+    with CredentialStore(root) as credentials:
+        admin = credentials.create(name="admin", scopes=["admin"])
+        enrollment = credentials.create(name="enroll", scopes=["enroll"])
+    client = TestClient(create_ctxfs_app(root, auth_mode=CtxfsAuthMode.BEARER))
+    registration = {
+        "local_registration_id": "same-local-registration",
+        "name": "Laptop",
+        "platform": "darwin",
+    }
+    registered = client.post(
+        "/api/ctxfs/machines/register",
+        headers=_auth(admin.token),
+        json=registration,
+    )
+    assert registered.status_code == 201
+    machine = registered.json()["machine"]
+
+    with CredentialStore(root) as credentials:
+        credentials_before = credentials.list()
+    catalog = CtxfsStore(root)
+    try:
+        catalog_before = catalog.machine("local", machine["machine_id"])
+    finally:
+        catalog.close()
+
+    credential = admin if authority == "admin" else enrollment
+    conflict = client.post(
+        "/api/ctxfs/machines/register",
+        headers=_auth(credential.token),
+        json={**registration, "name": "Different Laptop"},
+    )
+
+    assert conflict.status_code == 409
+    assert conflict.json() == {"detail": "machine_registration_conflict"}
+    assert len(conflict.content) < 128
+    with CredentialStore(root) as credentials:
+        assert credentials.list() == credentials_before
+    catalog = CtxfsStore(root)
+    try:
+        assert catalog.machine("local", machine["machine_id"]) == catalog_before
+    finally:
+        catalog.close()
+
+
+def test_authenticated_registration_rejects_invalid_catalog_text_at_boundary(tmp_path):
+    root = tmp_path / "ctxfs"
+    with CredentialStore(root) as credentials:
+        admin = credentials.create(name="admin", scopes=["admin"])
+    client = TestClient(create_ctxfs_app(root, auth_mode=CtxfsAuthMode.BEARER))
+
+    for field, value in (
+        ("name", " \t "),
+        ("name", "bad\nname"),
+        ("platform", "   "),
+        ("platform", "bad\tplatform"),
+        ("ctxd_version", " \n"),
+        ("ctxd_version", "bad\x7fversion"),
+    ):
+        body = {"local_registration_id": "machine-1", "name": "Laptop"}
+        body[field] = value
+        response = client.post(
+            "/api/ctxfs/machines/register",
+            headers=_auth(admin.token),
+            json=body,
+        )
+        assert response.status_code == 422
+        assert len(response.content) < 2048

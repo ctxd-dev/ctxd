@@ -11,6 +11,13 @@ from ctxfs.auth import (
     authorize,
     local_socket_principal,
 )
+from ctxfs.enrollment import (
+    MachineCredentialCoordinator,
+    MachineCredentialNotCurrentError,
+    MachineRegistrationRequest,
+    MachineRegistrationResult,
+    PreparedMachineCredential,
+)
 from ctxfs.models import (
     Bounded,
     CtxfsOperation,
@@ -47,6 +54,7 @@ from ctxfs.service import (
     open_ctxfs_service,
 )
 from ctxfs.store import (
+    CatalogBindingConflictError,
     CatalogConflictError,
     ContentHashMismatchError,
     CtxfsStore,
@@ -56,6 +64,7 @@ from ctxfs.store import (
 __all__ = [
     "AuthorizationDecision",
     "Bounded",
+    "CatalogBindingConflictError",
     "CatalogConflictError",
     "ContentHashMismatchError",
     "CredentialGrant",
@@ -80,10 +89,15 @@ __all__ = [
     "GrepMatch",
     "LocalSocketTrust",
     "Machine",
+    "MachineCredentialCoordinator",
+    "MachineCredentialNotCurrentError",
+    "MachineRegistrationRequest",
+    "MachineRegistrationResult",
     "MachineState",
     "MoveOperation",
     "OperationKind",
     "PrefixAuthorizationError",
+    "PreparedMachineCredential",
     "Principal",
     "PrincipalKind",
     "Provenance",

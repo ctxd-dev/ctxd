@@ -5,6 +5,11 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, TypeVar
 
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+
+from ctxd.mcp_server import handle_message
 from ctxfs import (
     Bounded,
     CtxfsOperation,
@@ -14,24 +19,23 @@ from ctxfs import (
     DirectoryEntry,
     Entry,
     GrepMatch,
+    LocalSocketTrust,
+    Machine,
+    MachineCredentialCoordinator,
+    MachineCredentialNotCurrentError,
+    MachineRegistrationRequest,
     MoveOperation,
+    Principal,
     PutOperation,
     ReadLinesResult,
     ReadResult,
-    Submission,
-    LocalSocketTrust,
-    Principal,
     Scope,
+    Submission,
     authorize,
     local_socket_principal,
 )
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
-
-from ctxfs.credentials import CredentialStore
-
-from ctxd.mcp_server import handle_message
+from ctxfs.credentials import CredentialStore, EnrollmentConsumedError
+from ctxfs.store import CatalogBindingConflictError, CatalogConflictError
 
 LOCAL_CTXFS_USER_ID = "local"
 DEFAULT_CTXFS_HOST = "127.0.0.1"
@@ -57,6 +61,51 @@ class CtxfsSubmissionRequest(BaseModel):
     writer_id: str = Field(min_length=1)
     writer_prefix: str = Field(min_length=1)
     submission: CtxfsSubmissionBody
+
+
+class MachineRegistrationBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    local_registration_id: str = Field(min_length=1, max_length=128)
+    name: str = Field(min_length=1, max_length=128)
+    description: str | None = Field(default=None, max_length=1024)
+    platform: str | None = Field(default=None, max_length=128)
+    ctxd_version: str | None = Field(default=None, max_length=128)
+
+    @field_validator("local_registration_id", "name", "platform", "ctxd_version")
+    @classmethod
+    def validate_catalog_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        clean = value.strip()
+        if not clean:
+            raise ValueError("must be non-empty after trimming whitespace")
+        if any(ord(character) < 32 or ord(character) == 127 for character in clean):
+            raise ValueError("cannot contain control characters")
+        return value
+
+    @field_validator("description")
+    @classmethod
+    def validate_description(cls, value: str | None) -> str | None:
+        if value is not None and any(
+            ord(character) < 32 or ord(character) == 127 for character in value
+        ):
+            raise ValueError("cannot contain control characters")
+        return value
+
+
+class MachineCredentialResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    machine: Machine
+    key_id: str
+    token: str
+
+
+class RotationConfirmationBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    replacement_key_id: str = Field(min_length=1)
 
 
 class CtxfsAuthMode(str, Enum):
@@ -102,6 +151,13 @@ def create_ctxfs_app(
             principal = grant.principal() if grant is not None else None
         if principal is None:
             return _auth_response("missing or invalid bearer credential")
+        if principal.machine_id is not None and not _machine_credential_is_admissible(
+            root, principal, request.method, request.url.path
+        ):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "machine_credential_not_current"},
+            )
         request.state.ctxfs_principal = principal
         return await call_next(request)
 
@@ -128,6 +184,104 @@ def create_ctxfs_app(
             return principal
 
         return dependency
+
+    def require_current_machine(machine_id: str, request: Request) -> Principal:
+        principal: Principal = request.state.ctxfs_principal
+        if Scope.ADMIN in principal.scopes:
+            return principal
+        if principal.machine_id != machine_id:
+            raise _auth_error(403, "machine_credential_not_current")
+        return principal
+
+    def coordinator() -> MachineCredentialCoordinator:
+        return MachineCredentialCoordinator(root, credential_root, LOCAL_CTXFS_USER_ID)
+
+    @app.post("/api/ctxfs/machines/register")
+    def register_machine(
+        payload: MachineRegistrationBody,
+        principal: Principal = Depends(require(Scope.ENROLL)),
+    ) -> JSONResponse:
+        try:
+            result = coordinator().register(
+                principal,
+                MachineRegistrationRequest(**payload.model_dump()),
+            )
+        except EnrollmentConsumedError as exc:
+            raise HTTPException(
+                status_code=409, detail="enrollment_credential_consumed"
+            ) from exc
+        except CatalogConflictError as exc:
+            raise HTTPException(
+                status_code=409, detail="machine_registration_conflict"
+            ) from exc
+        except CatalogBindingConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        response = MachineCredentialResponse(
+            machine=result.machine,
+            key_id=result.key_id,
+            token=result.token,
+        )
+        return JSONResponse(
+            status_code=200 if result.recovered else 201,
+            content=response.model_dump(mode="json"),
+        )
+
+    @app.post(
+        "/api/ctxfs/machines/{machine_id}/credentials/prepare",
+        response_model=MachineCredentialResponse,
+    )
+    def prepare_machine_credential(
+        machine_id: str,
+        principal: Principal = Depends(require_current_machine),
+    ) -> MachineCredentialResponse:
+        try:
+            prepared = coordinator().prepare_rotation(principal, machine_id)
+        except MachineCredentialNotCurrentError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except (KeyError, ValueError, CatalogBindingConflictError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        machine = _with_store(
+            root, lambda store: store.machine(LOCAL_CTXFS_USER_ID, machine_id)
+        )
+        return MachineCredentialResponse(
+            machine=machine,
+            key_id=prepared.key_id,
+            token=prepared.token,
+        )
+
+    @app.post(
+        "/api/ctxfs/machines/{machine_id}/credentials/confirm",
+        response_model=Machine,
+    )
+    def confirm_machine_credential(
+        machine_id: str,
+        payload: RotationConfirmationBody,
+        principal: Principal = Depends(require_current_machine),
+    ) -> Machine:
+        try:
+            return coordinator().confirm_rotation(
+                principal, machine_id, payload.replacement_key_id
+            )
+        except MachineCredentialNotCurrentError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except (KeyError, ValueError, CatalogBindingConflictError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.delete(
+        "/api/ctxfs/machines/{machine_id}/credential",
+        status_code=204,
+    )
+    def revoke_machine_credential(
+        machine_id: str,
+        principal: Principal = Depends(require_current_machine),
+    ) -> Response:
+        try:
+            coordinator().revoke(principal, machine_id)
+        except MachineCredentialNotCurrentError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except (KeyError, ValueError, CatalogBindingConflictError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return Response(status_code=204)
 
     @app.get("/health")
     def health(
@@ -300,7 +454,9 @@ def create_ctxfs_app(
                 # server-side writer per granted root without trusting the
                 # caller's writer identifier.
                 granted_prefix = _submission_prefix(principal, payload.writer_prefix)
-                writer_id = f"{principal.key_id or principal.principal_id}:{granted_prefix}"
+                writer_id = (
+                    f"{principal.key_id or principal.principal_id}:{granted_prefix}"
+                )
                 store.register_prefix(
                     LOCAL_CTXFS_USER_ID,
                     writer_id,
@@ -336,6 +492,26 @@ def _call_store(operation: Callable[..., T], *args: Any, **kwargs: Any) -> T:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _machine_credential_is_admissible(
+    root: Path, principal: Principal, method: str, path: str
+) -> bool:
+    if principal.machine_id is None or principal.key_id is None:
+        return False
+    try:
+        machine = _with_store(
+            root,
+            lambda store: store.machine(LOCAL_CTXFS_USER_ID, principal.machine_id),
+        )
+    except KeyError:
+        return False
+    if machine.credential_key_id == principal.key_id:
+        return True
+    revoke_path = f"/api/ctxfs/machines/{principal.machine_id}/credential"
+    return (
+        machine.credential_key_id is None and method == "DELETE" and path == revoke_path
+    )
 
 
 def _stat_or_404(store: CtxfsStore, user_id: str, path: str) -> Entry:

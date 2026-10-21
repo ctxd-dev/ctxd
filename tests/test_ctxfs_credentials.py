@@ -7,10 +7,14 @@ import time
 
 import pytest
 
-from ctxd.cli import main
 import ctxfs.credentials as credentials_module
+from ctxd.cli import main
 from ctxfs.auth import Scope
-from ctxfs.credentials import CredentialStore
+from ctxfs.credentials import (
+    CredentialStore,
+    EnrollmentConsumedError,
+    MachineCredentialLifecycleError,
+)
 
 
 def test_create_persists_verifier_and_verifies_token(tmp_path) -> None:
@@ -188,3 +192,66 @@ def test_two_store_connections_can_create_credentials(tmp_path) -> None:
             .fetchone()
         )
         assert rows == (2,)
+
+
+def test_existing_credential_database_migrates_machine_binding_column(tmp_path):
+    database = tmp_path / "credentials.sqlite3"
+    tmp_path.mkdir(exist_ok=True)
+    connection = sqlite3.connect(database)
+    connection.execute(
+        """
+        CREATE TABLE credentials (
+            key_id TEXT PRIMARY KEY, name TEXT NOT NULL, scopes TEXT NOT NULL,
+            prefixes TEXT NOT NULL, salt BLOB NOT NULL, verifier BLOB NOT NULL,
+            created_at REAL NOT NULL, expires_at REAL, revoked_at REAL,
+            replaced_by TEXT
+        )
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    with CredentialStore(tmp_path) as store:
+        columns = {
+            row["name"]
+            for row in store.connection.execute("PRAGMA table_info(credentials)")
+        }
+        assert "machine_id" in columns
+        assert "rotation_from" in columns
+
+
+def test_enrollment_use_is_single_request_replayable(tmp_path):
+    with CredentialStore(tmp_path) as store:
+        issued = store.create(name="enroll", scopes=["enroll"])
+        with store.immediate_transaction():
+            assert not store.consume_enrollment(
+                issued.credential.key_id, "local-1", "fingerprint"
+            )
+        with store.immediate_transaction():
+            assert store.consume_enrollment(
+                issued.credential.key_id, "local-1", "fingerprint"
+            )
+        with pytest.raises(EnrollmentConsumedError):
+            with store.immediate_transaction():
+                store.consume_enrollment(
+                    issued.credential.key_id, "local-2", "different"
+                )
+
+
+def test_machine_credentials_are_bound_and_require_coordinated_lifecycle(tmp_path):
+    with CredentialStore(tmp_path) as store:
+        with store.immediate_transaction():
+            issued = store.issue_machine("machine-1", "alice-mac")
+        grant = store.verify(issued.token)
+        assert grant is not None
+        assert grant.machine_id == "machine-1"
+        assert grant.scopes == frozenset({Scope.SUBMIT, Scope.STATUS_WRITE})
+        assert grant.prefixes == ("machines/alice-mac",)
+        with pytest.raises(MachineCredentialLifecycleError):
+            store.rotate(issued.credential.key_id)
+        with pytest.raises(MachineCredentialLifecycleError):
+            store.revoke(issued.credential.key_id)
+
+    database = (tmp_path / "credentials.sqlite3").read_bytes()
+    assert issued.token.encode() not in database
+    assert issued.token.rsplit(".", 1)[1].encode() not in database

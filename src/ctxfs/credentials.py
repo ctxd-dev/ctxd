@@ -12,12 +12,12 @@ import secrets
 import sqlite3
 import stat
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
 from ctxfs.auth import CredentialGrant, Scope
-
 
 TOKEN_PREFIX = "ctxfs"
 KEY_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{16}$")
@@ -38,6 +38,8 @@ class Credential:
     expires_at: float | None
     revoked_at: float | None
     replaced_by: str | None
+    machine_id: str | None = None
+    rotation_from: str | None = None
 
     @property
     def active(self) -> bool:
@@ -55,6 +57,7 @@ class Credential:
             "expires_at": self.expires_at,
             "revoked_at": self.revoked_at,
             "replaced_by": self.replaced_by,
+            "machine_id": self.machine_id,
             "active": self.active,
         }
 
@@ -63,6 +66,14 @@ class Credential:
 class IssuedCredential:
     credential: Credential
     token: str
+
+
+class EnrollmentConsumedError(ValueError):
+    pass
+
+
+class MachineCredentialLifecycleError(ValueError):
+    pass
 
 
 class CredentialStore:
@@ -122,6 +133,52 @@ class CredentialStore:
                 )
                 """
             )
+            columns = {
+                row["name"]
+                for row in self.connection.execute(
+                    "PRAGMA table_info(credentials)"
+                ).fetchall()
+            }
+            if "machine_id" not in columns:
+                self.connection.execute(
+                    "ALTER TABLE credentials ADD COLUMN machine_id TEXT"
+                )
+            if "rotation_from" not in columns:
+                self.connection.execute(
+                    "ALTER TABLE credentials ADD COLUMN rotation_from TEXT"
+                )
+            self.connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS enrollment_uses (
+                    enrollment_key_id TEXT PRIMARY KEY,
+                    local_registration_id TEXT NOT NULL,
+                    request_fingerprint TEXT NOT NULL,
+                    machine_id TEXT,
+                    created_at REAL NOT NULL
+                )
+                """
+            )
+            enrollment_columns = {
+                row["name"]
+                for row in self.connection.execute(
+                    "PRAGMA table_info(enrollment_uses)"
+                ).fetchall()
+            }
+            if "machine_id" not in enrollment_columns:
+                self.connection.execute(
+                    "ALTER TABLE enrollment_uses ADD COLUMN machine_id TEXT"
+                )
+
+    @contextmanager
+    def immediate_transaction(self):
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+        except BaseException:
+            self.connection.rollback()
+            raise
+        else:
+            self.connection.commit()
 
     def create(
         self,
@@ -145,6 +202,8 @@ class CredentialStore:
         scopes: Iterable[Scope | str],
         prefixes: Iterable[str] = (),
         expires_at: float | None = None,
+        machine_id: str | None = None,
+        rotation_from: str | None = None,
     ) -> tuple[IssuedCredential, bytes, bytes]:
         clean_name = name.strip()
         if not clean_name:
@@ -173,6 +232,7 @@ class CredentialStore:
             key_id=key_id,
             scopes=normalized_scopes,
             prefixes=tuple(prefixes),
+            machine_id=machine_id,
         )
         now = time.time()
         if expires_at is not None and (
@@ -190,6 +250,8 @@ class CredentialStore:
             expires_at=expires_at,
             revoked_at=None,
             replaced_by=None,
+            machine_id=machine_id,
+            rotation_from=rotation_from,
         )
         return IssuedCredential(credential, token), salt, verifier
 
@@ -198,8 +260,9 @@ class CredentialStore:
             """
             INSERT INTO credentials (
                 key_id, name, scopes, prefixes, salt, verifier,
-                created_at, expires_at, revoked_at, replaced_by
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+                created_at, expires_at, revoked_at, replaced_by, machine_id,
+                rotation_from
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
             """,
             (
                 credential.key_id,
@@ -210,6 +273,8 @@ class CredentialStore:
                 verifier,
                 credential.created_at,
                 credential.expires_at,
+                credential.machine_id,
+                credential.rotation_from,
             ),
         )
 
@@ -251,10 +316,103 @@ class CredentialStore:
             key_id=credential.key_id,
             scopes=credential.scopes,
             prefixes=credential.prefixes,
+            machine_id=credential.machine_id,
         )
+
+    def consume_enrollment(
+        self,
+        key_id: str,
+        local_registration_id: str,
+        request_fingerprint: str,
+    ) -> bool:
+        row = self.connection.execute(
+            "SELECT * FROM enrollment_uses WHERE enrollment_key_id = ?",
+            (key_id,),
+        ).fetchone()
+        if row is None:
+            self.connection.execute(
+                """
+                INSERT INTO enrollment_uses(
+                    enrollment_key_id, local_registration_id,
+                    request_fingerprint, created_at
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (key_id, local_registration_id, request_fingerprint, time.time()),
+            )
+            return False
+        if (
+            row["local_registration_id"] != local_registration_id
+            or row["request_fingerprint"] != request_fingerprint
+        ):
+            raise EnrollmentConsumedError("enrollment credential already consumed")
+        return True
+
+    def bind_enrollment_use(self, key_id: str, machine_id: str) -> None:
+        cursor = self.connection.execute(
+            """
+            UPDATE enrollment_uses
+            SET machine_id = COALESCE(machine_id, ?)
+            WHERE enrollment_key_id = ?
+              AND (machine_id IS NULL OR machine_id = ?)
+            """,
+            (machine_id, key_id, machine_id),
+        )
+        if cursor.rowcount != 1:
+            raise EnrollmentConsumedError("enrollment credential already consumed")
+
+    def issue_machine(
+        self,
+        machine_id: str,
+        machine_key: str,
+        *,
+        rotation_from: str | None = None,
+    ) -> IssuedCredential:
+        issued, salt, verifier = self._prepare(
+            name=f"machine:{machine_id}",
+            scopes=[Scope.SUBMIT, Scope.STATUS_WRITE],
+            prefixes=[f"machines/{machine_key}"],
+            machine_id=machine_id,
+            rotation_from=rotation_from,
+        )
+        self._insert(issued.credential, salt, verifier)
+        return issued
+
+    def machine_credentials(self, machine_id: str) -> list[Credential]:
+        rows = self.connection.execute(
+            """
+            SELECT * FROM credentials WHERE machine_id = ?
+            ORDER BY created_at, key_id
+            """,
+            (machine_id,),
+        ).fetchall()
+        return [_credential(row) for row in rows]
+
+    def revoke_machine_key(
+        self,
+        key_id: str,
+        machine_id: str,
+        *,
+        replaced_by: str | None = None,
+    ) -> Credential:
+        cursor = self.connection.execute(
+            """
+            UPDATE credentials
+            SET revoked_at = COALESCE(revoked_at, ?),
+                replaced_by = COALESCE(replaced_by, ?)
+            WHERE key_id = ? AND machine_id = ?
+            """,
+            (time.time(), replaced_by, key_id, machine_id),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError("unknown machine credential")
+        return self.get(key_id)
 
     def revoke(self, key_id: str) -> Credential:
         _validate_key_id(key_id)
+        if self.get(key_id).machine_id is not None:
+            raise MachineCredentialLifecycleError(
+                "machine credentials require coordinated revocation"
+            )
         now = time.time()
         with self.connection:
             cursor = self.connection.execute(
@@ -267,6 +425,10 @@ class CredentialStore:
 
     def rotate(self, key_id: str) -> IssuedCredential:
         old = self.get(key_id)
+        if old.machine_id is not None:
+            raise MachineCredentialLifecycleError(
+                "machine credentials require coordinated rotation"
+            )
         if old.revoked_at is not None:
             raise ValueError("cannot rotate a revoked credential")
         issued, salt, verifier = self._prepare(
@@ -323,4 +485,6 @@ def _credential(row: sqlite3.Row) -> Credential:
         expires_at=row["expires_at"],
         revoked_at=row["revoked_at"],
         replaced_by=row["replaced_by"],
+        machine_id=row["machine_id"],
+        rotation_from=row["rotation_from"],
     )
