@@ -217,6 +217,7 @@ def test_existing_credential_database_migrates_machine_binding_column(tmp_path):
             for row in store.connection.execute("PRAGMA table_info(credentials)")
         }
         assert "machine_id" in columns
+        assert "rotation_from" in columns
 
 
 def test_enrollment_use_is_single_request_replayable(tmp_path):

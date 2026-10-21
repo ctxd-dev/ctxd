@@ -63,6 +63,9 @@ class MachineCredentialCoordinator:
                         fingerprint,
                     )
                 with _catalog(self.catalog_root) as catalog:
+                    existing_registration = catalog.machine_for_registration(
+                        self.user_id, request.local_registration_id
+                    )
                     machine = catalog.register_machine(
                         self.user_id,
                         local_registration_id=request.local_registration_id,
@@ -77,6 +80,16 @@ class MachineCredentialCoordinator:
                         ),
                         enrollment_recovered=recovered,
                     )
+                    if (
+                        Scope.ADMIN not in principal.scopes
+                        and existing_registration is not None
+                    ):
+                        # The catalog may have committed while the credential
+                        # transaction (including its single-use ledger) rolled
+                        # back. register_machine has now checked the immutable
+                        # request metadata; the durable enrollment binding proves
+                        # this is recovery by the same authority.
+                        recovered = existing_registration[1] == principal.key_id
                     previous_key = machine.credential_key_id
                     machine_credentials = credentials.machine_credentials(
                         machine.machine_id
@@ -137,7 +150,9 @@ class MachineCredentialCoordinator:
                                 credential.key_id, machine_id
                             )
                     issued = credentials.issue_machine(
-                        machine.machine_id, machine.machine_key
+                        machine.machine_id,
+                        machine.machine_key,
+                        rotation_from=machine.credential_key_id,
                     )
                     return PreparedMachineCredential(
                         key_id=issued.credential.key_id, token=issued.token
@@ -161,35 +176,40 @@ class MachineCredentialCoordinator:
                         # the replacement while the former key is still active.
                         replacement = credentials.get(replacement_key_id)
                         _require_machine_credential(replacement, machine)
-                        predecessors = [
-                            credential
-                            for credential in credentials.machine_credentials(
-                                machine_id
-                            )
-                            if credential.key_id != replacement_key_id
-                            and credential.created_at < replacement.created_at
-                            and (
-                                credential.active
-                                or credential.replaced_by == replacement_key_id
-                            )
-                        ]
-                        if not predecessors or (
+                        predecessor_key_id = replacement.rotation_from
+                        if predecessor_key_id is None or (
                             Scope.ADMIN not in principal.scopes
                             and principal.key_id != replacement_key_id
                         ):
                             raise ValueError("invalid rotation confirmation retry")
-                        for credential in predecessors:
-                            if credential.active:
-                                credentials.revoke_machine_key(
-                                    credential.key_id,
-                                    machine_id,
-                                    replaced_by=replacement_key_id,
-                                )
+                        predecessor = credentials.get(predecessor_key_id)
+                        if (
+                            predecessor.machine_id != machine_id
+                            or (
+                                predecessor.active
+                                and predecessor.replaced_by is not None
+                            )
+                            or (
+                                not predecessor.active
+                                and predecessor.replaced_by != replacement_key_id
+                            )
+                        ):
+                            raise ValueError("invalid rotation confirmation retry")
+                        if predecessor.active:
+                            credentials.revoke_machine_key(
+                                predecessor.key_id,
+                                machine_id,
+                                replaced_by=replacement_key_id,
+                            )
                         return machine
                     replacement = credentials.get(replacement_key_id)
                     _require_machine_credential(replacement, machine)
                     old_key = machine.credential_key_id
                     assert old_key is not None
+                    if replacement.rotation_from != old_key:
+                        raise ValueError(
+                            "replacement credential was not prepared for current key"
+                        )
                     machine = catalog.bind_machine_credential(
                         self.user_id,
                         machine_id,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+import ctxfs.credentials as credentials_module
 from ctxfs import (
     CredentialGrant,
     CtxfsStore,
@@ -124,6 +125,7 @@ def test_registration_retry_recovers_catalog_bind_after_credential_rollback(
     monkeypatch.setattr(CtxfsStore, "bind_machine_credential", original_bind)
 
     recovered = coordinator.register(principal, request)
+    assert recovered.recovered
     with CredentialStore(root) as credentials:
         active = [
             item
@@ -234,6 +236,50 @@ def test_confirm_rotation_retry_reconciles_credential_rollback(tmp_path, monkeyp
     )
     with CredentialStore(root) as credentials:
         assert credentials.verify(registered.token) is None
+        assert credentials.verify(prepared.token) is not None
+
+
+def test_confirm_rotation_retry_with_frozen_clock_revokes_exact_predecessor(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(credentials_module.time, "time", lambda: 1_800_000_000.0)
+    root = tmp_path / "ctxfs"
+    coordinator = MachineCredentialCoordinator(root, root, "local")
+    registered = coordinator.register(
+        _principal(_enrollment(root)),
+        MachineRegistrationRequest("local-1", "Laptop"),
+    )
+    with CredentialStore(root) as credentials:
+        current = credentials.verify(registered.token)
+    assert current is not None
+    prepared = coordinator.prepare_rotation(
+        current.principal(), registered.machine.machine_id
+    )
+    original_bind = CtxfsStore.bind_machine_credential
+
+    def bind_then_fail(self, *args, **kwargs):
+        original_bind(self, *args, **kwargs)
+        raise RuntimeError("injected failure after catalog bind")
+
+    monkeypatch.setattr(CtxfsStore, "bind_machine_credential", bind_then_fail)
+    with pytest.raises(RuntimeError, match="injected failure"):
+        coordinator.confirm_rotation(
+            current.principal(), registered.machine.machine_id, prepared.key_id
+        )
+    monkeypatch.setattr(CtxfsStore, "bind_machine_credential", original_bind)
+
+    with CredentialStore(root) as credentials:
+        replacement = credentials.verify(prepared.token)
+        old = credentials.get(registered.key_id)
+        new = credentials.get(prepared.key_id)
+        assert old.created_at == new.created_at
+    assert replacement is not None
+    coordinator.confirm_rotation(
+        replacement.principal(), registered.machine.machine_id, prepared.key_id
+    )
+    with CredentialStore(root) as credentials:
+        assert credentials.verify(registered.token) is None
+        assert credentials.get(registered.key_id).replaced_by == prepared.key_id
         assert credentials.verify(prepared.token) is not None
 
 

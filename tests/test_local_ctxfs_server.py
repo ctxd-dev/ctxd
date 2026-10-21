@@ -570,6 +570,47 @@ def test_machine_revoke_http_retry_repairs_catalog_clear_after_rollback(
         assert credentials.verify(registered["token"]) is None
 
 
+def test_machine_registration_http_retry_reports_recovery_after_catalog_commit(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "ctxfs"
+    with CredentialStore(root) as credentials:
+        enrollment = credentials.create(name="enroll", scopes=["enroll"])
+    client = TestClient(
+        create_ctxfs_app(root, auth_mode=CtxfsAuthMode.BEARER),
+        raise_server_exceptions=False,
+    )
+    original_bind = CtxfsStore.bind_machine_credential
+    failed = False
+
+    def bind_then_fail(self, *args, **kwargs):
+        nonlocal failed
+        result = original_bind(self, *args, **kwargs)
+        if not failed:
+            failed = True
+            raise RuntimeError("injected failure after catalog bind")
+        return result
+
+    monkeypatch.setattr(CtxfsStore, "bind_machine_credential", bind_then_fail)
+    body = {"local_registration_id": "retry-1", "name": "Laptop"}
+    assert (
+        client.post(
+            "/api/ctxfs/machines/register",
+            headers=_auth(enrollment.token),
+            json=body,
+        ).status_code
+        == 500
+    )
+    monkeypatch.setattr(CtxfsStore, "bind_machine_credential", original_bind)
+
+    recovered = client.post(
+        "/api/ctxfs/machines/register",
+        headers=_auth(enrollment.token),
+        json=body,
+    )
+    assert recovered.status_code == 200
+
+
 @pytest.mark.parametrize(
     ("operation", "method", "suffix", "kwargs"),
     [

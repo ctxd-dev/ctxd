@@ -39,6 +39,7 @@ class Credential:
     revoked_at: float | None
     replaced_by: str | None
     machine_id: str | None = None
+    rotation_from: str | None = None
 
     @property
     def active(self) -> bool:
@@ -142,6 +143,10 @@ class CredentialStore:
                 self.connection.execute(
                     "ALTER TABLE credentials ADD COLUMN machine_id TEXT"
                 )
+            if "rotation_from" not in columns:
+                self.connection.execute(
+                    "ALTER TABLE credentials ADD COLUMN rotation_from TEXT"
+                )
             self.connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS enrollment_uses (
@@ -198,6 +203,7 @@ class CredentialStore:
         prefixes: Iterable[str] = (),
         expires_at: float | None = None,
         machine_id: str | None = None,
+        rotation_from: str | None = None,
     ) -> tuple[IssuedCredential, bytes, bytes]:
         clean_name = name.strip()
         if not clean_name:
@@ -245,6 +251,7 @@ class CredentialStore:
             revoked_at=None,
             replaced_by=None,
             machine_id=machine_id,
+            rotation_from=rotation_from,
         )
         return IssuedCredential(credential, token), salt, verifier
 
@@ -253,8 +260,9 @@ class CredentialStore:
             """
             INSERT INTO credentials (
                 key_id, name, scopes, prefixes, salt, verifier,
-                created_at, expires_at, revoked_at, replaced_by, machine_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+                created_at, expires_at, revoked_at, replaced_by, machine_id,
+                rotation_from
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
             """,
             (
                 credential.key_id,
@@ -266,6 +274,7 @@ class CredentialStore:
                 credential.created_at,
                 credential.expires_at,
                 credential.machine_id,
+                credential.rotation_from,
             ),
         )
 
@@ -351,12 +360,19 @@ class CredentialStore:
         if cursor.rowcount != 1:
             raise EnrollmentConsumedError("enrollment credential already consumed")
 
-    def issue_machine(self, machine_id: str, machine_key: str) -> IssuedCredential:
+    def issue_machine(
+        self,
+        machine_id: str,
+        machine_key: str,
+        *,
+        rotation_from: str | None = None,
+    ) -> IssuedCredential:
         issued, salt, verifier = self._prepare(
             name=f"machine:{machine_id}",
             scopes=[Scope.SUBMIT, Scope.STATUS_WRITE],
             prefixes=[f"machines/{machine_key}"],
             machine_id=machine_id,
+            rotation_from=rotation_from,
         )
         self._insert(issued.credential, salt, verifier)
         return issued
@@ -470,4 +486,5 @@ def _credential(row: sqlite3.Row) -> Credential:
         revoked_at=row["revoked_at"],
         replaced_by=row["replaced_by"],
         machine_id=row["machine_id"],
+        rotation_from=row["rotation_from"],
     )

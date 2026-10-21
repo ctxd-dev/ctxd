@@ -432,6 +432,23 @@ class CtxfsStore:
             raise KeyError(f"unknown machine_id: {machine_id}")
         return _machine_from_row(row)
 
+    def machine_for_registration(
+        self, user_id: str, local_registration_id: str
+    ) -> tuple[Machine, str | None] | None:
+        registration_id = _catalog_text(
+            local_registration_id, "local_registration_id", 128
+        )
+        row = self.connection.execute(
+            """
+            SELECT * FROM machines
+            WHERE user_id = ? AND local_registration_id = ?
+            """,
+            (user_id, registration_id),
+        ).fetchone()
+        return (
+            None if row is None else (_machine_from_row(row), row["enrollment_key_id"])
+        )
+
     def machines(self, user_id: str) -> list[Machine]:
         rows = self.connection.execute(
             """
