@@ -1,6 +1,7 @@
 import json
 import os
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +66,61 @@ def clear_ctxfs_api_key(*, endpoint: str) -> None:
         payload["ctxfs_api_keys"] = credentials
     else:
         payload.pop("ctxfs_api_keys", None)
+    _save_credentials(payload)
+
+
+def load_installation_proof() -> str | None:
+    payload = _load_credentials()
+    proof = payload.get("installation_proof")
+    if proof is None:
+        return None
+    if not isinstance(proof, str):
+        raise CtxdAuthError("Stored ctxd installation proof is invalid.")
+    try:
+        return str(uuid.UUID(proof))
+    except ValueError as exc:
+        raise CtxdAuthError("Stored ctxd installation proof is invalid.") from exc
+
+
+def save_installation_proof(installation_id: str) -> None:
+    try:
+        installation_id = str(uuid.UUID(installation_id))
+    except ValueError as exc:
+        raise ValueError("installation ID is invalid") from exc
+    payload = _load_credentials()
+    payload["installation_proof"] = installation_id
+    _save_credentials(payload)
+
+
+def load_ctxfs_machine_registration(*, endpoint: str) -> dict[str, Any] | None:
+    payload = _load_credentials()
+    registrations = payload.get("ctxfs_machine_registrations", {})
+    if not isinstance(registrations, dict):
+        raise CtxdAuthError("Stored ctxd machine registrations are invalid.")
+    registration = registrations.get(endpoint)
+    if registration is None:
+        return None
+    if not isinstance(registration, dict) or registration.get("state") not in {
+        "pending",
+        "registered",
+    }:
+        raise CtxdAuthError("Stored ctxd machine registration is invalid.")
+    return registration
+
+
+def save_ctxfs_machine_registration(
+    *, endpoint: str, registration: dict[str, Any]
+) -> None:
+    if registration.get("state") not in {"pending", "registered"}:
+        raise ValueError("machine registration state must be pending or registered")
+    payload = _load_credentials()
+    registrations = payload.get("ctxfs_machine_registrations")
+    if registrations is None:
+        registrations = {}
+    if not isinstance(registrations, dict):
+        raise CtxdAuthError("Stored ctxd machine registrations are invalid.")
+    registrations[endpoint] = registration
+    payload["ctxfs_machine_registrations"] = registrations
     _save_credentials(payload)
 
 

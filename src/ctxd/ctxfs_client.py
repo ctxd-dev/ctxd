@@ -11,10 +11,13 @@ from ctxd.models import (
     CtxfsDirectoryEntry,
     CtxfsEntry,
     CtxfsGrepMatch,
+    CtxfsMachineRegistration,
     CtxfsReadLinesResult,
     CtxfsReadResult,
     CtxfsStatus,
 )
+
+_USE_CLIENT_API_KEY = object()
 
 
 class AsyncCtxfsClient:
@@ -72,6 +75,33 @@ class AsyncCtxfsClient:
         except CtxdError as exc:
             if exc.status_code != 403:
                 raise
+
+    async def register_machine(
+        self,
+        *,
+        local_registration_id: str,
+        name: str,
+        description: str | None,
+        platform: str | None,
+        ctxd_version: str | None,
+        enrollment_token: str | None,
+    ) -> CtxfsMachineRegistration:
+        response_status: list[int] = []
+        payload = await self._request(
+            "POST",
+            "/api/ctxfs/machines/register",
+            json={
+                "local_registration_id": local_registration_id,
+                "name": name,
+                "description": description,
+                "platform": platform,
+                "ctxd_version": ctxd_version,
+            },
+            bearer_token=enrollment_token,
+            response_status=response_status,
+        )
+        registration = CtxfsMachineRegistration.model_validate(payload)
+        return registration.model_copy(update={"recovered": response_status == [200]})
 
     async def stat(self, path: str) -> CtxfsEntry:
         payload = await self._request("GET", "/api/ctxfs/stat", params={"path": path})
@@ -158,14 +188,17 @@ class AsyncCtxfsClient:
         *,
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
+        bearer_token: str | None | object = _USE_CLIENT_API_KEY,
+        response_status: list[int] | None = None,
     ) -> dict[str, Any]:
         if self._managed_local and not self._managed_local_ready:
             await asyncio.to_thread(_ensure_managed_local_started)
             self._managed_local_ready = True
 
         headers = {"User-Agent": get_user_agent(), "Accept": "application/json"}
-        if self._api_key and not self._endpoint.startswith("unix://"):
-            headers["Authorization"] = f"Bearer {self._api_key}"
+        token = self._api_key if bearer_token is _USE_CLIENT_API_KEY else bearer_token
+        if token and not self._endpoint.startswith("unix://"):
+            headers["Authorization"] = f"Bearer {token}"
         request_kwargs: dict[str, Any] = {"params": params, "headers": headers}
         if json is not None:
             request_kwargs["json"] = json
@@ -181,6 +214,8 @@ class AsyncCtxfsClient:
                 "Check that the local ctxd service is running."
             ) from exc
 
+        if response_status is not None:
+            response_status.append(response.status_code)
         return self._parse_response(response)
 
     def _build_client(self) -> httpx.AsyncClient:
@@ -288,6 +323,27 @@ class CtxfsClient:
 
     def validate_authentication(self) -> None:
         return _run(self._async_client.validate_authentication())
+
+    def register_machine(
+        self,
+        *,
+        local_registration_id: str,
+        name: str,
+        description: str | None,
+        platform: str | None,
+        ctxd_version: str | None,
+        enrollment_token: str | None,
+    ) -> CtxfsMachineRegistration:
+        return _run(
+            self._async_client.register_machine(
+                local_registration_id=local_registration_id,
+                name=name,
+                description=description,
+                platform=platform,
+                ctxd_version=ctxd_version,
+                enrollment_token=enrollment_token,
+            )
+        )
 
     def stat(self, path: str) -> CtxfsEntry:
         return _run(self._async_client.stat(path))

@@ -187,6 +187,47 @@ def test_ctxfs_http_client_sends_endpoint_bearer(
     assert client.status().status == "ok"
 
 
+def test_machine_registration_uses_one_request_enrollment_bearer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = CtxfsClient(endpoint="https://ctxfs.example", api_key="reader-token")
+
+    async def mock_request(self, method, url, **kwargs):
+        del self
+        assert method == "POST" and url == "/api/ctxfs/machines/register"
+        assert kwargs["headers"]["Authorization"] == "Bearer enrollment-token"
+        return httpx.Response(
+            201,
+            json={
+                "machine": {
+                    "machine_id": "machine-1",
+                    "machine_key": "workstation",
+                    "name": "Workstation",
+                    "description": None,
+                    "state": "unknown",
+                    "platform": "test",
+                    "ctxd_version": "1.0",
+                    "credential_key_id": "key-1",
+                    "registered_at": 1.0,
+                },
+                "key_id": "key-1",
+                "token": "machine-token",
+            },
+        )
+
+    monkeypatch.setattr("httpx.AsyncClient.request", mock_request)
+    result = client.register_machine(
+        local_registration_id="local-1",
+        name="Workstation",
+        description=None,
+        platform="test",
+        ctxd_version="1.0",
+        enrollment_token="enrollment-token",
+    )
+    assert result.recovered is False
+    assert result.token == "machine-token"
+
+
 def test_ctxfs_http_mcp_uses_endpoint_bearer(monkeypatch: pytest.MonkeyPatch) -> None:
     client = Client(
         ctxfs_endpoint="https://ctxfs.example",
