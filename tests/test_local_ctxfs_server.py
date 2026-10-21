@@ -627,6 +627,39 @@ def test_admin_can_enroll_without_consuming_single_use_credential(tmp_path):
         assert response.status_code == 201
 
 
+def test_fresh_enrollment_cannot_take_over_matching_registration(tmp_path):
+    root = tmp_path / "ctxfs"
+    with CredentialStore(root) as credentials:
+        first_enrollment = credentials.create(name="first", scopes=["enroll"])
+        attacker_enrollment = credentials.create(name="attacker", scopes=["enroll"])
+    client = TestClient(create_ctxfs_app(root, auth_mode=CtxfsAuthMode.BEARER))
+    body = {"local_registration_id": "machine-1", "name": "Laptop"}
+    registered = client.post(
+        "/api/ctxfs/machines/register",
+        headers=_auth(first_enrollment.token),
+        json=body,
+    ).json()
+
+    rejected = client.post(
+        "/api/ctxfs/machines/register",
+        headers=_auth(attacker_enrollment.token),
+        json=body,
+    )
+
+    assert rejected.status_code == 409
+    assert len(rejected.content) < 128
+    with CredentialStore(root) as credentials:
+        assert credentials.verify(registered["token"]) is not None
+        assert credentials.verify(attacker_enrollment.token) is not None
+    catalog = CtxfsStore(root)
+    try:
+        assert catalog.machine(
+            "local", registered["machine"]["machine_id"]
+        ).credential_key_id == registered["key_id"]
+    finally:
+        catalog.close()
+
+
 @pytest.mark.parametrize("authority", ["admin", "enroll"])
 def test_registration_metadata_conflict_is_bounded_and_does_not_mutate_binding(
     tmp_path, authority

@@ -156,6 +156,7 @@ class CtxfsStore:
                     platform TEXT,
                     ctxd_version TEXT,
                     credential_key_id TEXT,
+                    enrollment_key_id TEXT,
                     registered_at REAL NOT NULL,
                     PRIMARY KEY(user_id, machine_id),
                     UNIQUE(user_id, machine_key),
@@ -163,6 +164,16 @@ class CtxfsStore:
                 )
                 """
             )
+            machine_columns = {
+                row["name"]
+                for row in self.connection.execute(
+                    "PRAGMA table_info(machines)"
+                ).fetchall()
+            }
+            if "enrollment_key_id" not in machine_columns:
+                self.connection.execute(
+                    "ALTER TABLE machines ADD COLUMN enrollment_key_id TEXT"
+                )
             self.connection.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS machines_credential_key
@@ -216,6 +227,8 @@ class CtxfsStore:
         description: str | None = None,
         platform: str | None = None,
         ctxd_version: str | None = None,
+        enrollment_key_id: str | None = None,
+        enrollment_recovered: bool = False,
         now: float | None = None,
     ) -> Machine:
         registration_id = _catalog_text(
@@ -238,6 +251,29 @@ class CtxfsStore:
                 (user_id, registration_id),
             ).fetchone()
             if existing is not None:
+                if (
+                    enrollment_key_id is not None
+                    and existing["enrollment_key_id"] is None
+                    and enrollment_recovered
+                ):
+                    self.connection.execute(
+                        """
+                        UPDATE machines SET enrollment_key_id = ?
+                        WHERE user_id = ? AND machine_id = ?
+                          AND enrollment_key_id IS NULL
+                        """,
+                        (enrollment_key_id, user_id, existing["machine_id"]),
+                    )
+                    existing = self.connection.execute(
+                        "SELECT * FROM machines WHERE user_id = ? AND machine_id = ?",
+                        (user_id, existing["machine_id"]),
+                    ).fetchone()
+                if enrollment_key_id is not None and (
+                    existing["enrollment_key_id"] != enrollment_key_id
+                ):
+                    raise CatalogConflictError(
+                        "local_registration_id belongs to another enrollment"
+                    )
                 return _replay_machine(existing, requested)
             base_key = _catalog_key(clean_name, fallback="machine")
             suffix = 1
@@ -253,8 +289,8 @@ class CtxfsStore:
                             registration_description, registration_platform,
                             registration_ctxd_version, name, description,
                             state, platform, ctxd_version, credential_key_id,
-                            registered_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+                            enrollment_key_id, registered_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
                         """,
                         (
                             user_id,
@@ -270,6 +306,7 @@ class CtxfsStore:
                             MachineState.UNKNOWN.value,
                             clean_platform,
                             clean_version,
+                            enrollment_key_id,
                             registered_at,
                         ),
                     )
@@ -283,6 +320,32 @@ class CtxfsStore:
                         (user_id, registration_id),
                     ).fetchone()
                     if existing is not None:
+                        if (
+                            enrollment_key_id is not None
+                            and existing["enrollment_key_id"] is None
+                            and enrollment_recovered
+                        ):
+                            self.connection.execute(
+                                """
+                                UPDATE machines SET enrollment_key_id = ?
+                                WHERE user_id = ? AND machine_id = ?
+                                  AND enrollment_key_id IS NULL
+                                """,
+                                (enrollment_key_id, user_id, existing["machine_id"]),
+                            )
+                            existing = self.connection.execute(
+                                """
+                                SELECT * FROM machines
+                                WHERE user_id = ? AND machine_id = ?
+                                """,
+                                (user_id, existing["machine_id"]),
+                            ).fetchone()
+                        if enrollment_key_id is not None and (
+                            existing["enrollment_key_id"] != enrollment_key_id
+                        ):
+                            raise CatalogConflictError(
+                                "local_registration_id belongs to another enrollment"
+                            )
                         return _replay_machine(existing, requested)
                     suffix += 1
 

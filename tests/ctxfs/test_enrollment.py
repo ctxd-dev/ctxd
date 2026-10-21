@@ -10,6 +10,7 @@ from ctxfs import (
     Scope,
 )
 from ctxfs.credentials import CredentialStore, EnrollmentConsumedError
+from ctxfs.store import CatalogConflictError
 
 
 def _principal(issued):
@@ -70,6 +71,34 @@ def test_enrollment_rejects_different_request_and_other_machine_is_unaffected(tm
         assert credentials.verify(first.token) is not None
 
 
+def test_different_enrollment_cannot_claim_existing_registration(tmp_path):
+    root = tmp_path / "ctxfs"
+    coordinator = MachineCredentialCoordinator(root, root, "local")
+    request = MachineRegistrationRequest("local-1", "Laptop")
+    first_enrollment = _enrollment(root)
+    registered = coordinator.register(_principal(first_enrollment), request)
+
+    with pytest.raises(CatalogConflictError):
+        coordinator.register(_principal(_enrollment(root)), request)
+
+    with CredentialStore(root) as credentials:
+        assert credentials.verify(first_enrollment[1]) is not None
+        assert credentials.verify(registered.token) is not None
+        active = [
+            item.key_id
+            for item in credentials.machine_credentials(registered.machine.machine_id)
+            if item.active
+        ]
+    assert active == [registered.key_id]
+    catalog = CtxfsStore(root)
+    try:
+        assert catalog.machine(
+            "local", registered.machine.machine_id
+        ).credential_key_id == registered.key_id
+    finally:
+        catalog.close()
+
+
 def test_registration_retry_recovers_catalog_bind_after_credential_rollback(
     tmp_path, monkeypatch
 ):
@@ -128,6 +157,14 @@ def test_prepare_confirm_rotation_and_revoke(tmp_path):
         )
     finally:
         catalog.close()
+
+    with pytest.raises(ValueError, match="invalid rotation confirmation retry"):
+        coordinator.confirm_rotation(
+            principal, registered.machine.machine_id, registered.key_id
+        )
+    with CredentialStore(root) as credentials:
+        assert credentials.verify(registered.token) is not None
+        assert credentials.verify(prepared.token) is not None
 
     rotated = coordinator.confirm_rotation(
         principal, registered.machine.machine_id, prepared.key_id

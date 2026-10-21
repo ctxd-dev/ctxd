@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ctxfs.auth import Principal, Scope
-from ctxfs.credentials import CredentialStore
+from ctxfs.credentials import CredentialStore, EnrollmentConsumedError
 from ctxfs.models import Machine
 from ctxfs.store import CtxfsStore
 
@@ -70,11 +70,25 @@ class MachineCredentialCoordinator:
                         description=request.description,
                         platform=request.platform,
                         ctxd_version=request.ctxd_version,
+                        enrollment_key_id=(
+                            None
+                            if Scope.ADMIN in principal.scopes
+                            else principal.key_id
+                        ),
+                        enrollment_recovered=recovered,
                     )
                     previous_key = machine.credential_key_id
                     machine_credentials = credentials.machine_credentials(
                         machine.machine_id
                     )
+                    if Scope.ADMIN not in principal.scopes:
+                        # Record the resulting identity in the single-use ledger;
+                        # the catalog separately binds the registration to this
+                        # exact enrollment authority across partial commits.
+                        assert principal.key_id is not None
+                        credentials.bind_enrollment_use(
+                            principal.key_id, machine.machine_id
+                        )
                     for credential in machine_credentials:
                         if credential.key_id != previous_key and credential.active:
                             credentials.revoke_machine_key(
@@ -145,10 +159,26 @@ class MachineCredentialCoordinator:
                         # The catalog commit and credential transaction are not
                         # atomic.  A retry can therefore arrive authenticated as
                         # the replacement while the former key is still active.
-                        for credential in credentials.machine_credentials(machine_id):
+                        replacement = credentials.get(replacement_key_id)
+                        _require_machine_credential(replacement, machine)
+                        predecessors = [
+                            credential
+                            for credential in credentials.machine_credentials(machine_id)
+                            if credential.key_id != replacement_key_id
+                            and credential.created_at < replacement.created_at
+                            and (
+                                credential.active
+                                or credential.replaced_by == replacement_key_id
+                            )
+                        ]
+                        if not predecessors or (
+                            Scope.ADMIN not in principal.scopes
+                            and principal.key_id != replacement_key_id
+                        ):
+                            raise ValueError("invalid rotation confirmation retry")
+                        for credential in predecessors:
                             if (
-                                credential.key_id != replacement_key_id
-                                and credential.active
+                                credential.active
                             ):
                                 credentials.revoke_machine_key(
                                     credential.key_id,

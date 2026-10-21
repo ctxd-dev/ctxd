@@ -148,10 +148,21 @@ class CredentialStore:
                     enrollment_key_id TEXT PRIMARY KEY,
                     local_registration_id TEXT NOT NULL,
                     request_fingerprint TEXT NOT NULL,
+                    machine_id TEXT,
                     created_at REAL NOT NULL
                 )
                 """
             )
+            enrollment_columns = {
+                row["name"]
+                for row in self.connection.execute(
+                    "PRAGMA table_info(enrollment_uses)"
+                ).fetchall()
+            }
+            if "machine_id" not in enrollment_columns:
+                self.connection.execute(
+                    "ALTER TABLE enrollment_uses ADD COLUMN machine_id TEXT"
+                )
 
     @contextmanager
     def immediate_transaction(self):
@@ -326,6 +337,19 @@ class CredentialStore:
         ):
             raise EnrollmentConsumedError("enrollment credential already consumed")
         return True
+
+    def bind_enrollment_use(self, key_id: str, machine_id: str) -> None:
+        cursor = self.connection.execute(
+            """
+            UPDATE enrollment_uses
+            SET machine_id = COALESCE(machine_id, ?)
+            WHERE enrollment_key_id = ?
+              AND (machine_id IS NULL OR machine_id = ?)
+            """,
+            (machine_id, key_id, machine_id),
+        )
+        if cursor.rowcount != 1:
+            raise EnrollmentConsumedError("enrollment credential already consumed")
 
     def issue_machine(self, machine_id: str, machine_key: str) -> IssuedCredential:
         issued, salt, verifier = self._prepare(
