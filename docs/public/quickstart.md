@@ -15,17 +15,15 @@ pip install ctxd
 ctxd --version
 ```
 
-## 2. Enable local ctxfs
+## 2. Start and verify local ctxfs
 
 ```bash
-ctxd backend set ctxfs
-ctxd config get backend
+ctxd endpoint status
 ```
 
-This saves the backend selection and starts a local ctxfs process using the
-default Unix socket. If you explicitly configured an endpoint, the command
-checks that server instead of starting a local process. Connections through the
-default local Unix socket do not require an API key.
+This starts ctxfs at the default local Unix socket and checks its health. If you
+configured an endpoint, the command checks that server instead. The default
+Unix-socket workflow does not require an API key.
 
 ## 3. Optionally track a folder
 
@@ -49,13 +47,13 @@ synchronized.
 Verify both processes:
 
 ```bash
-ctxd backend status
+ctxd endpoint status
 ctxd tracker status
 ```
 
-Look for `Backend: ctxfs`, `ctxfs healthy: True`, and `tracker running: True`.
-The status commands only report current state; they do not start either
-process.
+Look for `ctxfs healthy: true` and `tracker running: True`. `ctxd tracker
+status` only reports tracker state. With the default endpoint, `ctxd endpoint
+status` ensures local ctxfs is running before checking its health.
 
 ## 5. Read from ctxfs
 

@@ -13,7 +13,7 @@ can use two components:
 
 ## Basic workflow
 
-1. **Install the `ctxd` CLI** and select the local `ctxfs` backend.
+1. **Install the `ctxd` CLI.**
 2. **Add a folder** with `ctxd folders add`. The local tracker indexes that
    folder, and nothing outside the folders you add is tracked.
 3. **Read through the ctxd CLI** with `ls`, `tree`, `glob`, `stat`, `read`,

@@ -22,7 +22,10 @@ from ctxfs.models import (
     DirectoryEntry,
     DocClass,
     Entry,
+    FolderState,
     GrepMatch,
+    Machine,
+    MachineState,
     MoveOperation,
     OperationKind,
     Provenance,
@@ -31,6 +34,7 @@ from ctxfs.models import (
     ReadResult,
     Submission,
     SubmissionState,
+    TrackedFolder,
     WriterStatusSummary,
 )
 from ctxfs.service import (
@@ -42,11 +46,17 @@ from ctxfs.service import (
     CtxfsWriteService,
     open_ctxfs_service,
 )
-from ctxfs.store import ContentHashMismatchError, CtxfsStore, PrefixAuthorizationError
+from ctxfs.store import (
+    CatalogConflictError,
+    ContentHashMismatchError,
+    CtxfsStore,
+    PrefixAuthorizationError,
+)
 
 __all__ = [
     "AuthorizationDecision",
     "Bounded",
+    "CatalogConflictError",
     "ContentHashMismatchError",
     "CredentialGrant",
     "CtxfsApplier",
@@ -66,8 +76,11 @@ __all__ = [
     "DirectoryEntry",
     "DocClass",
     "Entry",
+    "FolderState",
     "GrepMatch",
     "LocalSocketTrust",
+    "Machine",
+    "MachineState",
     "MoveOperation",
     "OperationKind",
     "PrefixAuthorizationError",
@@ -80,6 +93,7 @@ __all__ = [
     "Scope",
     "Submission",
     "SubmissionState",
+    "TrackedFolder",
     "WriterStatusSummary",
     "authorize",
     "local_socket_principal",

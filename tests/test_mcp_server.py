@@ -1,6 +1,9 @@
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import httpx
+
+from ctxd.ctxfs_client import CtxfsClient
 from ctxd.mcp_server import (
     PROTOCOL_VERSION,
     execute_client_tool,
@@ -48,6 +51,72 @@ def test_local_mcp_initializes_and_calls_bounded_tree() -> None:
 
     tree.assert_called_once_with("local-files/root", depth=2, limit=10)
     assert response["result"]["structuredContent"]["stopped_by"] == "limit"
+
+
+def test_local_mcp_grep_uses_real_client_files_facade(monkeypatch) -> None:
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/ctxfs/grep"
+        assert dict(request.url.params) == {
+            "pattern": "needle",
+            "prefix": "local-files/root",
+            "limit": "1",
+        }
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "path": "local-files/root/notes.txt",
+                        "line_number": 3,
+                        "line": "a needle in context",
+                    }
+                ],
+                "complete": False,
+                "stopped_by": "limit",
+            },
+        )
+
+    client = CtxfsClient(endpoint="http://ctxfs.test")
+    monkeypatch.setattr(
+        client._async_client,
+        "_build_client",
+        lambda: httpx.AsyncClient(
+            base_url="http://ctxfs.test",
+            transport=httpx.MockTransport(handle_request),
+        ),
+    )
+
+    response = handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "grep",
+                "arguments": {
+                    "pattern": "needle",
+                    "prefix": "local-files/root",
+                    "limit": 1,
+                },
+            },
+        },
+        lambda name, arguments: execute_client_tool(client, name, arguments),
+    )
+
+    assert response["result"]["structuredContent"] == {
+        "items": [
+            {
+                "path": "local-files/root/notes.txt",
+                "line_number": 3,
+                "line": "a needle in context",
+                "match_start": None,
+                "match_end": None,
+                "content_hash": None,
+            }
+        ],
+        "complete": False,
+        "stopped_by": "limit",
+    }
 
 
 def test_local_mcp_returns_tool_errors_without_terminating_server() -> None:

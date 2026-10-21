@@ -39,6 +39,45 @@ class DecisionState(str, Enum):
     TERMINAL_FAILURE = "terminal_failure"
 
 
+class MachineState(str, Enum):
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    OFFLINE = "offline"
+    DISABLED = "disabled"
+    UNKNOWN = "unknown"
+
+
+class FolderState(str, Enum):
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    MISSING = "missing"
+    DISABLED = "disabled"
+    UNKNOWN = "unknown"
+
+
+class Machine(_CtxfsModel):
+    machine_id: str = Field(min_length=1)
+    machine_key: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    description: str | None = None
+    state: MachineState
+    platform: str | None = Field(default=None, min_length=1)
+    ctxd_version: str | None = Field(default=None, min_length=1)
+    credential_key_id: str | None = Field(default=None, min_length=1)
+    registered_at: float = Field(gt=0)
+
+
+class TrackedFolder(_CtxfsModel):
+    folder_id: str = Field(min_length=1)
+    machine_id: str = Field(min_length=1)
+    folder_key: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    description: str | None = None
+    state: FolderState
+    local_registration_id: str = Field(min_length=1)
+    registered_at: float = Field(gt=0)
+
+
 class Provenance(_CtxfsModel):
     producer: str = Field(min_length=1)
     producer_version: str = Field(min_length=1)

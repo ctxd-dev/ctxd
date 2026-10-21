@@ -24,22 +24,21 @@ ctxd --version
 
 The package includes the CLI, tracker, and ctxfs.
 
-## Start in ctxfs mode
+## Start tracking
 
 ```bash
-ctxd backend set ctxfs
 ctxd tracker start
-ctxd backend status
+ctxd endpoint status
 ```
 
-With the default endpoint, selecting the backend starts ctxfs. `tracker start`
-launches the tracker as a detached process for the current user. Both commands
-check an explicitly configured endpoint without starting another server. For
+`tracker start` starts ctxfs at the default local endpoint and launches the
+tracker as a detached process for the current user. It checks an explicitly
+configured endpoint without starting another server. For
 example, configure and authenticate to a network server before starting:
 
 ```bash
 ctxd login --endpoint https://ctxfs.example.net:8443
-ctxd backend set ctxfs --endpoint https://ctxfs.example.net:8443
+ctxd endpoint set https://ctxfs.example.net:8443
 ctxd tracker start
 ```
 
@@ -84,12 +83,11 @@ one polling interval, plus processing time, to appear in ctxfs.
 
 ```bash
 ctxd tracker status
-ctxd backend status
+ctxd endpoint status
 ```
 
-A healthy setup reports `Backend: ctxfs`, the effective endpoint, `ctxfs
-healthy: True`, and a running tracker. For an external endpoint, ctxd reports
-that the server is not locally managed.
+A healthy setup reports the effective endpoint, `ctxfs healthy: true`, and a
+running tracker.
 
 ## Move a folder
 
@@ -126,8 +124,7 @@ directory separately only if you intend to delete all ctxd-managed local state.
 If ctxfs is unreachable or rejects authentication:
 
 ```bash
-ctxd config get backend
-ctxd backend status
+ctxd endpoint status
 ctxd tracker status
 ```
 
