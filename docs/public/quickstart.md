@@ -3,7 +3,7 @@ title: 'Quickstart'
 
 ---
 
-Start with local ctxfs, optionally track a folder, and read it through
+Start with ctxfs running locally, optionally track a folder, and read it through
 the CLI. See the [ctxfs guide](/docs/ctxfs) for a network deployment.
 
 ## 1. Install
@@ -15,7 +15,7 @@ pip install ctxd
 ctxd --version
 ```
 
-## 2. Verify local ctxfs
+## 2. Start and verify local ctxfs
 
 ```bash
 ctxd endpoint status
@@ -33,23 +33,27 @@ ctxd folders list
 ```
 
 Do this only when this machine should contribute content. The name `Documents`
-is also its CLI path alias. A server can instead run with an empty store or
-serve content submitted by other authorized tracker clients.
+is also its CLI path alias.
 
-## 4. Verify the service
+## 4. Start the tracker
+
+```bash
+ctxd tracker start
+```
+
+The tracker runs separately from ctxfs and keeps the folders you added
+synchronized.
+
+Verify both processes:
 
 ```bash
 ctxd endpoint status
 ctxd tracker status
 ```
 
-Look for `ctxfs healthy: true`.
-
-Start the separate folder-tracker process:
-
-```bash
-ctxd tracker start
-```
+Look for `ctxfs healthy: true` and `tracker running: True`. `ctxd tracker
+status` only reports tracker state. With the default endpoint, `ctxd endpoint
+status` ensures local ctxfs is running before checking its health.
 
 ## 5. Read from ctxfs
 

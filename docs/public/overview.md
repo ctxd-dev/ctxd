@@ -11,16 +11,12 @@ can use two components:
 2. The optional **local tracker** watches only the folders you choose and sends
    their content to ctxfs.
 
-Add a folder when this machine should contribute local content.
-
 ## Basic workflow
 
-1. **Install** the `ctxd` command. ctxfs is the only storage and retrieval service.
-2. **Optionally choose folders** with `ctxd folders add` when this machine should
-   contribute content. Nothing outside those folders is tracked.
-3. **Keep contributed folders current.** The tracker detects file changes and
-   updates ctxfs.
-4. **Read through the ctxd CLI** with `ls`, `tree`, `glob`, `stat`, `read`,
+1. **Install the `ctxd` CLI.**
+2. **Add a folder** with `ctxd folders add`. The local tracker indexes that
+   folder, and nothing outside the folders you add is tracked.
+3. **Read through the ctxd CLI** with `ls`, `tree`, `glob`, `stat`, `read`,
    `read-lines`, and `grep` operations. The CLI uses the configured local or
    network ctxfs endpoint.
 
@@ -30,13 +26,14 @@ Add a folder when this machine should contribute local content.
 | --- | --- | --- |
 | [Local tracker](/docs/local-tracker) | Watches selected folders and applies changes | Per-user background process |
 | [ctxfs](/docs/ctxfs) | Stores indexed content and exposes filesystem-shaped paths | `~/.ctxd/ctxfs` |
-| [CLI](/docs/cli) | Configures folders and reads ctxfs | `ctxd` |
+| [CLI](/docs/cli) | Configures ctxfs and tracked folders, and reads indexed content | `ctxd` |
 | [ctxfs API](/docs/api) | Provides REST and MCP access | Unix socket or HTTPS endpoint |
 
-The tracker and ctxfs server are separate processes. With the default managed
-local endpoint, starting the tracker ensures ctxfs is running. When configured
-to use an external endpoint, starting the tracker verifies that it can
-authenticate to that server instead of launching a local ctxfs process.
+The tracker and ctxfs server are separate processes. When `ctxd` manages ctxfs
+locally over its default Unix socket, starting the tracker ensures the local
+ctxfs process is running. When configured to use an external endpoint, starting
+the tracker verifies that it can authenticate to that server instead of
+launching a local ctxfs process.
 
 ## Authentication
 

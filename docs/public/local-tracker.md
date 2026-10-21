@@ -22,7 +22,7 @@ pip install ctxd
 ctxd --version
 ```
 
-The package includes the CLI, tracker, and ctxfs. ctxfs is not installed as a separate system service.
+The package includes the CLI, tracker, and ctxfs.
 
 ## Start tracking
 
@@ -43,11 +43,8 @@ ctxd tracker start
 ```
 
 The tracker uses a `submit` credential whose prefix grant covers the submitted
-ctxfs paths. Start the tracker again after a reboot; automatic login
-registration is not currently installed.
-
-The tracker can run with zero configured folders. Add folders only on machines
-that should contribute local content.
+ctxfs paths. The tracker does not start automatically when you sign in or
+restart the machine. Run `ctxd tracker start` after each reboot.
 
 ## Add folders
 
@@ -60,6 +57,27 @@ ctxd folders list
 Each folder name becomes a CLI path alias, such as `Documents/notes.md`. The
 underlying ctxfs prefix has a generated root ID, but ordinary CLI use does not
 require it.
+
+## What gets tracked
+
+The tracker indexes text files that meet all of these conditions:
+
+- The file is valid UTF-8 text.
+- Its size is at most 5,000,000 bytes.
+- Its filename does not start with `.`.
+- Its extension is one of: `.cfg`, `.css`, `.csv`, `.html`, `.ini`, `.json`,
+  `.log`, `.md`, `.py`, `.rst`, `.toml`, `.ts`, `.tsx`, `.txt`, `.yaml`, or
+  `.yml`.
+
+Other files are not added to ctxfs even though their parent folder is
+registered. In particular, ctxfs does not expose arbitrary binary files,
+extensionless files, files with unsupported extensions, or files larger than
+the size limit. The source folder remains authoritative: the tracker reads it
+and synchronizes changes to ctxfs without modifying the source files.
+
+The tracker polls registered folders every 10 seconds rather than subscribing
+to operating-system filesystem events. Consequently, a change may take up to
+one polling interval, plus processing time, to appear in ctxfs.
 
 ## Monitor
 
@@ -90,18 +108,6 @@ ctxd folders remove Documents
 ```
 
 This removes the tracked root from ctxd. It does not delete the source folder.
-
-## Upgrade
-
-Upgrade the package, then restart:
-
-```bash
-ctxd tracker stop
-pip install --upgrade ctxd
-ctxd tracker start
-```
-
-Configured folders and local ctxfs state are preserved.
 
 ## Uninstall
 
