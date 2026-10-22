@@ -1,5 +1,6 @@
 from contextlib import redirect_stdout
 from io import StringIO
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -129,6 +130,58 @@ def test_status_starts_default_local_ctxfs() -> None:
     start.assert_called_once_with()
     client.return_value.status.assert_called_once_with()
     assert "ctxfs healthy: true" in stdout.getvalue()
+
+
+def test_machine_register_uses_environment_token_without_printing_secrets() -> None:
+    stdout = StringIO()
+    status = SimpleNamespace(
+        machine_id="machine-1",
+        machine_key="workstation",
+        endpoint="https://ctxfs.example",
+        as_dict=lambda: {
+            "machine_id": "machine-1",
+            "machine_key": "workstation",
+            "endpoint": "https://ctxfs.example",
+        },
+    )
+    with patch.dict(
+        "os.environ", {"CTXD_CTXFS_ENROLLMENT_TOKEN": "enrollment-secret"}
+    ), patch("ctxd.cli.configure_machine"), patch(
+        "ctxd.cli.register_machine", return_value=(status, False)
+    ) as register, redirect_stdout(stdout):
+        assert (
+            main(
+                [
+                    "machine",
+                    "register",
+                    "--endpoint",
+                    "https://ctxfs.example",
+                    "--name",
+                    "Workstation",
+                ]
+            )
+            == 0
+        )
+    register.assert_called_once_with(
+        endpoint="https://ctxfs.example", enrollment_token="enrollment-secret"
+    )
+    assert "enrollment-secret" not in stdout.getvalue()
+
+
+def test_machine_status_json_is_local_only_and_secret_free() -> None:
+    stdout = StringIO()
+    status = Mock()
+    status.as_dict.return_value = {
+        "registration_state": "registered",
+        "machine_id": "machine-1",
+    }
+    with patch("ctxd.cli.machine_status", return_value=status) as local_status, patch(
+        "ctxd.cli.CtxfsClient"
+    ) as client, redirect_stdout(stdout):
+        assert main(["machine", "status", "--json"]) == 0
+    local_status.assert_called_once_with(endpoint=None)
+    client.assert_not_called()
+    assert json.loads(stdout.getvalue())["registration_state"] == "registered"
 
 
 def test_files_grep_uses_ctxfs_without_backend_selection() -> None:

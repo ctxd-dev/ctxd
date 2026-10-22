@@ -26,6 +26,12 @@ from ctxd.folders import (
 from ctxd.ctxfs_client import CtxfsClient
 from ctxd.local_ctxfs_service import ensure_started, serve as ctxfs_serve
 from ctxd.local_ctxfs_service import default_paths as default_ctxfs_paths
+from ctxd.machine_identity import (
+    configure_machine,
+    machine_status,
+    register_machine,
+    unchanged_description,
+)
 from ctxd.tracker_service import (
     start as tracker_start,
     status as tracker_status,
@@ -48,6 +54,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _handle_status(args)
         if args.command == "endpoint":
             return _handle_endpoint(args)
+        if args.command == "machine":
+            return _handle_machine(args)
         if args.command == "folders":
             return _handle_folders(args)
         if args.command == "tracker":
@@ -134,6 +142,31 @@ def _build_parser() -> argparse.ArgumentParser:
     endpoint_set = endpoint_subparsers.add_parser("set", help="Set the ctxfs endpoint.")
     endpoint_set.add_argument("url", help="HTTP(S) URL or unix:// socket.")
     endpoint_subparsers.add_parser("status", help="Show ctxfs endpoint health.")
+
+    machine_parser = subparsers.add_parser(
+        "machine", help="Configure and register this machine."
+    )
+    machine_subparsers = machine_parser.add_subparsers(
+        dest="machine_command", metavar="<machine-command>", required=True
+    )
+    machine_register = machine_subparsers.add_parser(
+        "register", help="Register this machine with ctxfs."
+    )
+    machine_register.add_argument("--endpoint")
+    machine_register.add_argument("--name")
+    _add_description_arguments(machine_register)
+    machine_register.add_argument("--json", action="store_true")
+    machine_configure = machine_subparsers.add_parser(
+        "configure", help="Edit this machine's local metadata."
+    )
+    machine_configure.add_argument("--name")
+    _add_description_arguments(machine_configure)
+    machine_configure.add_argument("--json", action="store_true")
+    machine_status_parser = machine_subparsers.add_parser(
+        "status", help="Show local machine registration state."
+    )
+    machine_status_parser.add_argument("--endpoint")
+    machine_status_parser.add_argument("--json", action="store_true")
 
     files_parser = subparsers.add_parser(
         "files",
@@ -278,6 +311,12 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _add_description_arguments(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--description")
+    group.add_argument("--clear-description", action="store_true")
+
+
 def _handle_server(args: argparse.Namespace) -> int:
     if args.server_command != "serve":
         raise ValueError(f"Unknown server command: {args.server_command}")
@@ -405,6 +444,90 @@ def _handle_endpoint(args: argparse.Namespace) -> int:
         args.endpoint = None
         return _handle_status(args)
     raise ValueError("Unsupported endpoint command.")
+
+
+def _handle_machine(args: argparse.Namespace) -> int:
+    if args.machine_command == "configure":
+        description = _description_argument(args)
+        identity = configure_machine(name=args.name, description=description)
+        status = machine_status()
+        payload = status.as_dict()
+        if args.json:
+            print(json.dumps(payload, sort_keys=True))
+        else:
+            print(f"machine name: {identity.name}")
+            print(f"machine description: {identity.description or ''}")
+            print(f"metadata sync: {status.metadata_sync}")
+        return 0
+
+    if args.machine_command == "status":
+        return _emit_machine_status(
+            machine_status(endpoint=args.endpoint), as_json=args.json
+        )
+
+    if args.machine_command == "register":
+        description = _description_argument(args)
+        if args.name is not None or description is not unchanged_description():
+            configure_machine(name=args.name, description=description)
+        endpoint = resolve_ctxfs_endpoint_details(url=args.endpoint).endpoint
+        enrollment_token = _resolve_enrollment_token(endpoint)
+        status, recovered = register_machine(
+            endpoint=endpoint, enrollment_token=enrollment_token
+        )
+        payload = {**status.as_dict(), "registration_result": "recovered" if recovered else "created"}
+        if args.json:
+            print(json.dumps(payload, sort_keys=True))
+        else:
+            print(f"machine registration: {payload['registration_result']}")
+            print(f"machine id: {status.machine_id}")
+            print(f"machine key: {status.machine_key}")
+            print(f"ctxfs endpoint: {status.endpoint}")
+        return 0
+    raise ValueError("Unsupported machine command.")
+
+
+def _description_argument(args: argparse.Namespace) -> str | None | object:
+    if args.clear_description:
+        return None
+    if args.description is not None:
+        return args.description
+    return unchanged_description()
+
+
+def _resolve_enrollment_token(endpoint: str) -> str | None:
+    if endpoint.startswith("unix://"):
+        return None
+    value = os.getenv("CTXD_CTXFS_ENROLLMENT_TOKEN")
+    if value and value.strip():
+        return value.strip()
+    if sys.stdin.isatty():
+        try:
+            value = getpass.getpass("ctxfs enrollment token: ")
+        except (EOFError, KeyboardInterrupt):
+            value = ""
+        if value and value.strip():
+            return value.strip()
+    raise ValueError(
+        "Missing ctxfs enrollment token. Set `CTXD_CTXFS_ENROLLMENT_TOKEN` "
+        "or run in an interactive terminal."
+    )
+
+
+def _emit_machine_status(status, *, as_json: bool) -> int:
+    payload = status.as_dict()
+    if as_json:
+        print(json.dumps(payload, sort_keys=True))
+    else:
+        print(f"machine registration: {status.registration_state}")
+        print(f"machine name: {status.name}")
+        print(f"machine description: {status.description or ''}")
+        print(f"local registration id: {status.local_registration_id}")
+        print(f"ctxfs endpoint: {status.endpoint}")
+        print(f"metadata sync: {status.metadata_sync}")
+        if status.machine_id is not None:
+            print(f"machine id: {status.machine_id}")
+            print(f"machine key: {status.machine_key}")
+    return 0
 
 
 def _resolve_ctxfs_login_api_key(endpoint: str) -> tuple[str | None, bool]:

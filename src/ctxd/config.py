@@ -42,6 +42,24 @@ def load_config() -> dict[str, Any]:
         return {}
 
 
+def load_config_strict() -> dict[str, Any]:
+    """Load config without treating corruption or I/O failures as absence."""
+    path = get_config_path()
+    try:
+        raw = path.read_text()
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        raise ValueError("Stored ctxd configuration could not be read.") from exc
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Stored ctxd configuration is invalid.") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Stored ctxd configuration is invalid.")
+    return payload
+
+
 def save_config(config: dict[str, Any]) -> Path:
     path = get_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)

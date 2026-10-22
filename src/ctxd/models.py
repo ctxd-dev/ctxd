@@ -2,6 +2,8 @@ from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ctxfs.models import Machine as CtxfsMachine
+
 T = TypeVar("T")
 
 
@@ -10,6 +12,15 @@ class CtxfsStatus(BaseModel):
 
     status: str | None = None
     endpoint: str | None = None
+
+
+class CtxfsMachineRegistration(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    machine: CtxfsMachine
+    key_id: str = Field(min_length=1)
+    token: str = Field(min_length=1)
+    recovered: bool = False
 
 
 class CtxfsEntry(BaseModel):
