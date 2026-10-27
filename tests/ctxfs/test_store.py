@@ -899,6 +899,70 @@ with open(path, encoding="utf-8") as handle:
     assert elapsed < 1.0
 
 
+def test_grep_limit_does_not_read_later_files(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", "")
+    store = CtxfsStore(tmp_path / "ctxfs")
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [
+            _put("local_files/root/a.md", "inode-a", "needle\n"),
+            _put("local_files/root/b.md", "inode-b", "needle\n"),
+        ],
+    )
+    original_hash_path = store_module._hash_path
+    hashed = []
+    first_path = store._tree_path("user-1", "local_files/root/a.md")
+    later_path = store._tree_path("user-1", "local_files/root/b.md")
+
+    def record_hash(path, deadline):
+        hashed.append(path)
+        if path == later_path:
+            raise AssertionError("grep read a file after satisfying the limit")
+        return original_hash_path(path, deadline)
+
+    monkeypatch.setattr(store_module, "_hash_path", record_hash)
+
+    page = store.grep("user-1", "needle", prefix="local_files/root", limit=1)
+
+    assert page.stopped_by == "limit"
+    assert hashed == [first_path]
+
+
+def test_grep_timeout_does_not_inventory_whole_catalog(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", "")
+    store = CtxfsStore(tmp_path / "ctxfs")
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [
+            _put(f"local_files/root/{index:03}.md", f"inode-{index}", "haystack\n")
+            for index in range(20)
+        ],
+    )
+    original_iter = store._iter_entries_under_prefix
+    inventoried = 0
+
+    def counted_entries(*args):
+        nonlocal inventoried
+        for entry in original_iter(*args):
+            inventoried += 1
+            yield entry
+
+    ticks = iter(index * 0.02 for index in range(1000))
+    monkeypatch.setattr(store, "_iter_entries_under_prefix", counted_entries)
+    monkeypatch.setattr(store_module.time, "monotonic", lambda: next(ticks))
+
+    page = store.grep(
+        "user-1", "needle", prefix="local_files/root", timeout_seconds=0.1
+    )
+
+    assert page.stopped_by == "timeout"
+    assert inventoried < 20
+
+
 def test_grep_pages_resume_without_gaps_or_duplicates(tmp_path):
     store = CtxfsStore(tmp_path / "ctxfs")
     store.register_prefix("user-1", "writer-1", "local_files/root")
