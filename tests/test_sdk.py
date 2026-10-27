@@ -5,7 +5,7 @@ import httpx
 import pytest
 
 import ctxd
-from ctxd import AsyncClient, Client, CtxfsClient
+from ctxd import AsyncClient, Client, CtxfsClient, CtxfsGrepPage
 from ctxd.config import (
     DEFAULT_CTXFS_SOCKET,
     CtxfsEndpointResolution,
@@ -17,6 +17,11 @@ from ctxd.config import (
     save_ctxfs_api_key,
 )
 from ctxd.exceptions import CtxdError, CtxdProtocolError
+
+
+def test_ctxfs_grep_page_is_part_of_public_api() -> None:
+    assert ctxd.CtxfsGrepPage is CtxfsGrepPage
+    assert "CtxfsGrepPage" in ctxd.__all__
 
 
 def test_removed_sdk_interfaces_are_absent() -> None:
