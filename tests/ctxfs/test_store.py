@@ -1279,6 +1279,32 @@ def test_grep_cursor_rejects_boolean_version(tmp_path):
         store.grep("user-1", "needle", cursor=cursor)
 
 
+def test_grep_cursor_rejects_file_start_without_disk_identity(tmp_path):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [
+            _put("local_files/root/a.md", "inode-a", "needle first\n"),
+            _put("local_files/root/b.md", "inode-b", "needle second\n"),
+        ],
+    )
+    payload = {
+        "v": 1,
+        "prefix": "local_files/root",
+        "pattern_hash": f"sha256:{hashlib.sha256(b'needle').hexdigest()}",
+        "path": "local_files/root/b.md",
+        "content_hash": None,
+        "mode": "file_start",
+        "anchor": None,
+    }
+    cursor = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+
+    with pytest.raises(ValueError, match="invalid ctxfs grep cursor"):
+        store.grep("user-1", "needle", prefix="local_files/root", cursor=cursor)
+
+
 @pytest.mark.parametrize(
     "timeout_seconds", [0, 0.09, 60.01, float("nan"), float("inf")]
 )

@@ -56,6 +56,8 @@ GREP_MAX_TIMEOUT_SECONDS = 60.0
 GREP_MAX_CURSOR_BYTES = 4096
 GREP_JSON_CHUNK_BYTES = 64 * 1024
 GREP_MAX_JSON_RECORD_BYTES = 1_000_000
+_GREP_CONTENT_HASH_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_GREP_PATH_IDENTITY_RE = re.compile(r"stat:\d+:\d+:\d+:-?\d+:-?\d+\Z")
 
 
 @dataclass
@@ -127,11 +129,19 @@ def _decode_grep_cursor(value: str) -> _GrepCursor:
         raise ValueError("invalid ctxfs grep cursor")
     if payload["mode"] not in {"after_match", "file_start", "search_start"}:
         raise ValueError("invalid ctxfs grep cursor")
+    content_hash = payload["content_hash"]
+    is_content_hash = isinstance(content_hash, str) and bool(
+        _GREP_CONTENT_HASH_RE.fullmatch(content_hash)
+    )
+    is_path_identity = isinstance(content_hash, str) and bool(
+        _GREP_PATH_IDENTITY_RE.fullmatch(content_hash)
+    )
     anchor_value = payload["anchor"]
     anchor: tuple[int, int, int] | None = None
     if payload["mode"] == "after_match":
         if (
-            payload["content_hash"] is None
+            not payload["path"]
+            or not is_content_hash
             or not isinstance(anchor_value, list)
             or len(anchor_value) != 3
             or any(
@@ -145,7 +155,11 @@ def _decode_grep_cursor(value: str) -> _GrepCursor:
     elif anchor_value is not None:
         raise ValueError("invalid ctxfs grep cursor")
     if payload["mode"] == "search_start" and (
-        payload["path"] or payload["content_hash"] is not None
+        payload["path"] or content_hash is not None
+    ):
+        raise ValueError("invalid ctxfs grep cursor")
+    if payload["mode"] == "file_start" and (
+        not payload["path"] or not (is_content_hash or is_path_identity)
     ):
         raise ValueError("invalid ctxfs grep cursor")
     try:
