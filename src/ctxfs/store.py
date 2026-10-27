@@ -119,7 +119,7 @@ def _decode_grep_cursor(value: str) -> _GrepCursor:
         payload["content_hash"], str
     ):
         raise ValueError("invalid ctxfs grep cursor")
-    if payload["mode"] not in {"after_match", "file_start"}:
+    if payload["mode"] not in {"after_match", "file_start", "search_start"}:
         raise ValueError("invalid ctxfs grep cursor")
     anchor_value = payload["anchor"]
     anchor: tuple[int, int, int] | None = None
@@ -138,8 +138,16 @@ def _decode_grep_cursor(value: str) -> _GrepCursor:
         anchor = (anchor_value[0], anchor_value[1], anchor_value[2])
     elif anchor_value is not None:
         raise ValueError("invalid ctxfs grep cursor")
+    if payload["mode"] == "search_start" and (
+        payload["path"] or payload["content_hash"] is not None
+    ):
+        raise ValueError("invalid ctxfs grep cursor")
     try:
-        path = _normalize_path(payload["path"])
+        path = (
+            ""
+            if payload["mode"] == "search_start"
+            else _normalize_path(payload["path"])
+        )
         prefix = _normalize_path(payload["prefix"]) if payload["prefix"] else ""
     except ValueError as exc:
         raise ValueError("invalid ctxfs grep cursor") from exc
@@ -1190,14 +1198,29 @@ class CtxfsStore:
         ):
             raise ValueError("timeout_seconds must be between 0.1 and 60")
         normalized_prefix = _normalize_path(prefix) if prefix else ""
-        self._validate_grep_pattern(pattern)
+        deadline = time.monotonic() + timeout_seconds
         pattern_hash = _sha256(pattern.encode())
         resume = _decode_grep_cursor(cursor) if cursor is not None else None
         if resume is not None and (
             resume.prefix != normalized_prefix or resume.pattern_hash != pattern_hash
         ):
             raise ValueError("ctxfs grep cursor does not match this search")
-        deadline = time.monotonic() + timeout_seconds
+        try:
+            self._validate_grep_pattern(pattern, deadline)
+        except TimeoutError:
+            return _grep_timeout_page(
+                [],
+                resume
+                or _GrepCursor(
+                    prefix=normalized_prefix,
+                    pattern_hash=pattern_hash,
+                    path="",
+                    content_hash=None,
+                    mode="search_start",
+                ),
+            )
+        if resume is not None and resume.mode == "search_start":
+            resume = None
         matches: list[GrepMatch] = []
         incomplete = False
         resume_pending = resume is not None
@@ -1211,6 +1234,7 @@ class CtxfsStore:
                         pattern_hash,
                         entry.path,
                         resume if resume_pending else None,
+                        entry.content_hash,
                     ),
                 )
             catalog_paths.add(entry.path)
@@ -1231,6 +1255,7 @@ class CtxfsStore:
                         pattern_hash,
                         entry.path,
                         resume if resume_pending else None,
+                        entry.content_hash,
                     ),
                 )
             if resume_pending:
@@ -1316,6 +1341,7 @@ class CtxfsStore:
                         pattern_hash,
                         logical_path,
                         resume if resume_pending else None,
+                        _path_identity(self._tree_path(user_id, logical_path)),
                     ),
                 )
             if logical_path in catalog_paths:
@@ -1323,6 +1349,14 @@ class CtxfsStore:
             incomplete = True
             if resume_pending and logical_path != resume.path:
                 continue
+            resume_identity = _path_identity(tree_path)
+            if (
+                resume_pending
+                and resume.content_hash is not None
+                and resume.content_hash.startswith("stat:")
+                and resume.content_hash != resume_identity
+            ):
+                raise ValueError("ctxfs grep cursor is stale")
             try:
                 content_hash = _hash_path(tree_path, deadline)
             except TimeoutError:
@@ -1333,14 +1367,18 @@ class CtxfsStore:
                         pattern_hash,
                         logical_path,
                         resume if resume_pending else None,
+                        resume_identity,
                     ),
                 )
             skip_through = None
             if resume_pending:
-                if (
-                    resume.content_hash is not None
-                    and content_hash != resume.content_hash
+                if resume.content_hash is not None and resume.content_hash.startswith(
+                    "stat:"
                 ):
+                    stale = _path_identity(tree_path) != resume_identity
+                else:
+                    stale = content_hash != resume.content_hash
+                if stale:
                     raise ValueError("ctxfs grep cursor is stale")
                 resume_pending = False
                 if resume.mode == "after_match":
@@ -1411,7 +1449,7 @@ class CtxfsStore:
             stopped_by=None if not incomplete else "catalog_mismatch",
         )
 
-    def _validate_grep_pattern(self, pattern: str) -> None:
+    def _validate_grep_pattern(self, pattern: str, deadline: float) -> None:
         if not _has_rg():
             try:
                 re.compile(pattern)
@@ -1419,12 +1457,21 @@ class CtxfsStore:
                 raise ValueError("invalid ctxfs grep pattern") from exc
             return
 
-        process = subprocess.run(
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError
+        process = subprocess.Popen(
             _rg_command(pattern, Path(os.devnull)),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             env=_rg_env(),
             text=True,
         )
+        try:
+            process.communicate(timeout=remaining)
+        except subprocess.TimeoutExpired as exc:
+            _terminate_process(process)
+            raise TimeoutError from exc
         if process.returncode == 2:
             raise ValueError("invalid ctxfs grep pattern")
         if process.returncode not in {0, 1}:
@@ -2670,6 +2717,7 @@ def _grep_unsearched_cursor(
     pattern_hash: str,
     path: str,
     resume: _GrepCursor | None,
+    content_hash: str,
 ) -> _GrepCursor:
     if resume is not None:
         return resume
@@ -2677,8 +2725,19 @@ def _grep_unsearched_cursor(
         prefix=prefix,
         pattern_hash=pattern_hash,
         path=path,
-        content_hash=None,
+        content_hash=content_hash,
         mode="file_start",
+    )
+
+
+def _path_identity(path: Path) -> str:
+    try:
+        stat = path.stat()
+    except OSError as exc:
+        raise ValueError("ctxfs grep cursor is stale") from exc
+    return (
+        f"stat:{stat.st_dev}:{stat.st_ino}:{stat.st_size}:"
+        f"{stat.st_mtime_ns}:{stat.st_ctime_ns}"
     )
 
 
