@@ -69,7 +69,7 @@ class _GrepPathResult:
 
 @dataclass(frozen=True)
 class _GrepCursor:
-    prefix: str
+    prefix_hash: str
     pattern_hash: str
     path: str
     content_hash: str | None
@@ -79,13 +79,13 @@ class _GrepCursor:
 
 def _encode_grep_cursor(cursor: _GrepCursor) -> str:
     payload = {
-        "v": 1,
-        "prefix": cursor.prefix,
-        "pattern_hash": cursor.pattern_hash,
-        "path": cursor.path,
-        "content_hash": cursor.content_hash,
-        "mode": cursor.mode,
-        "anchor": list(cursor.anchor) if cursor.anchor is not None else None,
+        "v": 2,
+        "p": cursor.prefix_hash,
+        "q": cursor.pattern_hash,
+        "r": cursor.path,
+        "h": cursor.content_hash,
+        "m": cursor.mode,
+        "a": list(cursor.anchor) if cursor.anchor is not None else None,
     }
     encoded = (
         base64.urlsafe_b64encode(
@@ -111,37 +111,38 @@ def _decode_grep_cursor(value: str) -> _GrepCursor:
         payload = json.loads(raw)
     except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("invalid ctxfs grep cursor") from exc
-    expected = {"v", "prefix", "pattern_hash", "path", "content_hash", "mode", "anchor"}
+    expected = {"v", "p", "q", "r", "h", "m", "a"}
     if (
         not isinstance(payload, dict)
         or set(payload) != expected
         or not isinstance(payload["v"], int)
         or isinstance(payload["v"], bool)
-        or payload["v"] != 1
+        or payload["v"] != 2
     ):
         raise ValueError("invalid ctxfs grep cursor")
-    string_fields = ("prefix", "pattern_hash", "path", "mode")
+    string_fields = ("p", "q", "r", "m")
     if any(not isinstance(payload[field], str) for field in string_fields):
         raise ValueError("invalid ctxfs grep cursor")
-    if payload["content_hash"] is not None and not isinstance(
-        payload["content_hash"], str
+    if payload["h"] is not None and not isinstance(payload["h"], str):
+        raise ValueError("invalid ctxfs grep cursor")
+    if (
+        not _GREP_CONTENT_HASH_RE.fullmatch(payload["p"])
+        or not _GREP_CONTENT_HASH_RE.fullmatch(payload["q"])
+        or payload["m"] not in {"after_match", "file_start", "search_start"}
     ):
         raise ValueError("invalid ctxfs grep cursor")
-    if payload["mode"] not in {"after_match", "file_start", "search_start"}:
-        raise ValueError("invalid ctxfs grep cursor")
-    content_hash = payload["content_hash"]
+    content_hash = payload["h"]
     is_content_hash = isinstance(content_hash, str) and bool(
         _GREP_CONTENT_HASH_RE.fullmatch(content_hash)
     )
     is_path_identity = isinstance(content_hash, str) and bool(
         _GREP_PATH_IDENTITY_RE.fullmatch(content_hash)
     )
-    anchor_value = payload["anchor"]
+    anchor_value = payload["a"]
     anchor: tuple[int, int, int] | None = None
-    if payload["mode"] == "after_match":
+    if payload["m"] == "after_match":
         if (
-            not payload["path"]
-            or not is_content_hash
+            not is_content_hash
             or not isinstance(anchor_value, list)
             or len(anchor_value) != 3
             or any(
@@ -154,31 +155,22 @@ def _decode_grep_cursor(value: str) -> _GrepCursor:
         anchor = (anchor_value[0], anchor_value[1], anchor_value[2])
     elif anchor_value is not None:
         raise ValueError("invalid ctxfs grep cursor")
-    if payload["mode"] == "search_start" and (
-        payload["path"] or content_hash is not None
-    ):
+    if payload["m"] == "search_start" and (payload["r"] or content_hash is not None):
         raise ValueError("invalid ctxfs grep cursor")
-    if payload["mode"] == "file_start" and (
-        not payload["path"] or not (is_content_hash or is_path_identity)
-    ):
+    if payload["m"] == "file_start" and not (is_content_hash or is_path_identity):
         raise ValueError("invalid ctxfs grep cursor")
     try:
-        path = (
-            ""
-            if payload["mode"] == "search_start"
-            else _normalize_path(payload["path"])
-        )
-        prefix = _normalize_path(payload["prefix"]) if payload["prefix"] else ""
+        path = _normalize_path(payload["r"]) if payload["r"] else ""
     except ValueError as exc:
         raise ValueError("invalid ctxfs grep cursor") from exc
-    if path != payload["path"] or prefix != payload["prefix"]:
+    if path != payload["r"]:
         raise ValueError("invalid ctxfs grep cursor")
     return _GrepCursor(
-        prefix=prefix,
-        pattern_hash=payload["pattern_hash"],
+        prefix_hash=payload["p"],
+        pattern_hash=payload["q"],
         path=path,
-        content_hash=payload["content_hash"],
-        mode=payload["mode"],
+        content_hash=payload["h"],
+        mode=payload["m"],
         anchor=anchor,
     )
 
@@ -1218,13 +1210,19 @@ class CtxfsStore:
         ):
             raise ValueError("timeout_seconds must be between 0.1 and 60")
         normalized_prefix = _normalize_path(prefix) if prefix else ""
+        prefix_hash = _sha256(normalized_prefix.encode())
         deadline = time.monotonic() + timeout_seconds
         pattern_hash = _sha256(pattern.encode())
         resume = _decode_grep_cursor(cursor) if cursor is not None else None
         if resume is not None and (
-            resume.prefix != normalized_prefix or resume.pattern_hash != pattern_hash
+            resume.prefix_hash != prefix_hash or resume.pattern_hash != pattern_hash
         ):
             raise ValueError("ctxfs grep cursor does not match this search")
+        resume_path = (
+            _grep_absolute_path(normalized_prefix, resume.path)
+            if resume is not None and resume.mode != "search_start"
+            else ""
+        )
         try:
             self._validate_grep_pattern(pattern, deadline)
         except TimeoutError:
@@ -1232,7 +1230,7 @@ class CtxfsStore:
                 [],
                 resume
                 or _GrepCursor(
-                    prefix=normalized_prefix,
+                    prefix_hash=prefix_hash,
                     pattern_hash=pattern_hash,
                     path="",
                     content_hash=None,
@@ -1258,7 +1256,7 @@ class CtxfsStore:
                     ),
                 )
             catalog_paths.add(entry.path)
-            if resume_pending and entry.path != resume.path:
+            if resume_pending and entry.path != resume_path:
                 continue
             tree_path = self._tree_path(user_id, entry.path)
             if not tree_path.exists():
@@ -1304,9 +1302,9 @@ class CtxfsStore:
                     stopped_by="timeout",
                     next_cursor=_encode_grep_cursor(
                         _GrepCursor(
-                            prefix=normalized_prefix,
+                            prefix_hash=prefix_hash,
                             pattern_hash=pattern_hash,
-                            path=entry.path,
+                            path=_grep_relative_path(normalized_prefix, entry.path),
                             content_hash=content_hash,
                             mode="after_match"
                             if skip_through is not None
@@ -1332,9 +1330,9 @@ class CtxfsStore:
                 if path_result.stopped_by == "timeout":
                     next_cursor = _encode_grep_cursor(
                         _GrepCursor(
-                            prefix=normalized_prefix,
+                            prefix_hash=prefix_hash,
                             pattern_hash=pattern_hash,
-                            path=entry.path,
+                            path=_grep_relative_path(normalized_prefix, entry.path),
                             content_hash=content_hash,
                             mode="after_match"
                             if skip_through is not None
@@ -1367,7 +1365,7 @@ class CtxfsStore:
             if logical_path in catalog_paths:
                 continue
             incomplete = True
-            if resume_pending and logical_path != resume.path:
+            if resume_pending and logical_path != resume_path:
                 continue
             resume_identity = _path_identity(tree_path)
             if (
@@ -1417,9 +1415,9 @@ class CtxfsStore:
                 return _grep_timeout_page(
                     matches,
                     _GrepCursor(
-                        prefix=normalized_prefix,
+                        prefix_hash=prefix_hash,
                         pattern_hash=pattern_hash,
-                        path=logical_path,
+                        path=_grep_relative_path(normalized_prefix, logical_path),
                         content_hash=content_hash,
                         mode="after_match"
                         if skip_through is not None
@@ -1445,9 +1443,9 @@ class CtxfsStore:
                 if path_result.stopped_by == "timeout":
                     next_cursor = _encode_grep_cursor(
                         _GrepCursor(
-                            prefix=normalized_prefix,
+                            prefix_hash=prefix_hash,
                             pattern_hash=pattern_hash,
-                            path=logical_path,
+                            path=_grep_relative_path(normalized_prefix, logical_path),
                             content_hash=content_hash,
                             mode="after_match"
                             if skip_through is not None
@@ -2742,9 +2740,9 @@ def _grep_unsearched_cursor(
     if resume is not None:
         return resume
     return _GrepCursor(
-        prefix=prefix,
+        prefix_hash=_sha256(prefix.encode()),
         pattern_hash=pattern_hash,
-        path=path,
+        path=_grep_relative_path(prefix, path),
         content_hash=content_hash,
         mode="file_start",
     )
@@ -2770,14 +2768,33 @@ def _sorted_walk_paths(directory: Path, directories: list[str], filenames: list[
 def _grep_match_cursor(prefix: str, pattern_hash: str, match: GrepMatch) -> str:
     return _encode_grep_cursor(
         _GrepCursor(
-            prefix=prefix,
+            prefix_hash=_sha256(prefix.encode()),
             pattern_hash=pattern_hash,
-            path=match.path,
+            path=_grep_relative_path(prefix, match.path),
             content_hash=match.content_hash,
             mode="after_match",
             anchor=(match.line_number, match.match_start, match.match_end),
         )
     )
+
+
+def _grep_relative_path(prefix: str, path: str) -> str:
+    if not prefix:
+        return path
+    if path == prefix:
+        return ""
+    marker = f"{prefix}/"
+    if not path.startswith(marker):
+        raise ValueError("ctxfs grep cursor path is outside its prefix")
+    return path[len(marker) :]
+
+
+def _grep_absolute_path(prefix: str, relative_path: str) -> str:
+    if not prefix:
+        return relative_path
+    if not relative_path:
+        return prefix
+    return f"{prefix}/{relative_path}"
 
 
 def _rg_env() -> dict[str, str]:

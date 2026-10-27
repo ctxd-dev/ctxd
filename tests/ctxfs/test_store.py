@@ -1121,9 +1121,7 @@ def test_grep_disk_inventory_timeout_resumes_disk_only_file(tmp_path, monkeypatc
     ticks = iter((0.0, 0.2))
     monkeypatch.setattr(store_module.time, "monotonic", lambda: next(ticks))
 
-    first = store.grep(
-        "user-1", "needle", prefix="local_files/root", timeout_seconds=0.1
-    )
+    first = store.grep("user-1", "needle", prefix="local_files/root", timeout_seconds=0.1)
 
     assert first.stopped_by == "timeout"
     assert first.next_cursor is not None
@@ -1144,7 +1142,9 @@ def test_grep_disk_inventory_timeout_cursor_rejects_mutation(tmp_path, monkeypat
     ticks = iter((0.0, 0.0, 0.2))
     monkeypatch.setattr(store_module.time, "monotonic", lambda: next(ticks))
 
-    first = store.grep("user-1", "needle", prefix="local_files/root", timeout_seconds=0.1)
+    first = store.grep(
+        "user-1", "needle", prefix="local_files/root", timeout_seconds=0.1
+    )
     disk_path.write_text("changed content\n")
     monkeypatch.setattr(store_module.time, "monotonic", real_monotonic)
 
@@ -1258,6 +1258,13 @@ def test_grep_cursor_rejects_changed_file_and_different_query(tmp_path):
             prefix="local_files/root",
             cursor=first.next_cursor,
         )
+    with pytest.raises(ValueError, match="does not match"):
+        store.grep(
+            "user-1",
+            "needle",
+            prefix="local_files",
+            cursor=first.next_cursor,
+        )
 
     store.submit(
         "user-1",
@@ -1275,6 +1282,39 @@ def test_grep_cursor_rejects_changed_file_and_different_query(tmp_path):
             prefix="local_files/root",
             cursor=first.next_cursor,
         )
+
+
+def test_grep_cursor_stays_bounded_for_long_prefix_and_resumes_gap_free(
+    tmp_path, monkeypatch
+):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    prefix = "/".join(f"segment-{index:02d}-{'x' * 180}" for index in range(16))
+    path = f"{prefix}/notes.md"
+    physical_root = tmp_path / "physical-tree"
+    monkeypatch.setattr(
+        store,
+        "_tree_path",
+        lambda user_id, logical_path: physical_root
+        / hashlib.sha256(logical_path.encode()).hexdigest(),
+    )
+    store.register_prefix("user-1", "writer-1", prefix)
+    store.submit(
+        "user-1",
+        "writer-1",
+        [_put(path, "inode-a", "needle one\nneedle two\n")],
+    )
+
+    first = store.grep("user-1", "needle", prefix=prefix, limit=1)
+
+    assert [match.line for match in first.items] == ["needle one"]
+    assert first.next_cursor is not None
+    assert len(first.next_cursor) <= store_module.GREP_MAX_CURSOR_BYTES
+
+    second = store.grep(
+        "user-1", "needle", prefix=prefix, limit=1, cursor=first.next_cursor
+    )
+
+    assert [match.line for match in second.items] == ["needle two"]
 
 
 @pytest.mark.parametrize("disk_only", [False, True])
@@ -1297,17 +1337,19 @@ def test_grep_cursor_rejects_absent_anchor_when_pattern_has_no_matches(
             "writer-1",
             [_put(path, "inode-a", "haystack\n")],
         )
-    content_hash = store.stat("user-1", path).content_hash if not disk_only else (
-        f"sha256:{hashlib.sha256(b'haystack\n').hexdigest()}"
+    content_hash = (
+        store.stat("user-1", path).content_hash
+        if not disk_only
+        else (f"sha256:{hashlib.sha256(b'haystack\n').hexdigest()}")
     )
     payload = {
-        "v": 1,
-        "prefix": "local_files/root",
-        "pattern_hash": f"sha256:{hashlib.sha256(b'needle').hexdigest()}",
-        "path": path,
-        "content_hash": content_hash,
-        "mode": "after_match",
-        "anchor": [1, 0, 6],
+        "v": 2,
+        "p": f"sha256:{hashlib.sha256(b'local_files/root').hexdigest()}",
+        "q": f"sha256:{hashlib.sha256(b'needle').hexdigest()}",
+        "r": "a.md",
+        "h": content_hash,
+        "m": "after_match",
+        "a": [1, 0, 6],
     }
     cursor = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
 
@@ -1318,12 +1360,12 @@ def test_grep_cursor_rejects_absent_anchor_when_pattern_has_no_matches(
 def test_grep_cursor_rejects_boolean_version(tmp_path):
     payload = {
         "v": True,
-        "prefix": "",
-        "pattern_hash": "unused",
-        "path": "",
-        "content_hash": None,
-        "mode": "search_start",
-        "anchor": None,
+        "p": f"sha256:{hashlib.sha256(b'').hexdigest()}",
+        "q": f"sha256:{hashlib.sha256(b'needle').hexdigest()}",
+        "r": "",
+        "h": None,
+        "m": "search_start",
+        "a": None,
     }
     cursor = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
     store = CtxfsStore(tmp_path / "ctxfs")
@@ -1344,13 +1386,13 @@ def test_grep_cursor_rejects_file_start_without_disk_identity(tmp_path):
         ],
     )
     payload = {
-        "v": 1,
-        "prefix": "local_files/root",
-        "pattern_hash": f"sha256:{hashlib.sha256(b'needle').hexdigest()}",
-        "path": "local_files/root/b.md",
-        "content_hash": None,
-        "mode": "file_start",
-        "anchor": None,
+        "v": 2,
+        "p": f"sha256:{hashlib.sha256(b'local_files/root').hexdigest()}",
+        "q": f"sha256:{hashlib.sha256(b'needle').hexdigest()}",
+        "r": "b.md",
+        "h": None,
+        "m": "file_start",
+        "a": None,
     }
     cursor = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
 
