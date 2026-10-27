@@ -42,7 +42,10 @@ require a scoped API key, and non-loopback serving requires HTTPS.
 
 ## What agents can do
 
-ctxfs is exact and path-oriented. Agents can inspect directories, match paths, read complete files or line ranges, and grep for exact text. Results report bounds and content identity so callers can tell when output was truncated or content changed.
+ctxfs is path-oriented. Agents can inspect directories, match paths, read
+complete files or line ranges, and grep with regular expressions. Results report
+bounds and content identity so callers can tell when output was truncated or
+content changed.
 
 ctxfs is not a semantic-search index and does not hide the file tree behind ranked chunks.
 

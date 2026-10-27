@@ -1610,7 +1610,7 @@ class CtxfsStore:
             _terminate_process(process)
             raise TimeoutError from exc
         if returncode == 1:
-            return _GrepPathResult(matches)
+            return _GrepPathResult(matches, anchor_found=anchor_found)
         if returncode == 2:
             raise RuntimeError("ctxfs grep failed")
         if returncode != 0:

@@ -1262,6 +1262,44 @@ def test_grep_cursor_rejects_changed_file_and_different_query(tmp_path):
         )
 
 
+@pytest.mark.parametrize("disk_only", [False, True])
+@pytest.mark.parametrize("use_fallback", [False, True])
+def test_grep_cursor_rejects_absent_anchor_when_pattern_has_no_matches(
+    tmp_path, monkeypatch, disk_only, use_fallback
+):
+    if use_fallback:
+        monkeypatch.setattr(store_module, "_has_rg", lambda: False)
+    store = CtxfsStore(tmp_path / "ctxfs")
+    path = "local_files/root/a.md"
+    if disk_only:
+        tree_path = store._tree_path("user-1", path)
+        tree_path.parent.mkdir(parents=True)
+        tree_path.write_text("haystack\n")
+    else:
+        store.register_prefix("user-1", "writer-1", "local_files/root")
+        store.submit(
+            "user-1",
+            "writer-1",
+            [_put(path, "inode-a", "haystack\n")],
+        )
+    content_hash = store.stat("user-1", path).content_hash if not disk_only else (
+        f"sha256:{hashlib.sha256(b'haystack\n').hexdigest()}"
+    )
+    payload = {
+        "v": 1,
+        "prefix": "local_files/root",
+        "pattern_hash": f"sha256:{hashlib.sha256(b'needle').hexdigest()}",
+        "path": path,
+        "content_hash": content_hash,
+        "mode": "after_match",
+        "anchor": [1, 0, 6],
+    }
+    cursor = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+
+    with pytest.raises(ValueError, match="cursor is stale"):
+        store.grep("user-1", "needle", prefix="local_files/root", cursor=cursor)
+
+
 def test_grep_cursor_rejects_boolean_version(tmp_path):
     payload = {
         "v": True,

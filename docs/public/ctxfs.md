@@ -126,9 +126,10 @@ does not have that local folder configuration uses the canonical
 | `glob` | Match paths with a glob pattern |
 | `read` | Read a complete file up to a byte bound |
 | `read_lines` | Read an inclusive line range |
-| `grep` | Match exact text beneath a prefix |
+| `grep` | Match a regular expression beneath a prefix |
 
-ctxfs deliberately exposes no shell and no arbitrary commands. `grep` is exact text matching, not semantic search.
+ctxfs deliberately exposes no shell and no arbitrary commands. `grep` uses
+regular-expression matching, not semantic search.
 
 ## Verify a tracked file
 

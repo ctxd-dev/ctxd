@@ -28,7 +28,7 @@ authentication and authorization policy.
 | Match paths | `GET /api/ctxfs/glob` | `pattern`, `prefix`, `limit` |
 | Read a file | `GET /api/ctxfs/read` | `path`, `max_bytes` |
 | Read line range | `GET /api/ctxfs/read-lines` | `path`, `start_line`, `end_line` |
-| Match exact text | `GET /api/ctxfs/grep` | `pattern`, `prefix`, `limit`, `timeout_seconds`, `cursor` |
+| Match a regular expression | `GET /api/ctxfs/grep` | `pattern`, `prefix`, `limit`, `timeout_seconds`, `cursor` |
 | Submit tracker changes | `POST /api/ctxfs/submissions` | Tracker-managed submission payload |
 | MCP JSON-RPC | `POST /mcp` | MCP `initialize`, `ping`, `tools/list`, `tools/call` |
 
