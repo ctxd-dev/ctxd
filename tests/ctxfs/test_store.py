@@ -1062,6 +1062,57 @@ def test_grep_pages_resume_without_gaps_or_duplicates(tmp_path):
     ]
 
 
+@pytest.mark.parametrize("disk_only", [False, True])
+def test_grep_timeout_while_seeking_resume_keeps_cursor(
+    tmp_path, monkeypatch, disk_only
+):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    paths = [f"local_files/root/{name}.md" for name in ("a", "b", "c")]
+    if disk_only:
+        for path in paths:
+            tree_path = store._tree_path("user-1", path)
+            tree_path.parent.mkdir(parents=True, exist_ok=True)
+            tree_path.write_text(f"needle {path}\n")
+    else:
+        store.register_prefix("user-1", "writer-1", "local_files/root")
+        store.submit(
+            "user-1",
+            "writer-1",
+            [
+                _put(path, f"inode-{index}", f"needle {path}\n")
+                for index, path in enumerate(paths)
+            ],
+        )
+
+    first = store.grep("user-1", "needle", prefix="local_files/root", limit=2)
+    assert [match.path for match in first.items] == paths[:2]
+    assert first.next_cursor is not None
+
+    real_monotonic = time.monotonic
+    ticks = iter((0.0, 0.2))
+    monkeypatch.setattr(store_module.time, "monotonic", lambda: next(ticks))
+    timed_out = store.grep(
+        "user-1",
+        "needle",
+        prefix="local_files/root",
+        timeout_seconds=0.1,
+        cursor=first.next_cursor,
+    )
+    assert timed_out.items == []
+    assert timed_out.stopped_by == "timeout"
+    assert timed_out.next_cursor == first.next_cursor
+
+    monkeypatch.setattr(store_module.time, "monotonic", real_monotonic)
+    resumed = store.grep(
+        "user-1",
+        "needle",
+        prefix="local_files/root",
+        cursor=timed_out.next_cursor,
+    )
+    found = [*first.items, *timed_out.items, *resumed.items]
+    assert [match.path for match in found] == paths
+
+
 def test_grep_cursor_rejects_changed_file_and_different_query(tmp_path):
     store = CtxfsStore(tmp_path / "ctxfs")
     store.register_prefix("user-1", "writer-1", "local_files/root")

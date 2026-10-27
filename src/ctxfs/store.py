@@ -1206,7 +1206,10 @@ class CtxfsStore:
                 return _grep_timeout_page(
                     matches,
                     _grep_unsearched_cursor(
-                        normalized_prefix, pattern_hash, entry.path, resume
+                        normalized_prefix,
+                        pattern_hash,
+                        entry.path,
+                        resume if resume_pending else None,
                     ),
                 )
             catalog_paths.add(entry.path)
@@ -1223,7 +1226,10 @@ class CtxfsStore:
                 return _grep_timeout_page(
                     matches,
                     _grep_unsearched_cursor(
-                        normalized_prefix, pattern_hash, entry.path, resume
+                        normalized_prefix,
+                        pattern_hash,
+                        entry.path,
+                        resume if resume_pending else None,
                     ),
                 )
             if resume_pending:
@@ -1305,7 +1311,10 @@ class CtxfsStore:
                 return _grep_timeout_page(
                     matches,
                     _grep_unsearched_cursor(
-                        normalized_prefix, pattern_hash, logical_path, resume
+                        normalized_prefix,
+                        pattern_hash,
+                        logical_path,
+                        resume if resume_pending else None,
                     ),
                 )
             if logical_path in catalog_paths:
@@ -1319,7 +1328,10 @@ class CtxfsStore:
                 return _grep_timeout_page(
                     matches,
                     _grep_unsearched_cursor(
-                        normalized_prefix, pattern_hash, logical_path, resume
+                        normalized_prefix,
+                        pattern_hash,
+                        logical_path,
+                        resume if resume_pending else None,
                     ),
                 )
             skip_through = None
@@ -2700,7 +2712,7 @@ def _grep_unsearched_cursor(
     path: str,
     resume: _GrepCursor | None,
 ) -> _GrepCursor:
-    if resume is not None and resume.path == path:
+    if resume is not None:
         return resume
     return _GrepCursor(
         prefix=prefix,
