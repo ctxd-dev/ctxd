@@ -18,6 +18,7 @@ from ctxd.models import (
 )
 
 _USE_CLIENT_API_KEY = object()
+_GREP_TRANSPORT_OVERHEAD_SECONDS = 5.0
 
 
 class AsyncCtxfsClient:
@@ -174,7 +175,14 @@ class AsyncCtxfsClient:
                 "cursor": cursor,
             }
         )
-        payload = await self._request("GET", "/api/ctxfs/grep", params=params)
+        request_timeout = None
+        if timeout_seconds is not None:
+            request_timeout = max(
+                self._timeout, timeout_seconds + _GREP_TRANSPORT_OVERHEAD_SECONDS
+            )
+        payload = await self._request(
+            "GET", "/api/ctxfs/grep", params=params, timeout=request_timeout
+        )
         return CtxfsGrepPage.model_validate(payload)
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -204,6 +212,7 @@ class AsyncCtxfsClient:
         json: dict[str, Any] | None = None,
         bearer_token: str | None | object = _USE_CLIENT_API_KEY,
         response_status: list[int] | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         if self._managed_local and not self._managed_local_ready:
             await asyncio.to_thread(_ensure_managed_local_started)
@@ -214,6 +223,8 @@ class AsyncCtxfsClient:
         if token and not self._endpoint.startswith("unix://"):
             headers["Authorization"] = f"Bearer {token}"
         request_kwargs: dict[str, Any] = {"params": params, "headers": headers}
+        if timeout is not None:
+            request_kwargs["timeout"] = timeout
         if json is not None:
             request_kwargs["json"] = json
         try:

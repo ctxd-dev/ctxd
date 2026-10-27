@@ -322,7 +322,9 @@ def test_synchronous_files_client_exposes_ctxfs_grep(
 ) -> None:
     client = Client(ctxfs_endpoint="http://127.0.0.1:8765")
 
-    async def mock_request(self, method, url, *, params=None, headers=None):
+    async def mock_request(
+        self, method, url, *, params=None, headers=None, timeout=None
+    ):
         assert method == "GET" and url == "/api/ctxfs/grep"
         assert params == {"pattern": "needle", "prefix": "root", "limit": 5}
         return httpx.Response(
@@ -342,7 +344,9 @@ def test_synchronous_files_client_forwards_grep_continuation_options(
 ) -> None:
     client = Client(ctxfs_endpoint="http://127.0.0.1:8765")
 
-    async def mock_request(self, method, url, *, params=None, headers=None):
+    async def mock_request(
+        self, method, url, *, params=None, headers=None, timeout=None
+    ):
         assert method == "GET" and url == "/api/ctxfs/grep"
         assert params == {
             "pattern": "needle",
@@ -351,6 +355,7 @@ def test_synchronous_files_client_forwards_grep_continuation_options(
             "timeout_seconds": 10.0,
             "cursor": "next-page",
         }
+        assert timeout == 30.0
         return httpx.Response(
             200,
             json={
@@ -370,6 +375,21 @@ def test_synchronous_files_client_forwards_grep_continuation_options(
         cursor="next-page",
     )
     assert result.next_cursor == "later-page"
+
+
+def test_synchronous_files_client_extends_transport_timeout_for_max_grep_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = Client(ctxfs_endpoint="http://127.0.0.1:8765")
+
+    async def mock_request(self, method, url, **kwargs):
+        assert method == "GET" and url == "/api/ctxfs/grep"
+        assert kwargs["timeout"] == 65.0
+        return httpx.Response(200, json={"items": [], "complete": True})
+
+    monkeypatch.setattr("httpx.AsyncClient.request", mock_request)
+    result = client.files.grep("needle", timeout_seconds=60.0)
+    assert result.complete is True
 
 
 def test_default_endpoint_is_local_ctxfs(

@@ -951,6 +951,7 @@ def test_grep_timeout_does_not_inventory_whole_catalog(tmp_path, monkeypatch):
             inventoried += 1
             yield entry
 
+    real_monotonic = time.monotonic
     ticks = iter(index * 0.02 for index in range(1000))
     monkeypatch.setattr(store, "_iter_entries_under_prefix", counted_entries)
     monkeypatch.setattr(store_module.time, "monotonic", lambda: next(ticks))
@@ -960,7 +961,69 @@ def test_grep_timeout_does_not_inventory_whole_catalog(tmp_path, monkeypatch):
     )
 
     assert page.stopped_by == "timeout"
+    assert page.next_cursor is not None
     assert inventoried < 20
+
+    monkeypatch.setattr(store_module.time, "monotonic", real_monotonic)
+    resumed = store.grep(
+        "user-1",
+        "needle",
+        prefix="local_files/root",
+        cursor=page.next_cursor,
+    )
+    assert resumed.complete is True
+
+
+def test_grep_hash_timeout_resumes_before_reading_file(tmp_path, monkeypatch):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [_put("local_files/root/a.md", "inode-a", "needle\n")],
+    )
+    original_hash_path = store_module._hash_path
+    attempts = 0
+
+    def timeout_once(path, deadline):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise TimeoutError
+        return original_hash_path(path, deadline)
+
+    monkeypatch.setattr(store_module, "_hash_path", timeout_once)
+    first = store.grep("user-1", "needle", prefix="local_files/root")
+
+    assert first.stopped_by == "timeout"
+    assert first.next_cursor is not None
+    resumed = store.grep(
+        "user-1", "needle", prefix="local_files/root", cursor=first.next_cursor
+    )
+    assert [match.line for match in resumed.items] == ["needle"]
+
+
+def test_grep_disk_inventory_timeout_resumes_disk_only_file(tmp_path, monkeypatch):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    disk_path = store._tree_path("user-1", "local_files/root/a.md")
+    disk_path.parent.mkdir(parents=True)
+    disk_path.write_text("needle\n")
+    real_monotonic = time.monotonic
+    ticks = iter((0.0, 0.2))
+    monkeypatch.setattr(store_module.time, "monotonic", lambda: next(ticks))
+
+    first = store.grep(
+        "user-1", "needle", prefix="local_files/root", timeout_seconds=0.1
+    )
+
+    assert first.stopped_by == "timeout"
+    assert first.next_cursor is not None
+    monkeypatch.setattr(store_module.time, "monotonic", real_monotonic)
+    resumed = store.grep(
+        "user-1", "needle", prefix="local_files/root", cursor=first.next_cursor
+    )
+    assert [match.line for match in resumed.items] == ["needle"]
+    assert resumed.stopped_by == "catalog_mismatch"
 
 
 def test_grep_pages_resume_without_gaps_or_duplicates(tmp_path):
