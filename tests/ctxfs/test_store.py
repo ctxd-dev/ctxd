@@ -789,12 +789,46 @@ def test_grep_pathological_regex_does_not_backtrack_indefinitely(tmp_path, monke
     )
 
     started = time.monotonic()
-    matches = store.grep("user-1", "(a+)+$", prefix="local_files/root")
+    matches = store.grep(
+        "user-1",
+        "(a+)+$",
+        prefix="local_files/root",
+        timeout_seconds=0.1,
+    )
     elapsed = time.monotonic() - started
 
     assert matches.items == []
     assert matches.complete is False
     assert matches.stopped_by == "timeout"
+    assert elapsed < 1.0
+
+
+def test_grep_fallback_bounds_pathological_alternation_by_deadline(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("PATH", "")
+    store = CtxfsStore(tmp_path / "ctxfs")
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+    path = "local_files/root/notes.md"
+    store.submit(
+        "user-1",
+        "writer-1",
+        [_put(path, "inode-1", f"{'a' * 32}!\n")],
+    )
+
+    started = time.monotonic()
+    page = store.grep(
+        "user-1",
+        "(a|aa)+$",
+        prefix="local_files/root",
+        timeout_seconds=0.1,
+    )
+    elapsed = time.monotonic() - started
+
+    assert page.items == []
+    assert page.complete is False
+    assert page.stopped_by == "timeout"
+    assert page.next_cursor is not None
     assert elapsed < 1.0
 
 

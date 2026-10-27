@@ -12,6 +12,7 @@ import selectors
 import shutil
 import sqlite3
 import subprocess
+import sys
 import time
 import unicodedata
 import uuid
@@ -1443,20 +1444,15 @@ class CtxfsStore:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError
-        if not _has_rg():
-            return _python_grep_tree_path(
-                pattern,
-                tree_path,
-                logical_path,
-                content_hash,
-                match_limit,
-                deadline,
-                skip_through=skip_through,
-            )
-
+        use_rg = _has_rg()
+        command = (
+            _rg_command(pattern, tree_path)
+            if use_rg
+            else _python_grep_command(pattern, tree_path)
+        )
         process = subprocess.Popen(
-            _rg_command(pattern, tree_path),
-            env=_rg_env(),
+            command,
+            env=_rg_env() if use_rg else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         )
@@ -2635,51 +2631,14 @@ def _rg_command(pattern: str, path: Path) -> list[str]:
     ]
 
 
+def _python_grep_command(pattern: str, path: Path) -> list[str]:
+    encoded_pattern = base64.urlsafe_b64encode(pattern.encode("utf-8")).decode("ascii")
+    worker = Path(__file__).with_name("_grep_worker.py")
+    return [sys.executable, "-S", str(worker), encoded_pattern, str(path)]
+
+
 def _has_rg() -> bool:
     return shutil.which("rg", path=os.environ.get("PATH", "")) is not None
-
-
-def _python_grep_tree_path(
-    pattern: str,
-    tree_path: Path,
-    logical_path: str,
-    content_hash: str,
-    match_limit: int,
-    deadline: float,
-    *,
-    skip_through: tuple[int, int, int] | None = None,
-) -> _GrepPathResult:
-    if _may_backtrack_pathologically(pattern):
-        return _GrepPathResult([], stopped_by="timeout")
-
-    compiled = re.compile(pattern)
-    matches: list[GrepMatch] = []
-    anchor_found = skip_through is None
-    with tree_path.open("rb") as handle:
-        for line_number, raw_line in enumerate(handle, 1):
-            if time.monotonic() >= deadline:
-                raise TimeoutError
-            line = raw_line.rstrip(b"\r\n").decode("utf-8", "replace")
-            match = compiled.search(line)
-            if match is None:
-                continue
-            grep_match = GrepMatch(
-                path=logical_path,
-                line_number=line_number,
-                line=line,
-                match_start=match.start(),
-                match_end=match.end(),
-                content_hash=content_hash,
-            )
-            position = (line_number, match.start(), match.end())
-            if not anchor_found:
-                if position == skip_through:
-                    anchor_found = True
-                continue
-            matches.append(grep_match)
-            if len(matches) >= match_limit:
-                return _GrepPathResult(matches, anchor_found=anchor_found)
-    return _GrepPathResult(matches, anchor_found=anchor_found)
 
 
 def _hash_path(path: Path, deadline: float) -> str:
@@ -2740,10 +2699,6 @@ def _grep_match_cursor(prefix: str, pattern_hash: str, match: GrepMatch) -> str:
             anchor=(match.line_number, match.match_start, match.match_end),
         )
     )
-
-
-def _may_backtrack_pathologically(pattern: str) -> bool:
-    return re.search(r"\([^)]*[+*][^)]*\)[+*{]", pattern) is not None
 
 
 def _rg_env() -> dict[str, str]:
