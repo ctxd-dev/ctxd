@@ -918,16 +918,30 @@ def test_grep_returns_limit_without_waiting_for_rg_eof(tmp_path, monkeypatch):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     fake_rg = fake_bin / "rg"
+    termination_marker = tmp_path / "rg-termination"
     fake_rg.write_text(
         """#!/usr/bin/env python3
 import json
 import os
+import signal
 import sys
 import time
 
 path = sys.argv[-1]
 if os.path.basename(path) == "null":
     raise SystemExit(1)
+
+marker = __TERMINATION_MARKER__
+line_number = 0
+
+
+def record_termination(signum, frame):
+    with open(marker, "w", encoding="utf-8") as handle:
+        handle.write(f"terminated:{line_number}")
+    raise SystemExit(128 + signum)
+
+
+signal.signal(signal.SIGTERM, record_termination)
 
 with open(path, encoding="utf-8") as handle:
     for line_number, line in enumerate(handle, start=1):
@@ -943,7 +957,10 @@ with open(path, encoding="utf-8") as handle:
         sys.stdout.flush()
         if line_number == 3:
             time.sleep(5)
-""",
+
+with open(marker, "w", encoding="utf-8") as handle:
+    handle.write("eof")
+""".replace("__TERMINATION_MARKER__", repr(str(termination_marker))),
         encoding="utf-8",
     )
     fake_rg.chmod(0o755)
@@ -966,14 +983,12 @@ with open(path, encoding="utf-8") as handle:
         ],
     )
 
-    started = time.monotonic()
     matches = store.grep("user-1", ".", prefix="local_files/root", limit=3)
-    elapsed = time.monotonic() - started
 
     assert matches.complete is False
     assert matches.stopped_by == "limit"
     assert [match.line_number for match in matches.items] == [1, 2, 3]
-    assert elapsed < 1.0
+    assert termination_marker.read_text(encoding="utf-8") == "terminated:3"
 
 
 def test_grep_limit_does_not_read_later_files(tmp_path, monkeypatch):
