@@ -175,17 +175,20 @@ class AsyncCtxfsClient:
                 "cursor": cursor,
             }
         )
-        request_timeout = None
-        if timeout_seconds is not None:
-            request_timeout = max(
-                self._timeout, timeout_seconds + _GREP_TRANSPORT_OVERHEAD_SECONDS
-            )
         payload = await self._request(
-            "GET", "/api/ctxfs/grep", params=params, timeout=request_timeout
+            "GET",
+            "/api/ctxfs/grep",
+            params=params,
+            timeout=self._grep_request_timeout(timeout_seconds),
         )
         return CtxfsGrepPage.model_validate(payload)
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        request_timeout = None
+        if name == "grep":
+            request_timeout = self._grep_request_timeout(
+                arguments.get("timeout_seconds")
+            )
         payload = await self._request(
             "POST",
             "/mcp",
@@ -195,6 +198,7 @@ class AsyncCtxfsClient:
                 "params": {"name": name, "arguments": arguments},
                 "id": 1,
             },
+            timeout=request_timeout,
         )
         if "error" in payload:
             raise CtxdProtocolError(f"ctxfs MCP request failed: {payload['error']}")
@@ -202,6 +206,13 @@ class AsyncCtxfsClient:
         if not isinstance(result, dict):
             raise CtxdProtocolError("ctxfs MCP response did not include a result")
         return result
+
+    def _grep_request_timeout(self, timeout_seconds: float | None) -> float | None:
+        if timeout_seconds is None:
+            return None
+        return max(
+            self._timeout, timeout_seconds + _GREP_TRANSPORT_OVERHEAD_SECONDS
+        )
 
     async def _request(
         self,

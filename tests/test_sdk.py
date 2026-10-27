@@ -290,6 +290,31 @@ def test_ctxfs_http_mcp_uses_endpoint_bearer(monkeypatch: pytest.MonkeyPatch) ->
     assert client.call_tool("tree", {"prefix": "Docs"}) == {"items": []}
 
 
+def test_ctxfs_http_mcp_extends_transport_timeout_for_max_grep_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = Client(ctxfs_endpoint="https://ctxfs.example")
+
+    async def mock_request(self, method, url, **kwargs):
+        del self
+        assert method == "POST"
+        assert url == "/mcp"
+        assert kwargs["timeout"] == 65.0
+        assert kwargs["json"]["params"] == {
+            "name": "grep",
+            "arguments": {"pattern": "needle", "timeout_seconds": 60.0},
+        }
+        return httpx.Response(
+            200,
+            json={"jsonrpc": "2.0", "id": 1, "result": {"items": []}},
+        )
+
+    monkeypatch.setattr("httpx.AsyncClient.request", mock_request)
+    assert client.call_tool(
+        "grep", {"pattern": "needle", "timeout_seconds": 60.0}
+    ) == {"items": []}
+
+
 def test_ctxfs_authentication_validation_distinguishes_forbidden_from_unauthorized(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
