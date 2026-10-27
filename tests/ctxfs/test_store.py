@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import hashlib
+import json
 import os
 import threading
 import time
@@ -1258,6 +1260,23 @@ def test_grep_cursor_rejects_changed_file_and_different_query(tmp_path):
             prefix="local_files/root",
             cursor=first.next_cursor,
         )
+
+
+def test_grep_cursor_rejects_boolean_version(tmp_path):
+    payload = {
+        "v": True,
+        "prefix": "",
+        "pattern_hash": "unused",
+        "path": "",
+        "content_hash": None,
+        "mode": "search_start",
+        "anchor": None,
+    }
+    cursor = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+    store = CtxfsStore(tmp_path / "ctxfs")
+
+    with pytest.raises(ValueError, match="invalid ctxfs grep cursor"):
+        store.grep("user-1", "needle", cursor=cursor)
 
 
 @pytest.mark.parametrize(

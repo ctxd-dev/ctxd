@@ -110,7 +110,13 @@ def _decode_grep_cursor(value: str) -> _GrepCursor:
     except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("invalid ctxfs grep cursor") from exc
     expected = {"v", "prefix", "pattern_hash", "path", "content_hash", "mode", "anchor"}
-    if not isinstance(payload, dict) or set(payload) != expected or payload["v"] != 1:
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != expected
+        or not isinstance(payload["v"], int)
+        or isinstance(payload["v"], bool)
+        or payload["v"] != 1
+    ):
         raise ValueError("invalid ctxfs grep cursor")
     string_fields = ("prefix", "pattern_hash", "path", "mode")
     if any(not isinstance(payload[field], str) for field in string_fields):
