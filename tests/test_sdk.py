@@ -337,6 +337,41 @@ def test_synchronous_files_client_exposes_ctxfs_grep(
     assert client.files.grep("needle", prefix="root", limit=5).items[0].line == "needle"
 
 
+def test_synchronous_files_client_forwards_grep_continuation_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = Client(ctxfs_endpoint="http://127.0.0.1:8765")
+
+    async def mock_request(self, method, url, *, params=None, headers=None):
+        assert method == "GET" and url == "/api/ctxfs/grep"
+        assert params == {
+            "pattern": "needle",
+            "prefix": "root",
+            "limit": 5,
+            "timeout_seconds": 10.0,
+            "cursor": "next-page",
+        }
+        return httpx.Response(
+            200,
+            json={
+                "items": [],
+                "complete": False,
+                "stopped_by": "timeout",
+                "next_cursor": "later-page",
+            },
+        )
+
+    monkeypatch.setattr("httpx.AsyncClient.request", mock_request)
+    result = client.files.grep(
+        "needle",
+        prefix="root",
+        limit=5,
+        timeout_seconds=10.0,
+        cursor="next-page",
+    )
+    assert result.next_cursor == "later-page"
+
+
 def test_default_endpoint_is_local_ctxfs(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

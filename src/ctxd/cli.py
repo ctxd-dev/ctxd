@@ -199,6 +199,8 @@ def _build_parser() -> argparse.ArgumentParser:
     files_grep_parser.add_argument("pattern")
     files_grep_parser.add_argument("--prefix", default="")
     files_grep_parser.add_argument("--limit", type=int)
+    files_grep_parser.add_argument("--timeout-seconds", type=float)
+    files_grep_parser.add_argument("--cursor")
 
     files_stat_parser = files_subparsers.add_parser("stat", help="Show path metadata.")
     files_stat_parser.add_argument("path")
@@ -474,7 +476,10 @@ def _handle_machine(args: argparse.Namespace) -> int:
         status, recovered = register_machine(
             endpoint=endpoint, enrollment_token=enrollment_token
         )
-        payload = {**status.as_dict(), "registration_result": "recovered" if recovered else "created"}
+        payload = {
+            **status.as_dict(),
+            "registration_result": "recovered" if recovered else "created",
+        }
         if args.json:
             print(json.dumps(payload, sort_keys=True))
         else:
@@ -621,6 +626,8 @@ def _handle_files(args: argparse.Namespace, client: Client) -> int:
             args.pattern,
             prefix=try_resolve_named_path(args.prefix) if args.prefix else "",
             limit=args.limit,
+            timeout_seconds=args.timeout_seconds,
+            cursor=args.cursor,
         )
         return _emit_json_model(result)
     if args.files_command == "stat":

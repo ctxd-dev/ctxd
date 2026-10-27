@@ -12,7 +12,7 @@ from ctxfs.models import (
     DeletionResult,
     DirectoryEntry,
     Entry,
-    GrepMatch,
+    GrepPage,
     OperationKind,
     ReadLinesResult,
     ReadResult,
@@ -153,8 +153,17 @@ class CtxfsReadService:
         *,
         prefix: str = "",
         limit: int = 1000,
-    ) -> Bounded[GrepMatch]:
-        return self._store.grep(user_id, pattern, prefix=prefix, limit=limit)
+        timeout_seconds: float = 2.0,
+        cursor: str | None = None,
+    ) -> GrepPage:
+        return self._store.grep(
+            user_id,
+            pattern,
+            prefix=prefix,
+            limit=limit,
+            timeout_seconds=timeout_seconds,
+            cursor=cursor,
+        )
 
 
 class CtxfsWriteService:

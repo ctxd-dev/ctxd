@@ -145,6 +145,11 @@ See the [ctxfs API reference](/docs/api) for every endpoint and parameter.
 
 Listing and matching operations accept a `limit`. Read operations accept byte or line bounds. Responses include completeness information; callers must not treat a truncated response as exhaustive.
 
+Grep also accepts a per-request `timeout_seconds` from 0.1 to 60 seconds and
+defaults to 2 seconds. An incomplete limit or timeout response includes an
+opaque `next_cursor`; repeat the same grep with that value as `cursor` to
+continue. A cursor is rejected if its resume file changed.
+
 File reads also include content identity information. An agent can use it to detect whether a cited file changed between reads.
 
 ## MCP

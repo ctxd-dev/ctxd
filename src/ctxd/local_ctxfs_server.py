@@ -18,7 +18,7 @@ from ctxfs import (
     DeleteOperation,
     DirectoryEntry,
     Entry,
-    GrepMatch,
+    GrepPage,
     LocalSocketTrust,
     Machine,
     MachineCredentialCoordinator,
@@ -409,14 +409,16 @@ def create_ctxfs_app(
             ),
         )
 
-    @app.get("/api/ctxfs/grep", response_model=Bounded[GrepMatch])
+    @app.get("/api/ctxfs/grep", response_model=GrepPage)
     def grep_ctxfs_paths(
         pattern: str = Query(..., min_length=1),
         prefix: str = "",
         _principal: Principal = Depends(require(Scope.READ)),
         _identity_guard: None = Depends(_reject_user_id_query),
         limit: int = Query(1000, ge=1, le=5000),
-    ) -> Bounded[GrepMatch]:
+        timeout_seconds: float = Query(2.0, ge=0.1, le=60.0, allow_inf_nan=False),
+        cursor: str | None = Query(default=None, min_length=1, max_length=4096),
+    ) -> GrepPage:
         try:
             return _with_store(
                 root,
@@ -426,6 +428,8 @@ def create_ctxfs_app(
                     pattern,
                     prefix=prefix,
                     limit=limit,
+                    timeout_seconds=timeout_seconds,
+                    cursor=cursor,
                 ),
             )
         except RuntimeError as exc:
@@ -572,6 +576,8 @@ def _execute_ctxfs_tool(
                 arguments["pattern"],
                 prefix=arguments.get("prefix", ""),
                 limit=arguments.get("limit", 1000),
+                timeout_seconds=arguments.get("timeout_seconds", 2.0),
+                cursor=arguments.get("cursor"),
             )
         raise ValueError(f"Unknown ctxfs tool: {name}")
 

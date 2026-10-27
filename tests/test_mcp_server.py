@@ -16,11 +16,24 @@ def test_local_mcp_lists_all_ctxfs_tools_without_connection_arguments() -> None:
     tools = tool_descriptions()
 
     assert [tool["name"] for tool in tools] == [
-        "ls", "tree", "glob", "stat", "read", "read_lines", "grep"
+        "ls",
+        "tree",
+        "glob",
+        "stat",
+        "read",
+        "read_lines",
+        "grep",
     ]
     for tool in tools:
         properties = tool["inputSchema"]["properties"]
         assert not {"endpoint", "root", "user_id"} & properties.keys()
+    grep = next(tool for tool in tools if tool["name"] == "grep")
+    assert grep["inputSchema"]["properties"]["timeout_seconds"] == {
+        "type": "number",
+        "minimum": 0.1,
+        "maximum": 60.0,
+    }
+    assert "cursor" in grep["inputSchema"]["properties"]
 
 
 def test_local_mcp_initializes_and_calls_bounded_tree() -> None:
@@ -31,7 +44,9 @@ def test_local_mcp_initializes_and_calls_bounded_tree() -> None:
 
     result = SimpleNamespace(
         model_dump=lambda **kwargs: {
-            "items": [], "complete": False, "stopped_by": "limit"
+            "items": [],
+            "complete": False,
+            "stopped_by": "limit",
         }
     )
     tree = Mock(return_value=result)
@@ -116,11 +131,14 @@ def test_local_mcp_grep_uses_real_client_files_facade(monkeypatch) -> None:
         ],
         "complete": False,
         "stopped_by": "limit",
+        "next_cursor": None,
     }
 
 
 def test_local_mcp_returns_tool_errors_without_terminating_server() -> None:
-    client = SimpleNamespace(files=SimpleNamespace(stat=Mock(side_effect=ValueError("missing"))))
+    client = SimpleNamespace(
+        files=SimpleNamespace(stat=Mock(side_effect=ValueError("missing")))
+    )
     response = handle_message(
         {
             "jsonrpc": "2.0",

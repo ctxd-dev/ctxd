@@ -95,12 +95,22 @@ class FilesClient:
             )
         )
 
-    def grep(self, pattern: str, *, prefix: str = "", limit: int | None = None):
+    def grep(
+        self,
+        pattern: str,
+        *,
+        prefix: str = "",
+        limit: int | None = None,
+        timeout_seconds: float | None = None,
+        cursor: str | None = None,
+    ):
         return self._client._run(
             self._client._async_client.files.grep(
                 pattern,
                 prefix=prefix,
                 limit=limit,
+                timeout_seconds=timeout_seconds,
+                cursor=cursor,
             )
         )
 

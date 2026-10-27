@@ -899,6 +899,123 @@ with open(path, encoding="utf-8") as handle:
     assert elapsed < 1.0
 
 
+def test_grep_pages_resume_without_gaps_or_duplicates(tmp_path):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [
+            _put("local_files/root/a.md", "inode-a", "needle one\nneedle two\n"),
+            _put("local_files/root/b.md", "inode-b", "needle three\n"),
+        ],
+    )
+
+    cursor = None
+    found = []
+    while True:
+        page = store.grep(
+            "user-1",
+            "needle",
+            prefix="local_files/root",
+            limit=1,
+            cursor=cursor,
+        )
+        found.extend((match.path, match.line_number) for match in page.items)
+        if page.complete:
+            break
+        assert page.stopped_by == "limit"
+        assert page.next_cursor is not None
+        cursor = page.next_cursor
+
+    assert found == [
+        ("local_files/root/a.md", 1),
+        ("local_files/root/a.md", 2),
+        ("local_files/root/b.md", 1),
+    ]
+
+
+def test_grep_cursor_rejects_changed_file_and_different_query(tmp_path):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+    path = "local_files/root/a.md"
+    store.submit(
+        "user-1",
+        "writer-1",
+        [_put(path, "inode-a", "needle one\nneedle two\n")],
+    )
+    first = store.grep("user-1", "needle", prefix="local_files/root", limit=1)
+    assert first.next_cursor is not None
+
+    with pytest.raises(ValueError, match="does not match"):
+        store.grep(
+            "user-1",
+            "different",
+            prefix="local_files/root",
+            cursor=first.next_cursor,
+        )
+
+    store.submit(
+        "user-1",
+        "writer-1",
+        [
+            _put(path, "inode-a", "needle changed\n").model_copy(
+                update={"source_version": "v2"}
+            )
+        ],
+    )
+    with pytest.raises(ValueError, match="stale"):
+        store.grep(
+            "user-1",
+            "needle",
+            prefix="local_files/root",
+            cursor=first.next_cursor,
+        )
+
+
+@pytest.mark.parametrize(
+    "timeout_seconds", [0, 0.09, 60.01, float("nan"), float("inf")]
+)
+def test_grep_rejects_invalid_timeout(tmp_path, timeout_seconds):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    with pytest.raises(ValueError, match="timeout_seconds"):
+        store.grep("user-1", "needle", timeout_seconds=timeout_seconds)
+
+
+def test_grep_timeout_cursor_retries_interrupted_file(tmp_path, monkeypatch):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [_put("local_files/root/a.md", "inode-a", "needle\n")],
+    )
+    original = store._grep_tree_path
+    timed_out = True
+
+    def grep_once_then_succeed(*args, **kwargs):
+        nonlocal timed_out
+        if timed_out:
+            timed_out = False
+            raise TimeoutError
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(store, "_grep_tree_path", grep_once_then_succeed)
+    first = store.grep("user-1", "needle", prefix="local_files/root")
+    assert first.stopped_by == "timeout"
+    assert first.next_cursor is not None
+
+    second = store.grep(
+        "user-1",
+        "needle",
+        prefix="local_files/root",
+        cursor=first.next_cursor,
+    )
+    assert [match.line for match in second.items] == ["needle"]
+    assert second.complete is True
+    assert second.next_cursor is None
+
+
 def test_grep_stops_on_oversized_rg_json_record(tmp_path, monkeypatch):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
