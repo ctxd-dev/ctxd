@@ -835,6 +835,7 @@ def test_grep_fallback_bounds_pathological_alternation_by_deadline(
 def test_grep_validation_timeout_is_bounded_and_resumable(tmp_path, monkeypatch):
     store = CtxfsStore(tmp_path / "ctxfs")
     real_popen = store_module.subprocess.Popen
+    real_has_rg = store_module._has_rg
 
     class HungValidation:
         returncode = None
@@ -856,6 +857,7 @@ def test_grep_validation_timeout_is_bounded_and_resumable(tmp_path, monkeypatch)
             return self.returncode
 
     process = HungValidation()
+    monkeypatch.setattr(store_module, "_has_rg", lambda: True)
     monkeypatch.setattr(store_module.subprocess, "Popen", lambda *args, **kwargs: process)
 
     page = store.grep("user-1", "needle", timeout_seconds=0.1)
@@ -866,6 +868,7 @@ def test_grep_validation_timeout_is_bounded_and_resumable(tmp_path, monkeypatch)
     assert 0 < process.timeout <= 0.1
 
     monkeypatch.setattr(store_module.subprocess, "Popen", real_popen)
+    monkeypatch.setattr(store_module, "_has_rg", real_has_rg)
     resumed = store.grep("user-1", "needle", cursor=page.next_cursor)
     assert resumed.complete is True
 
