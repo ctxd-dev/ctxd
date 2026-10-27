@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from ctxd.local_ctxfs_server import CtxfsAuthMode, create_ctxfs_app
 from ctxfs import (
     CtxfsStore,
+    GrepPage,
     MachineCredentialCoordinator,
     MachineCredentialNotCurrentError,
 )
@@ -252,6 +253,70 @@ def test_local_ctxfs_mcp_reads_in_process(tmp_path) -> None:
     result = response.json()["result"]
     assert result["structuredContent"]["text"] == "hello ctxfs\n"
     assert result.get("isError") is None
+
+
+def test_local_ctxfs_mcp_grep_forwards_timeout_and_cursor(
+    tmp_path, monkeypatch
+) -> None:
+    calls = []
+
+    def grep(
+        self,
+        user_id,
+        pattern,
+        *,
+        prefix,
+        limit,
+        timeout_seconds,
+        cursor,
+    ):
+        calls.append(
+            {
+                "user_id": user_id,
+                "pattern": pattern,
+                "prefix": prefix,
+                "limit": limit,
+                "timeout_seconds": timeout_seconds,
+                "cursor": cursor,
+            }
+        )
+        return GrepPage(items=[], complete=True)
+
+    monkeypatch.setattr(CtxfsStore, "grep", grep)
+    client = TestClient(
+        create_ctxfs_app(tmp_path / "ctxfs", auth_mode=CtxfsAuthMode.TRUSTED_LOCAL)
+    )
+
+    response = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "grep",
+                "arguments": {
+                    "pattern": "needle",
+                    "prefix": "local-files/root",
+                    "limit": 17,
+                    "timeout_seconds": 7.5,
+                    "cursor": "next-page",
+                },
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert calls == [
+        {
+            "user_id": "local",
+            "pattern": "needle",
+            "prefix": "local-files/root",
+            "limit": 17,
+            "timeout_seconds": 7.5,
+            "cursor": "next-page",
+        }
+    ]
 
 
 def test_bearer_mode_rejects_missing_malformed_invalid_and_revoked_keys(

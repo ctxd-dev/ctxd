@@ -126,9 +126,10 @@ does not have that local folder configuration uses the canonical
 | `glob` | Match paths with a glob pattern |
 | `read` | Read a complete file up to a byte bound |
 | `read_lines` | Read an inclusive line range |
-| `grep` | Match exact text beneath a prefix |
+| `grep` | Match a regular expression beneath a prefix |
 
-ctxfs deliberately exposes no shell and no arbitrary commands. `grep` is exact text matching, not semantic search.
+ctxfs deliberately exposes no shell and no arbitrary commands. `grep` uses
+regular-expression matching, not semantic search.
 
 ## Verify a tracked file
 
@@ -144,6 +145,11 @@ See the [ctxfs API reference](/docs/api) for every endpoint and parameter.
 ## Bounded results
 
 Listing and matching operations accept a `limit`. Read operations accept byte or line bounds. Responses include completeness information; callers must not treat a truncated response as exhaustive.
+
+Grep also accepts a per-request `timeout_seconds` from 0.1 to 60 seconds and
+defaults to 2 seconds. An incomplete limit or timeout response includes an
+opaque `next_cursor`; repeat the same grep with that value as `cursor` to
+continue. A cursor is rejected if its resume file changed.
 
 File reads also include content identity information. An agent can use it to detect whether a cited file changed between reads.
 

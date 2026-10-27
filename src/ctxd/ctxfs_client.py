@@ -10,7 +10,7 @@ from ctxd.models import (
     CtxfsBounded,
     CtxfsDirectoryEntry,
     CtxfsEntry,
-    CtxfsGrepMatch,
+    CtxfsGrepPage,
     CtxfsMachineRegistration,
     CtxfsReadLinesResult,
     CtxfsReadResult,
@@ -18,6 +18,7 @@ from ctxd.models import (
 )
 
 _USE_CLIENT_API_KEY = object()
+_GREP_TRANSPORT_OVERHEAD_SECONDS = 5.0
 
 
 class AsyncCtxfsClient:
@@ -162,12 +163,32 @@ class AsyncCtxfsClient:
         *,
         prefix: str = "",
         limit: int | None = None,
-    ) -> CtxfsBounded[CtxfsGrepMatch]:
-        params = _drop_none({"pattern": pattern, "prefix": prefix, "limit": limit})
-        payload = await self._request("GET", "/api/ctxfs/grep", params=params)
-        return CtxfsBounded[CtxfsGrepMatch].model_validate(payload)
+        timeout_seconds: float | None = None,
+        cursor: str | None = None,
+    ) -> CtxfsGrepPage:
+        params = _drop_none(
+            {
+                "pattern": pattern,
+                "prefix": prefix,
+                "limit": limit,
+                "timeout_seconds": timeout_seconds,
+                "cursor": cursor,
+            }
+        )
+        payload = await self._request(
+            "GET",
+            "/api/ctxfs/grep",
+            params=params,
+            timeout=self._grep_request_timeout(timeout_seconds),
+        )
+        return CtxfsGrepPage.model_validate(payload)
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        request_timeout = None
+        if name == "grep":
+            request_timeout = self._grep_request_timeout(
+                arguments.get("timeout_seconds")
+            )
         payload = await self._request(
             "POST",
             "/mcp",
@@ -177,6 +198,7 @@ class AsyncCtxfsClient:
                 "params": {"name": name, "arguments": arguments},
                 "id": 1,
             },
+            timeout=request_timeout,
         )
         if "error" in payload:
             raise CtxdProtocolError(f"ctxfs MCP request failed: {payload['error']}")
@@ -184,6 +206,13 @@ class AsyncCtxfsClient:
         if not isinstance(result, dict):
             raise CtxdProtocolError("ctxfs MCP response did not include a result")
         return result
+
+    def _grep_request_timeout(self, timeout_seconds: float | None) -> float | None:
+        if timeout_seconds is None:
+            return None
+        return max(
+            self._timeout, timeout_seconds + _GREP_TRANSPORT_OVERHEAD_SECONDS
+        )
 
     async def _request(
         self,
@@ -194,6 +223,7 @@ class AsyncCtxfsClient:
         json: dict[str, Any] | None = None,
         bearer_token: str | None | object = _USE_CLIENT_API_KEY,
         response_status: list[int] | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         if self._managed_local and not self._managed_local_ready:
             await asyncio.to_thread(_ensure_managed_local_started)
@@ -204,6 +234,8 @@ class AsyncCtxfsClient:
         if token and not self._endpoint.startswith("unix://"):
             headers["Authorization"] = f"Bearer {token}"
         request_kwargs: dict[str, Any] = {"params": params, "headers": headers}
+        if timeout is not None:
+            request_kwargs["timeout"] = timeout
         if json is not None:
             request_kwargs["json"] = json
         try:
@@ -294,9 +326,21 @@ class CtxfsFiles:
         return self._client.read_lines(path, start_line=start_line, end_line=end_line)
 
     def grep(
-        self, pattern: str, *, prefix: str = "", limit: int | None = None
-    ) -> CtxfsBounded[CtxfsGrepMatch]:
-        return self._client.grep(pattern, prefix=prefix, limit=limit)
+        self,
+        pattern: str,
+        *,
+        prefix: str = "",
+        limit: int | None = None,
+        timeout_seconds: float | None = None,
+        cursor: str | None = None,
+    ) -> CtxfsGrepPage:
+        return self._client.grep(
+            pattern,
+            prefix=prefix,
+            limit=limit,
+            timeout_seconds=timeout_seconds,
+            cursor=cursor,
+        )
 
 
 class CtxfsClient:
@@ -386,9 +430,23 @@ class CtxfsClient:
         )
 
     def grep(
-        self, pattern: str, *, prefix: str = "", limit: int | None = None
-    ) -> CtxfsBounded[CtxfsGrepMatch]:
-        return _run(self._async_client.grep(pattern, prefix=prefix, limit=limit))
+        self,
+        pattern: str,
+        *,
+        prefix: str = "",
+        limit: int | None = None,
+        timeout_seconds: float | None = None,
+        cursor: str | None = None,
+    ) -> CtxfsGrepPage:
+        return _run(
+            self._async_client.grep(
+                pattern,
+                prefix=prefix,
+                limit=limit,
+                timeout_seconds=timeout_seconds,
+                cursor=cursor,
+            )
+        )
 
     def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         return _run(self._async_client.call_tool(name, arguments))

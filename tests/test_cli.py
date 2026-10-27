@@ -188,7 +188,27 @@ def test_files_grep_uses_ctxfs_without_backend_selection() -> None:
     result = CtxfsBounded[CtxfsGrepMatch](items=[], complete=True)
     with patch("ctxd.cli.ensure_started"), patch("ctxd.cli.Client") as client:
         client.return_value.files.grep.return_value = result
-        assert main(["files", "grep", "needle"]) == 0
+        assert (
+            main(
+                [
+                    "files",
+                    "grep",
+                    "needle",
+                    "--timeout-seconds",
+                    "7.5",
+                    "--cursor",
+                    "next-page",
+                ]
+            )
+            == 0
+        )
+    client.return_value.files.grep.assert_called_once_with(
+        "needle",
+        prefix="",
+        limit=None,
+        timeout_seconds=7.5,
+        cursor="next-page",
+    )
 
 
 def _named_folder_config(tmp_path: Path) -> Path:

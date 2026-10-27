@@ -5,7 +5,7 @@ import httpx
 import pytest
 
 import ctxd
-from ctxd import AsyncClient, Client, CtxfsClient
+from ctxd import AsyncClient, Client, CtxfsClient, CtxfsGrepPage
 from ctxd.config import (
     DEFAULT_CTXFS_SOCKET,
     CtxfsEndpointResolution,
@@ -17,6 +17,11 @@ from ctxd.config import (
     save_ctxfs_api_key,
 )
 from ctxd.exceptions import CtxdError, CtxdProtocolError
+
+
+def test_ctxfs_grep_page_is_part_of_public_api() -> None:
+    assert ctxd.CtxfsGrepPage is CtxfsGrepPage
+    assert "CtxfsGrepPage" in ctxd.__all__
 
 
 def test_removed_sdk_interfaces_are_absent() -> None:
@@ -290,6 +295,31 @@ def test_ctxfs_http_mcp_uses_endpoint_bearer(monkeypatch: pytest.MonkeyPatch) ->
     assert client.call_tool("tree", {"prefix": "Docs"}) == {"items": []}
 
 
+def test_ctxfs_http_mcp_extends_transport_timeout_for_max_grep_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = Client(ctxfs_endpoint="https://ctxfs.example")
+
+    async def mock_request(self, method, url, **kwargs):
+        del self
+        assert method == "POST"
+        assert url == "/mcp"
+        assert kwargs["timeout"] == 65.0
+        assert kwargs["json"]["params"] == {
+            "name": "grep",
+            "arguments": {"pattern": "needle", "timeout_seconds": 60.0},
+        }
+        return httpx.Response(
+            200,
+            json={"jsonrpc": "2.0", "id": 1, "result": {"items": []}},
+        )
+
+    monkeypatch.setattr("httpx.AsyncClient.request", mock_request)
+    assert client.call_tool(
+        "grep", {"pattern": "needle", "timeout_seconds": 60.0}
+    ) == {"items": []}
+
+
 def test_ctxfs_authentication_validation_distinguishes_forbidden_from_unauthorized(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -322,7 +352,9 @@ def test_synchronous_files_client_exposes_ctxfs_grep(
 ) -> None:
     client = Client(ctxfs_endpoint="http://127.0.0.1:8765")
 
-    async def mock_request(self, method, url, *, params=None, headers=None):
+    async def mock_request(
+        self, method, url, *, params=None, headers=None, timeout=None
+    ):
         assert method == "GET" and url == "/api/ctxfs/grep"
         assert params == {"pattern": "needle", "prefix": "root", "limit": 5}
         return httpx.Response(
@@ -335,6 +367,59 @@ def test_synchronous_files_client_exposes_ctxfs_grep(
 
     monkeypatch.setattr("httpx.AsyncClient.request", mock_request)
     assert client.files.grep("needle", prefix="root", limit=5).items[0].line == "needle"
+
+
+def test_synchronous_files_client_forwards_grep_continuation_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = Client(ctxfs_endpoint="http://127.0.0.1:8765")
+
+    async def mock_request(
+        self, method, url, *, params=None, headers=None, timeout=None
+    ):
+        assert method == "GET" and url == "/api/ctxfs/grep"
+        assert params == {
+            "pattern": "needle",
+            "prefix": "root",
+            "limit": 5,
+            "timeout_seconds": 10.0,
+            "cursor": "next-page",
+        }
+        assert timeout == 30.0
+        return httpx.Response(
+            200,
+            json={
+                "items": [],
+                "complete": False,
+                "stopped_by": "timeout",
+                "next_cursor": "later-page",
+            },
+        )
+
+    monkeypatch.setattr("httpx.AsyncClient.request", mock_request)
+    result = client.files.grep(
+        "needle",
+        prefix="root",
+        limit=5,
+        timeout_seconds=10.0,
+        cursor="next-page",
+    )
+    assert result.next_cursor == "later-page"
+
+
+def test_synchronous_files_client_extends_transport_timeout_for_max_grep_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = Client(ctxfs_endpoint="http://127.0.0.1:8765")
+
+    async def mock_request(self, method, url, **kwargs):
+        assert method == "GET" and url == "/api/ctxfs/grep"
+        assert kwargs["timeout"] == 65.0
+        return httpx.Response(200, json={"items": [], "complete": True})
+
+    monkeypatch.setattr("httpx.AsyncClient.request", mock_request)
+    result = client.files.grep("needle", timeout_seconds=60.0)
+    assert result.complete is True
 
 
 def test_default_endpoint_is_local_ctxfs(

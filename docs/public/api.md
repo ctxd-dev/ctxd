@@ -28,7 +28,7 @@ authentication and authorization policy.
 | Match paths | `GET /api/ctxfs/glob` | `pattern`, `prefix`, `limit` |
 | Read a file | `GET /api/ctxfs/read` | `path`, `max_bytes` |
 | Read line range | `GET /api/ctxfs/read-lines` | `path`, `start_line`, `end_line` |
-| Match exact text | `GET /api/ctxfs/grep` | `pattern`, `prefix`, `limit` |
+| Match a regular expression | `GET /api/ctxfs/grep` | `pattern`, `prefix`, `limit`, `timeout_seconds`, `cursor` |
 | Submit tracker changes | `POST /api/ctxfs/submissions` | Tracker-managed submission payload |
 | MCP JSON-RPC | `POST /mcp` | MCP `initialize`, `ping`, `tools/list`, `tools/call` |
 
@@ -57,7 +57,7 @@ write API.
 
 ## Bounds and identity
 
-Directory, tree, glob, and grep responses are bounded by `limit`. Check the response's completeness fields before treating a result as exhaustive. File reads include content identity metadata so a caller can detect changed content.
+Directory, tree, glob, and grep responses are bounded by `limit`. Check the response's completeness fields before treating a result as exhaustive. Grep uses a 2-second timeout by default; `timeout_seconds` accepts 0.1 through 60 seconds. When a grep result includes `next_cursor`, repeat the same search with that value as `cursor` to continue. Cursors are opaque and become stale if the file being resumed changes. File reads include content identity metadata so a caller can detect changed content.
 
 `read` accepts at most 5,000,000 bytes. The default is 1,000,000 bytes. Use `read-lines` when an agent needs only a section of a large file.
 

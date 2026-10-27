@@ -90,3 +90,12 @@ class CtxfsGrepMatch(BaseModel):
     match_start: int | None = None
     match_end: int | None = None
     content_hash: str | None = None
+
+
+class CtxfsGrepPage(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    items: list[CtxfsGrepMatch] = Field(default_factory=list)
+    complete: bool = True
+    stopped_by: str | None = None
+    next_cursor: str | None = None

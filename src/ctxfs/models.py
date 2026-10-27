@@ -265,3 +265,10 @@ class GrepMatch(_CtxfsModel):
     match_start: int = Field(ge=0)
     match_end: int = Field(ge=0)
     content_hash: str
+
+
+class GrepPage(_CtxfsModel):
+    items: list[GrepMatch]
+    complete: bool
+    stopped_by: str | None = None
+    next_cursor: str | None = None
