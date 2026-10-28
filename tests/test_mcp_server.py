@@ -34,6 +34,11 @@ def test_local_mcp_lists_all_ctxfs_tools_without_connection_arguments() -> None:
         "maximum": 60.0,
     }
     assert "cursor" in grep["inputSchema"]["properties"]
+    description = grep["description"]
+    assert "narrow prefix" in description
+    assert "continuation_required" in description
+    assert "same pattern" in description
+    assert "repeated timeout" in description
 
 
 def test_local_mcp_initializes_and_calls_bounded_tree() -> None:
@@ -132,6 +137,8 @@ def test_local_mcp_grep_uses_real_client_files_facade(monkeypatch) -> None:
         "complete": False,
         "stopped_by": "limit",
         "next_cursor": None,
+        "continuation_required": False,
+        "continuation_hint": None,
     }
 
 

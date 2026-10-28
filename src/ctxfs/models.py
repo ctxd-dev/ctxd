@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Generic, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class _CtxfsModel(BaseModel):
@@ -272,3 +272,25 @@ class GrepPage(_CtxfsModel):
     complete: bool
     stopped_by: str | None = None
     next_cursor: str | None = None
+    continuation_required: bool = False
+    continuation_hint: str | None = None
+
+    @model_validator(mode="after")
+    def set_continuation_action(self) -> "GrepPage":
+        if self.complete and self.next_cursor is not None:
+            raise ValueError("complete grep page cannot include a continuation cursor")
+        self.continuation_required = self.next_cursor is not None
+        if self.next_cursor is None:
+            self.continuation_hint = None
+        elif self.stopped_by == "timeout":
+            self.continuation_hint = (
+                "Search timed out before completion. Repeat grep with the same "
+                "pattern and prefix, passing next_cursor as cursor. If the same "
+                "page times out again, increase timeout_seconds or narrow prefix."
+            )
+        else:
+            self.continuation_hint = (
+                "More matches may exist. Repeat grep with the same pattern and "
+                "prefix, passing next_cursor as cursor."
+            )
+        return self

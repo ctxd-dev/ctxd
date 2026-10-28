@@ -73,7 +73,8 @@ ctxd files grep "deployment" --prefix Documents --limit 20
 
 Every listing and matching command is bounded. Inspect `complete` and
 `stopped_by` in JSON output before treating a result as exhaustive.
-For grep, pass `next_cursor` back with `--cursor` to continue, and use
+For grep, inspect `continuation_required` and `continuation_hint`, pass
+`next_cursor` back with `--cursor` to continue the same pattern and prefix, and use
 `--timeout-seconds` to override the 2-second search deadline (0.1 to 60).
 
 ## ctxfs

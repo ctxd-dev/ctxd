@@ -99,3 +99,5 @@ class CtxfsGrepPage(BaseModel):
     complete: bool = True
     stopped_by: str | None = None
     next_cursor: str | None = None
+    continuation_required: bool = False
+    continuation_hint: str | None = None
