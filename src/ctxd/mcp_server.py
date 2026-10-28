@@ -57,7 +57,15 @@ TOOLS = [
     ),
     (
         "grep",
-        "Search ctxfs file contents; pass next_cursor as cursor to continue an incomplete result",
+        (
+            "Search ctxfs file contents with a regular expression. Use tree or glob "
+            "to identify a narrow prefix before broad searches. Always inspect "
+            "complete, stopped_by, continuation_required, and next_cursor; an "
+            "incomplete page is not exhaustive. When continuation_required is true "
+            "and more evidence is needed, repeat grep with the same pattern and "
+            "prefix and pass next_cursor as cursor. After repeated timeout stops, "
+            "continue from the cursor with a larger timeout_seconds or narrower prefix."
+        ),
         {
             "pattern": {"type": "string"},
             "prefix": {"type": "string"},

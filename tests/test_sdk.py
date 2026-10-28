@@ -393,6 +393,10 @@ def test_synchronous_files_client_forwards_grep_continuation_options(
                 "complete": False,
                 "stopped_by": "timeout",
                 "next_cursor": "later-page",
+                "continuation_required": True,
+                "continuation_hint": (
+                    "Search timed out; increase timeout_seconds or narrow prefix."
+                ),
             },
         )
 
@@ -405,6 +409,9 @@ def test_synchronous_files_client_forwards_grep_continuation_options(
         cursor="next-page",
     )
     assert result.next_cursor == "later-page"
+    assert result.continuation_required is True
+    assert result.continuation_hint is not None
+    assert "increase timeout_seconds" in result.continuation_hint
 
 
 def test_synchronous_files_client_extends_transport_timeout_for_max_grep_deadline(
