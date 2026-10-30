@@ -27,8 +27,13 @@ For example, to contribute and read a local folder:
 ```bash
 ctxd folders add ~/Documents --name Documents
 ctxd tracker start
+# Wait for the initial sync; retry the next command until Documents appears.
 ctxd files tree Documents
 ```
+
+`tracker start` launches the tracker and returns before its first sync is
+necessarily complete. Wait until the folder appears in ctxfs before relying on
+query results.
 
 If the tracker is already running, it discovers newly registered folders on a
 later polling cycle; you do not need to restart it. Starting or querying ctxfs
