@@ -24,7 +24,11 @@ MCP enforce the same policy.
 
 ## What ctxd stores
 
-ctxfs stores its local tree and catalog under `~/.ctxd/ctxfs` by default. The tracker stores configuration, state, and logs under `~/.ctxd/local`.
+ctxfs stores its local tree and catalog under `~/.ctxd/ctxfs` by default.
+Configuration is stored in `~/.ctxd/config.json`, client credentials in
+`~/.ctxd/credentials.json`, and tracker state and runtime files in
+`~/.ctxd/local/`. The tracker writes a bounded current-health record at
+`~/.ctxd/local/tracker-health.json`; it does not create a persistent text log.
 
 Text files that need no transformation may be linked into the ctxfs tree instead of copied when the filesystem supports it. Content that requires transformation is stored as a ctxfs-owned representation. The source files remain in their original folders.
 
