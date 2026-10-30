@@ -109,12 +109,12 @@ def test_overview_describes_optional_tracker_and_endpoint_ownership() -> None:
     add_folder = workflow.index("ctxd folders add ~/Documents --name Documents")
     start_tracker = workflow.index("ctxd tracker start")
     wait_for_sync = workflow.index(
-        "Wait for the initial sync; retry the next command until Documents appears."
+        "Wait for the initial sync; retry until expected indexed entries appear."
     )
     query_folder = workflow.index("ctxd files tree Documents")
     assert add_folder < start_tracker < wait_for_sync < query_folder
     assert "returns before its first sync is\nnecessarily complete" in text
-    assert "Wait until the folder appears in ctxfs" in text
+    assert "Retry the tree query until its expected indexed entries\nappear" in text
     assert "This registers the folder; it does\n   not start the tracker" in text
     assert "If the tracker is already running" in text
     assert "you do not need to restart it" in text
