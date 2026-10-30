@@ -104,6 +104,16 @@ def test_overview_describes_optional_tracker_and_endpoint_ownership() -> None:
 
     assert "optional **local tracker**" in text
     assert "Read through the ctxd CLI" in text
+    workflow = text.split("For example, to contribute and read a local folder:", 1)[1]
+    workflow = workflow.split("```", 2)[1]
+    add_folder = workflow.index("ctxd folders add ~/Documents --name Documents")
+    start_tracker = workflow.index("ctxd tracker start")
+    query_folder = workflow.index("ctxd files tree Documents")
+    assert add_folder < start_tracker < query_folder
+    assert "This registers the folder; it does\n   not start the tracker" in text
+    assert "If the tracker is already running" in text
+    assert "you do not need to restart it" in text
+    assert "Starting or querying ctxfs\ndoes not start the tracker" in text
     assert "Starting the tracker ensures the ctxfs server is running" not in text
 
 
