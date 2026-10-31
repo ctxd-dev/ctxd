@@ -401,6 +401,7 @@ class CtxfsStore:
                 and mapping_existed
                 and state is not None
                 and state[0] == "1"
+                and self._grep_index_is_consistent()
             ):
                 complete = True
             else:
@@ -426,7 +427,56 @@ class CtxfsStore:
         self.connection.execute("RELEASE grep_index_init")
         self._grep_index_available = complete
 
+    def _grep_index_is_consistent(self) -> bool:
+        inconsistent = self.connection.execute(
+            """
+            SELECT 1
+            FROM (
+                SELECT entries.rowid
+                FROM entries
+                LEFT JOIN grep_index_entries AS mapping
+                  ON mapping.user_id = entries.user_id
+                 AND mapping.writer_id = entries.writer_id
+                 AND mapping.source_key = entries.source_key
+                LEFT JOIN grep_index AS posting ON posting.rowid = mapping.rowid
+                WHERE mapping.rowid IS NULL
+                   OR mapping.path != entries.path
+                   OR mapping.content_hash != entries.content_hash
+                   OR posting.rowid IS NULL
+                UNION ALL
+                SELECT mapping.rowid
+                FROM grep_index_entries AS mapping
+                LEFT JOIN entries
+                  ON entries.user_id = mapping.user_id
+                 AND entries.writer_id = mapping.writer_id
+                 AND entries.source_key = mapping.source_key
+                WHERE entries.rowid IS NULL
+                UNION ALL
+                SELECT posting.rowid
+                FROM grep_index AS posting
+                LEFT JOIN grep_index_entries AS mapping
+                  ON mapping.rowid = posting.rowid
+                WHERE mapping.rowid IS NULL
+            )
+            LIMIT 1
+            """
+        ).fetchone()
+        return inconsistent is None
+
     def _backfill_grep_index(self) -> bool:
+        orphaned_postings = self.connection.execute(
+            """
+            SELECT posting.rowid
+            FROM grep_index AS posting
+            LEFT JOIN grep_index_entries AS mapping ON mapping.rowid = posting.rowid
+            WHERE mapping.rowid IS NULL
+            """
+        ).fetchall()
+        for row in orphaned_postings:
+            self.connection.execute(
+                "DELETE FROM grep_index WHERE rowid = ?", (row["rowid"],)
+            )
+
         orphaned = self.connection.execute(
             """
             SELECT mapping.rowid
@@ -2067,8 +2117,12 @@ class CtxfsStore:
             return
         existing = self.connection.execute(
             """
-            SELECT rowid, content_hash
-            FROM grep_index_entries
+            SELECT mapping.rowid, mapping.content_hash,
+                   EXISTS(
+                       SELECT 1 FROM grep_index
+                       WHERE grep_index.rowid = mapping.rowid
+                   ) AS has_posting
+            FROM grep_index_entries AS mapping
             WHERE user_id = ? AND writer_id = ? AND source_key = ?
             """,
             (user_id, writer_id, source_key),
@@ -2090,8 +2144,11 @@ class CtxfsStore:
             )
             return
         rowid = existing["rowid"]
-        if existing["content_hash"] != content_hash:
-            self.connection.execute("DELETE FROM grep_index WHERE rowid = ?", (rowid,))
+        if existing["content_hash"] != content_hash or not existing["has_posting"]:
+            if existing["has_posting"]:
+                self.connection.execute(
+                    "DELETE FROM grep_index WHERE rowid = ?", (rowid,)
+                )
             self.connection.execute(
                 "INSERT INTO grep_index(rowid, content) VALUES (?, ?)",
                 (rowid, text),

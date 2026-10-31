@@ -918,6 +918,33 @@ def test_indexed_literal_backfills_existing_catalog(tmp_path, monkeypatch):
     ]
 
 
+@pytest.mark.parametrize("corrupt_table", ["grep_index_entries", "grep_index"])
+def test_completed_index_repairs_missing_mapping_or_posting(tmp_path, corrupt_table):
+    root = tmp_path / "ctxfs"
+    store = CtxfsStore(root)
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [_put("local_files/root/notes.md", "inode-1", "MedThink")],
+    )
+    with store.connection:
+        store.connection.execute(f"DELETE FROM {corrupt_table}")
+    store.close()
+
+    repaired = CtxfsStore(root)
+
+    result = repaired.grep("user-1", "MedThink")
+    assert [item.path for item in result.items] == ["local_files/root/notes.md"]
+    assert result.complete is True
+    assert (
+        repaired.connection.execute(
+            "SELECT COUNT(*) FROM grep_index_entries"
+        ).fetchone()[0]
+        == repaired.connection.execute("SELECT COUNT(*) FROM grep_index").fetchone()[0]
+    )
+
+
 def test_incomplete_index_backfill_uses_scan_until_repaired(tmp_path, monkeypatch):
     root = tmp_path / "ctxfs"
     store = CtxfsStore(root)
