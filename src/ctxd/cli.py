@@ -194,10 +194,21 @@ def _build_parser() -> argparse.ArgumentParser:
     files_glob_parser.add_argument("--limit", type=int)
 
     files_grep_parser = files_subparsers.add_parser(
-        "grep", help="Search file contents."
+        "grep",
+        help="Search file contents.",
+        description=(
+            "Search file contents with ripgrep syntax. First inspect top-level "
+            "folders with tree or glob, then search the relevant folder with "
+            "--prefix. Broaden the prefix only when the scoped search does not "
+            "find enough context."
+        ),
     )
     files_grep_parser.add_argument("pattern")
-    files_grep_parser.add_argument("--prefix", default="")
+    files_grep_parser.add_argument(
+        "--prefix",
+        default="",
+        help="Limit search to the relevant folder or subtree (recommended).",
+    )
     files_grep_parser.add_argument("--limit", type=int)
     files_grep_parser.add_argument("--timeout-seconds", type=float)
 

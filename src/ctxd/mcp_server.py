@@ -59,9 +59,12 @@ TOOLS = [
         "grep",
         (
             "Search ctxfs file contents using ripgrep regular-expression syntax. "
-            "Results are ordered by path and line. Use tree or glob to identify a "
-            "narrow prefix before broad searches. Transport continuations are handled "
-            "automatically; a failure means the result was not exhaustive."
+            "Results are ordered by path and line. Retrieval method: (1) inspect "
+            "top-level folders with tree or glob, (2) choose the relevant source "
+            "folder, such as slack/, (3) grep within that prefix, and (4) broaden "
+            "the prefix only when the scoped search does not find enough context. "
+            "Transport continuations are handled automatically; a failure means "
+            "the result was not exhaustive."
         ),
         {
             "pattern": {"type": "string"},

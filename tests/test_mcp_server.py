@@ -35,7 +35,8 @@ def test_local_mcp_lists_all_ctxfs_tools_without_connection_arguments() -> None:
     }
     assert "cursor" not in grep["inputSchema"]["properties"]
     description = grep["description"]
-    assert "narrow prefix" in description
+    assert "inspect top-level folders" in description
+    assert "broaden the prefix only" in description
     assert "ripgrep" in description
     assert "handled automatically" in description
 

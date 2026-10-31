@@ -53,6 +53,18 @@ def test_status_help_describes_endpoint_health_not_authentication() -> None:
     assert "API key" not in output
 
 
+def test_files_grep_help_teaches_scoped_search_methodology() -> None:
+    stdout = StringIO()
+    with redirect_stdout(stdout), pytest.raises(SystemExit) as exc:
+        main(["files", "grep", "--help"])
+    assert exc.value.code == 0
+    output = stdout.getvalue()
+    assert "inspect top-level folders" in output
+    assert "--prefix" in output
+    assert "Broaden the" in output
+    assert "prefix only when" in output
+
+
 @pytest.mark.parametrize("command", ["search", "fetch", "profile", "backend"])
 def test_removed_commands_are_unknown(command: str) -> None:
     with pytest.raises(SystemExit) as exc:

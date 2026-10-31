@@ -139,6 +139,12 @@ ctxfs still verifies every candidate with the regular-expression matcher, so
 case sensitivity, matching lines, and offsets are unchanged. General regular
 expressions and shorter literals use the scan path.
 
+Agents should scope retrieval before searching broadly: inspect top-level folders
+with `tree` or `glob`, select the relevant source folder (for example `slack/`),
+run `grep` with that prefix, and broaden the prefix only if the scoped search does
+not find enough context. This keeps retrieval focused and makes search cost easier
+to understand without changing grep semantics.
+
 Indexed literal results are authoritative over cataloged ctxfs entries. They do
 not inventory private tree storage for files added outside ctxfs. Regex searches
 retain the scan path and its `catalog_mismatch` diagnostics for that kind of
