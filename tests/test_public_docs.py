@@ -3,6 +3,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+from ctxd.secure_store import CREDENTIALS_PATH_ENV_VAR, get_credentials_path
+
 
 PUBLIC_DOCS = Path(__file__).parents[1] / "docs" / "public"
 
@@ -54,12 +56,32 @@ def test_cli_docs_only_list_supported_local_environment_variables() -> None:
     text = (PUBLIC_DOCS / "cli.md").read_text()
 
     assert "CTXD_CONFIG_PATH" in text
+    assert f"`{CREDENTIALS_PATH_ENV_VAR}`" in text
     assert "CTXD_BACKEND" not in text
     assert "CTXD_CTXFS_SOCKET" in text
     assert "CTXD_CTXFS_URL" in text
     assert "CTXD_LOCAL_HOME" not in text
     assert "CTXD_LOCAL_CTXFS_HOST" not in text
     assert "CTXD_LOCAL_CTXFS_PORT" not in text
+
+
+def test_documented_credentials_path_precedence_matches_runtime(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config_path = tmp_path / "configuration" / "config.json"
+    credentials_path = tmp_path / "secrets" / "client.json"
+
+    monkeypatch.delenv(CREDENTIALS_PATH_ENV_VAR, raising=False)
+    monkeypatch.setenv("CTXD_CONFIG_PATH", str(config_path))
+    assert get_credentials_path() == config_path.parent / "credentials.json"
+
+    monkeypatch.setenv(CREDENTIALS_PATH_ENV_VAR, str(credentials_path))
+    assert get_credentials_path() == credentials_path
+
+    text = (PUBLIC_DOCS / "cli.md").read_text()
+    assert "credentials.json` beside the selected configuration file" in text
+    assert "takes precedence" in text
+    assert "does not migrate credentials or registration state" in text
 
 
 def test_public_docs_do_not_reference_removed_cli_commands() -> None:
