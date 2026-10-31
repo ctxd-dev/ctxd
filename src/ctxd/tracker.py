@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import stat as stat_module
 import time
 import traceback
 import uuid
@@ -152,15 +153,17 @@ def _scan_folder(
     if not root.exists() or not root.is_dir():
         return FolderScan(current=current, operations=operations, complete=False)
 
-    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+    for path in sorted(root.rglob("*")):
         if path.name.startswith(".") or path.suffix.lower() not in TRACKED_SUFFIXES:
             continue
         try:
-            stat = path.stat()
+            file_stat = path.stat()
         except OSError:
             complete = False
             continue
-        if stat.st_size > MAX_TRACKED_FILE_BYTES:
+        if not stat_module.S_ISREG(file_stat.st_mode):
+            continue
+        if file_stat.st_size > MAX_TRACKED_FILE_BYTES:
             continue
         try:
             data = path.read_bytes()
@@ -170,7 +173,7 @@ def _scan_folder(
             continue
 
         relative_path = path.relative_to(root).as_posix()
-        source_key = _source_key(folder, stat)
+        source_key = _source_key(folder, file_stat)
         source_version = _source_version(data)
         ctxfs_path = f"{folder.prefix.rstrip('/')}/{relative_path}"
         file_format = path.suffix.lower().lstrip(".") or "text"

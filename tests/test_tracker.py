@@ -340,6 +340,50 @@ def test_tracker_sync_preserves_prior_file_after_read_failure(
     assert source_key in state_file.read_text()
 
 
+def test_tracker_sync_preserves_prior_file_after_stat_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    docs = tmp_path / "Docs"
+    docs.mkdir()
+    source = docs / "notes.md"
+    source.write_text("new content")
+    folder = FolderConfig(
+        name="Documents", path=str(docs), prefix="local-files/folder-1"
+    )
+    initial_stat = source.stat()
+    source_key = f"{folder.prefix}:{initial_stat.st_dev}:{initial_stat.st_ino}"
+    state_file = tmp_path / "state.json"
+    state_file.write_text(
+        json.dumps({folder.prefix: {source_key: "sha256:old"}}) + "\n"
+    )
+    submissions = []
+    original_stat = Path.stat
+
+    def fail_target_stat(path: Path, *args, **kwargs):
+        if path == source:
+            raise OSError("simulated stat failure")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", fail_target_stat)
+    monkeypatch.setattr(
+        "ctxd.tracker._submit_operations",
+        lambda endpoint, *, writer_id, writer_prefix, operations: submissions.extend(
+            operations
+        ),
+    )
+
+    result = sync_once(
+        folders=[folder],
+        endpoint="http://ctxfs.local",
+        paths=TrackerPaths(state_file=state_file),
+    )
+
+    assert result == {"folders": 1, "operations": 0}
+    assert submissions == []
+    assert source_key in state_file.read_text()
+
+
 def test_tracker_sync_preserves_prior_file_after_invalid_utf8(
     tmp_path: Path,
     monkeypatch,
