@@ -54,12 +54,42 @@ def test_cli_docs_only_list_supported_local_environment_variables() -> None:
     text = (PUBLIC_DOCS / "cli.md").read_text()
 
     assert "CTXD_CONFIG_PATH" in text
+    assert "CTXD_CREDENTIALS_PATH" in text
     assert "CTXD_BACKEND" not in text
     assert "CTXD_CTXFS_SOCKET" in text
     assert "CTXD_CTXFS_URL" in text
     assert "CTXD_LOCAL_HOME" not in text
     assert "CTXD_LOCAL_CTXFS_HOST" not in text
     assert "CTXD_LOCAL_CTXFS_PORT" not in text
+
+
+def test_security_docs_define_the_local_storage_contract() -> None:
+    text = (PUBLIC_DOCS / "security.md").read_text()
+
+    persistent_paths = (
+        "~/.ctxd/config.json",
+        "~/.ctxd/credentials.json",
+        "~/.ctxd/local/tracker-state.json",
+        "~/.ctxd/ctxfs/",
+    )
+    runtime_paths = (
+        "~/.ctxd/local/tracker.pid",
+        "~/.ctxd/local/ctxfs.pid",
+        "~/.ctxd/local/ctxfs.sock",
+        "~/.ctxd/local/ctxfs.lock",
+    )
+    for path in (*persistent_paths, *runtime_paths):
+        assert path in text
+
+    assert "The detached tracker does not currently create a log file" in text
+    assert "`CTXD_CREDENTIALS_PATH` independently selects" in text
+    assert "credentials file defaults to `credentials.json` beside" in text
+    assert "Changing either variable does not move existing data" in text
+    assert "Stopping the tracker" not in text
+    assert "`ctxd tracker stop` stops the tracker" in text
+    assert "Uninstalling the package also does not\ndelete `~/.ctxd`" in text
+    assert "It does not\ndelete the original tracked source folders" in text
+    assert "These permissions are not encryption" in text
 
 
 def test_public_docs_do_not_reference_removed_cli_commands() -> None:

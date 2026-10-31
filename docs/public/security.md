@@ -24,7 +24,33 @@ MCP enforce the same policy.
 
 ## What ctxd stores
 
-ctxfs stores its local tree and catalog under `~/.ctxd/ctxfs` by default. The tracker stores configuration, state, and logs under `~/.ctxd/local`.
+The managed local deployment uses these default paths:
+
+| Data | Default location | Lifecycle |
+| --- | --- | --- |
+| CLI settings, registered source paths, and generated ctxfs prefixes | `~/.ctxd/config.json` | Persistent |
+| Client bearer credentials and machine registration state | `~/.ctxd/credentials.json` | Persistent and sensitive |
+| Tracker synchronization metadata | `~/.ctxd/local/tracker-state.json` | Persistent and sensitive |
+| Tracker process ID | `~/.ctxd/local/tracker.pid` | Runtime only |
+| Managed ctxfs process ID, socket, and lock | `~/.ctxd/local/ctxfs.pid`, `~/.ctxd/local/ctxfs.sock`, and `~/.ctxd/local/ctxfs.lock` | Runtime only |
+| Managed ctxfs tree and catalog | `~/.ctxd/ctxfs/` | Persistent and sensitive |
+
+The detached tracker does not currently create a log file. Use `ctxd tracker
+status` and `ctxd endpoint status` for the available health information.
+
+`CTXD_CONFIG_PATH` selects a different configuration file.
+`CTXD_CREDENTIALS_PATH` independently selects a different credentials file and
+takes precedence for that file. If only `CTXD_CONFIG_PATH` is set, the
+credentials file defaults to `credentials.json` beside the selected
+configuration file. Changing either variable does not move existing data.
+
+The credentials file contains bearer credentials. The configuration file
+reveals registered source paths, the tracker state contains synchronization
+metadata, and the ctxfs data root contains indexed representations of tracked
+content. ctxd creates managed files and directories with user-only permissions
+where supported. These permissions are not encryption and do not protect state
+from other processes running as the same operating-system account or from
+operating-system administrators.
 
 Text files that need no transformation may be linked into the ctxfs tree instead of copied when the filesystem supports it. Content that requires transformation is stored as a ctxfs-owned representation. The source files remain in their original folders.
 
@@ -70,6 +96,13 @@ ctxd tracker stop
 pip uninstall ctxd
 ```
 
-Uninstalling does not delete `~/.ctxd`. If you choose to remove that directory
-manually, review the path first: it contains ctxd-managed configuration, tracker
-state, and ctxfs data, but not the tracked source folders themselves.
+`ctxd tracker stop` stops the tracker and removes its runtime process-ID file;
+it preserves configuration, credentials, synchronization state, indexed ctxfs
+data, and the original source folders. Uninstalling the package also does not
+delete `~/.ctxd` or a path selected by an environment override.
+
+If you choose to remove `~/.ctxd` manually, stop ctxd processes and review the
+path first. Removing it deletes the default ctxd-managed configuration,
+credentials, tracker state, runtime files, and indexed ctxfs data. It does not
+delete the original tracked source folders. Data stored at paths selected by
+`CTXD_CONFIG_PATH` or `CTXD_CREDENTIALS_PATH` must be reviewed separately.

@@ -70,6 +70,6 @@ folder alias. A separate reader uses canonical paths such as
 
 ## Next steps
 
-- [Local tracker](/docs/local-tracker) for upgrades, moves, logs, and removal
+- [Local tracker](/docs/local-tracker) for moves, troubleshooting, and removal
 - [ctxfs](/docs/ctxfs) for the filesystem model and all seven reads
 - [ctxfs API](/docs/api) for endpoint parameters and authentication

@@ -139,6 +139,12 @@ its configured endpoint.
 | Variable | Purpose |
 | --- | --- |
 | `CTXD_CONFIG_PATH` | Override the CLI configuration file |
+| `CTXD_CREDENTIALS_PATH` | Override the client credentials file |
 | `CTXD_CTXFS_SOCKET` | Use ctxfs through the selected Unix socket |
 | `CTXD_CTXFS_URL` | Use ctxfs through the selected HTTP URL |
 | `CTXD_CTXFS_API_KEY` | Supply a ctxfs HTTP bearer token without storing it |
+
+If `CTXD_CREDENTIALS_PATH` is unset while `CTXD_CONFIG_PATH` is set, credentials
+default to `credentials.json` beside the selected configuration file. Changing
+either variable does not move an existing file. See [Security and
+data](/docs/security) for the complete local storage layout.
