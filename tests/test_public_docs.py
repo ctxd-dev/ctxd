@@ -1,10 +1,23 @@
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 
+from ctxd.config import DEFAULT_CONFIG_PATH
+from ctxd.local_ctxfs_service import default_paths as default_ctxfs_paths
+from ctxd.secure_store import DEFAULT_CREDENTIALS_PATH
+from ctxd.tracker import default_tracker_paths
+from ctxd.tracker_service import default_paths as default_tracker_service_paths
+
 
 PUBLIC_DOCS = Path(__file__).parents[1] / "docs" / "public"
+
+
+def _documented_home_path(path: Path, *, directory: bool = False) -> str:
+    relative = path.relative_to(Path.home()).as_posix()
+    suffix = "/" if directory else ""
+    return f"~/{relative}{suffix}"
 
 
 def test_public_docs_manifest_is_complete_and_safe() -> None:
@@ -66,20 +79,24 @@ def test_cli_docs_only_list_supported_local_environment_variables() -> None:
 def test_security_docs_define_the_local_storage_contract() -> None:
     text = (PUBLIC_DOCS / "security.md").read_text()
 
+    ctxfs_paths = default_ctxfs_paths()
     persistent_paths = (
-        "~/.ctxd/config.json",
-        "~/.ctxd/credentials.json",
-        "~/.ctxd/local/tracker-state.json",
-        "~/.ctxd/ctxfs/",
+        _documented_home_path(DEFAULT_CONFIG_PATH),
+        _documented_home_path(DEFAULT_CREDENTIALS_PATH),
+        _documented_home_path(default_tracker_paths().state_file),
+        _documented_home_path(ctxfs_paths.root, directory=True),
     )
     runtime_paths = (
-        "~/.ctxd/local/tracker.pid",
-        "~/.ctxd/local/ctxfs.pid",
-        "~/.ctxd/local/ctxfs.sock",
-        "~/.ctxd/local/ctxfs.lock",
+        _documented_home_path(default_tracker_service_paths().pid_file),
+        _documented_home_path(ctxfs_paths.pid_file),
+        _documented_home_path(ctxfs_paths.socket_path),
+        _documented_home_path(ctxfs_paths.lock_file),
     )
-    for path in (*persistent_paths, *runtime_paths):
-        assert path in text
+    storage_table = text.split(
+        "The managed local deployment uses these default paths:", 1
+    )[1].split("The detached tracker", 1)[0]
+    documented_paths = set(re.findall(r"`([^`]+)`", storage_table))
+    assert documented_paths == set((*persistent_paths, *runtime_paths))
 
     assert "The detached tracker does not currently create a log file" in text
     assert "`CTXD_CREDENTIALS_PATH` independently selects" in text

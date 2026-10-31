@@ -47,10 +47,16 @@ configuration file. Changing either variable does not move existing data.
 The credentials file contains bearer credentials. The configuration file
 reveals registered source paths, the tracker state contains synchronization
 metadata, and the ctxfs data root contains indexed representations of tracked
-content. ctxd creates managed files and directories with user-only permissions
-where supported. These permissions are not encryption and do not protect state
-from other processes running as the same operating-system account or from
-operating-system administrators.
+content. ctxd sets the configuration, credentials, tracker state, process-ID,
+and lock files to user read/write only where supported. The managed ctxfs
+service also sets its `~/.ctxd/local/` runtime directory and `~/.ctxd/ctxfs/`
+data directory to user-only access and creates its Unix socket with private
+permissions. It does not change permissions on source folders or on parent
+directories of paths selected by environment overrides.
+
+These permissions are not encryption and do not protect state from other
+processes running as the same operating-system account or from operating-system
+administrators.
 
 Text files that need no transformation may be linked into the ctxfs tree instead of copied when the filesystem supports it. Content that requires transformation is stored as a ctxfs-owned representation. The source files remain in their original folders.
 
