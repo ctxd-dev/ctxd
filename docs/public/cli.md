@@ -167,3 +167,5 @@ CTXD_CONFIG_PATH="$PRIVATE_STATE/config.json" \
 CTXD_CREDENTIALS_PATH="$PRIVATE_STATE/credentials.json" \
 ctxd endpoint status
 ```
+
+See [Security and data](/docs/security) for the complete local storage layout.

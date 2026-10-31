@@ -157,6 +157,7 @@ def test_ensure_started_raises_when_process_never_becomes_healthy(
     assert process.terminated is True
     assert not paths.pid_file.exists()
     assert not paths.socket_path.exists()
+    assert paths.lock_file.exists()
 
 
 def test_status_ignores_stale_or_unrelated_pid(tmp_path: Path) -> None:

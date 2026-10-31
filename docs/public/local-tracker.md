@@ -156,8 +156,9 @@ ctxd tracker stop
 pip uninstall ctxd
 ```
 
-Uninstalling the package does not remove `~/.ctxd`. Review and remove that
-directory separately only if you intend to delete all ctxd-managed local state.
+Stopping the tracker and uninstalling the package preserve ctxd-managed local
+state and the original source folders. See [Security and data](/docs/security)
+for the storage layout, environment overrides, and manual cleanup behavior.
 
 ## Troubleshooting
 

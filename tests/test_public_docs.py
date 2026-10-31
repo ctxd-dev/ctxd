@@ -4,9 +4,23 @@ import subprocess
 import sys
 from pathlib import Path
 
-from ctxd.secure_store import CREDENTIALS_PATH_ENV_VAR, get_credentials_path
+from ctxd.config import DEFAULT_CONFIG_PATH
+from ctxd.local_ctxfs_service import default_paths as default_ctxfs_paths
+from ctxd.secure_store import (
+    CREDENTIALS_PATH_ENV_VAR,
+    DEFAULT_CREDENTIALS_PATH,
+    get_credentials_path,
+)
+from ctxd.tracker import default_tracker_paths
+from ctxd.tracker_service import default_paths as default_tracker_service_paths
 
 PUBLIC_DOCS = Path(__file__).parents[1] / "docs" / "public"
+
+
+def _documented_home_path(path: Path, *, directory: bool = False) -> str:
+    relative = path.relative_to(Path.home()).as_posix()
+    suffix = "/" if directory else ""
+    return f"~/{relative}{suffix}"
 
 
 def test_public_docs_manifest_is_complete_and_safe() -> None:
@@ -63,6 +77,103 @@ def test_cli_docs_only_list_supported_local_environment_variables() -> None:
     assert "CTXD_LOCAL_HOME" not in text
     assert "CTXD_LOCAL_CTXFS_HOST" not in text
     assert "CTXD_LOCAL_CTXFS_PORT" not in text
+
+
+def test_security_docs_define_the_local_storage_contract() -> None:
+    text = (PUBLIC_DOCS / "security.md").read_text()
+
+    ctxfs_paths = default_ctxfs_paths()
+    storage_table = text.split(
+        "The managed local deployment uses these default paths:", 1
+    )[1].split("The detached tracker", 1)[0]
+    storage_rows = tuple(
+        tuple(cell.strip() for cell in line.strip("|").split("|"))
+        for line in storage_table.splitlines()
+        if line.startswith("|")
+    )
+    assert storage_rows == (
+        ("Data", "Default location", "Lifecycle"),
+        ("---", "---", "---"),
+        (
+            "CLI settings, registered source paths, and generated ctxfs prefixes",
+            f"`{_documented_home_path(DEFAULT_CONFIG_PATH)}`",
+            "Persistent",
+        ),
+        (
+            "Client bearer credentials and machine registration state",
+            f"`{_documented_home_path(DEFAULT_CREDENTIALS_PATH)}`",
+            "Persistent and sensitive",
+        ),
+        (
+            "Credential write lock",
+            f"`{_documented_home_path(DEFAULT_CREDENTIALS_PATH.with_suffix('.lock'))}`",
+            "Persistent coordination file; contains no credential payload",
+        ),
+        (
+            "Installation identity and machine registration locks",
+            "`~/.ctxd/.ctxd-locks/identity-<digest>.lock` and "
+            "`~/.ctxd/.ctxd-locks/register-<digest>.lock`",
+            "Persistent coordination files; digest names vary and contain no "
+            "credential payload",
+        ),
+        (
+            "Tracker synchronization metadata",
+            f"`{_documented_home_path(default_tracker_paths().state_file)}`",
+            "Persistent and sensitive",
+        ),
+        (
+            "Tracker current-health record",
+            f"`{_documented_home_path(default_tracker_paths().health_file)}`",
+            "Persistent",
+        ),
+        (
+            "Tracker process ID",
+            f"`{_documented_home_path(default_tracker_service_paths().pid_file)}`",
+            "Runtime only",
+        ),
+        (
+            "Managed ctxfs process ID and socket",
+            f"`{_documented_home_path(ctxfs_paths.pid_file)}` "
+            f"and `{_documented_home_path(ctxfs_paths.socket_path)}`",
+            "Runtime only",
+        ),
+        (
+            "Managed ctxfs coordination lock",
+            f"`{_documented_home_path(ctxfs_paths.lock_file)}`",
+            "Persistent coordination artifact; contains no service state",
+        ),
+        (
+            "Managed ctxfs tree and catalog",
+            f"`{_documented_home_path(ctxfs_paths.root, directory=True)}`",
+            "Persistent and sensitive",
+        ),
+    )
+
+    assert "The detached tracker does not currently create a log file" in text
+    assert "`CTXD_CREDENTIALS_PATH` independently selects" in text
+    assert "credentials file defaults to `credentials.json` beside" in text
+    assert (
+        "credential write lock and `.ctxd-locks/` directory are\ncreated beside "
+        "the selected credentials file"
+    ) in text
+    assert (
+        "Their lock files persist after use; ctxd does not remove\nthem automatically"
+    ) in text
+    assert (
+        "managed ctxfs coordination lock also persists after the service exits; its\n"
+        "runtime cleanup removes the process-ID file and socket, but not `ctxfs.lock`"
+    ) in text
+    assert "Changing either variable does not move existing data" in text
+    assert "Stopping the tracker" not in text
+    assert "`ctxd tracker stop` stops the tracker" in text
+    assert "it does not stop the managed ctxfs service" in text
+    assert "can remain running across\ntracker stop and package uninstall" in text
+    assert "CLI currently has no managed ctxfs stop\ncommand" in text
+    assert "identifies `ctxd.local_ctxfs_service`" in text
+    assert "`ctxd tracker stop` is not\nsufficient for this step" in text
+    assert "Uninstalling the package also does not\ndelete `~/.ctxd`" in text
+    assert "It does not\ndelete the original tracked source folders" in text
+    assert "These permissions are not encryption" in text
 
 
 def test_documented_credentials_path_precedence_matches_runtime(
@@ -245,7 +356,7 @@ def test_tracker_docs_match_structured_diagnostics_and_navigation() -> None:
     assert "last sync result: success" in tracker
     assert "last sync result: failed" in tracker
     assert "last sync result: incomplete" in tracker
-    assert "does not create a persistent text log" in security
+    assert "does not currently create a log file" in security
     assert "configuration, state, and logs" not in security
 
 
