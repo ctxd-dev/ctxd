@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -296,16 +297,22 @@ def test_ctxfs_http_mcp_uses_endpoint_bearer(monkeypatch: pytest.MonkeyPatch) ->
     assert client.call_tool("tree", {"prefix": "Docs"}) == {"items": []}
 
 
-def test_ctxfs_http_mcp_extends_transport_timeout_for_max_grep_deadline(
+def test_ctxfs_http_mcp_allows_multi_page_grep_read_with_bounded_connection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = Client(ctxfs_endpoint="https://ctxfs.example")
 
     async def mock_request(self, method, url, **kwargs):
         del self
+        await asyncio.sleep(0)
         assert method == "POST"
         assert url == "/mcp"
-        assert kwargs["timeout"] == 65.0
+        timeout = kwargs["timeout"]
+        assert isinstance(timeout, httpx.Timeout)
+        assert timeout.read is None
+        assert timeout.connect == 30.0
+        assert timeout.write == 30.0
+        assert timeout.pool == 30.0
         assert kwargs["json"]["params"] == {
             "name": "grep",
             "arguments": {"pattern": "needle", "timeout_seconds": 60.0},

@@ -223,8 +223,14 @@ class AsyncCtxfsClient:
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         request_timeout = None
         if name == "grep":
-            request_timeout = self._grep_request_timeout(
-                arguments.get("timeout_seconds")
+            # The MCP endpoint consumes grep continuation pages server-side.  Keep
+            # connection/write/pool bounds, but do not apply a single-page read
+            # deadline to the aggregate response.
+            request_timeout = httpx.Timeout(
+                None,
+                connect=self._timeout,
+                write=self._timeout,
+                pool=self._timeout,
             )
         payload = await self._request(
             "POST",
@@ -260,7 +266,7 @@ class AsyncCtxfsClient:
         json: dict[str, Any] | None = None,
         bearer_token: str | None | object = _USE_CLIENT_API_KEY,
         response_status: list[int] | None = None,
-        timeout: float | None = None,
+        timeout: float | httpx.Timeout | None = None,
     ) -> dict[str, Any]:
         if self._managed_local and not self._managed_local_ready:
             await asyncio.to_thread(_ensure_managed_local_started)
