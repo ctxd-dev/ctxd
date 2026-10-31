@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import fnmatch
+import functools
 import hashlib
 import json
 import logging
@@ -12,7 +13,6 @@ import selectors
 import shutil
 import sqlite3
 import subprocess
-import sys
 import time
 import unicodedata
 import uuid
@@ -55,9 +55,11 @@ GREP_MIN_TIMEOUT_SECONDS = 0.1
 GREP_MAX_TIMEOUT_SECONDS = 60.0
 GREP_MAX_CURSOR_BYTES = 4096
 GREP_JSON_CHUNK_BYTES = 64 * 1024
+RIPGREP_MIN_VERSION = (13, 0, 0)
 GREP_MAX_JSON_RECORD_BYTES = 1_000_000
 _GREP_CONTENT_HASH_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _GREP_PATH_IDENTITY_RE = re.compile(r"stat:\d+:\d+:\d+:-?\d+:-?\d+\Z")
+_REGEX_METACHARACTERS = frozenset(r".^$*+?{}[]\|()")
 
 
 @dataclass
@@ -75,6 +77,18 @@ class _GrepCursor:
     content_hash: str | None
     mode: str
     anchor: tuple[int, int, int] | None = None
+
+
+def _plain_literal_pattern(pattern: str) -> str | None:
+    if len(pattern) < 3 or any(
+        character in _REGEX_METACHARACTERS for character in pattern
+    ):
+        return None
+    return pattern
+
+
+def _fts_literal_query(literal: str) -> str:
+    return f'"{literal.replace(chr(34), chr(34) * 2)}"'
 
 
 def _encode_grep_cursor(cursor: _GrepCursor) -> str:
@@ -204,6 +218,7 @@ class CtxfsStore:
         self.undo_root.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(self.catalog_path)
         self.connection.row_factory = sqlite3.Row
+        self._grep_index_available = False
         self.apply_migrations()
 
     def close(self) -> None:
@@ -223,6 +238,7 @@ class CtxfsStore:
                 """
             )
             self._migrate_entries_table()
+            self._initialize_grep_index()
             self.connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS submissions (
@@ -333,6 +349,208 @@ class CtxfsStore:
                 )
                 """
             )
+
+    def _initialize_grep_index(self) -> None:
+        index_existed = _table_exists(self.connection, "grep_index")
+        mapping_existed = _table_exists(self.connection, "grep_index_entries")
+        self.connection.execute("SAVEPOINT grep_index_init")
+        try:
+            self.connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS grep_index_metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
+            )
+            self.connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS grep_index_entries (
+                    rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    writer_id TEXT NOT NULL,
+                    source_key TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    UNIQUE(user_id, writer_id, source_key),
+                    UNIQUE(user_id, path)
+                )
+                """
+            )
+            self.connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS grep_index_entries_lookup
+                ON grep_index_entries(user_id, path)
+                """
+            )
+            self.connection.execute(
+                """
+                CREATE VIRTUAL TABLE IF NOT EXISTS grep_index USING fts5(
+                    content,
+                    tokenize='trigram',
+                    content='',
+                    contentless_delete=1
+                )
+                """
+            )
+            self._grep_index_available = True
+            state = self.connection.execute(
+                "SELECT value FROM grep_index_metadata WHERE key = 'complete'"
+            ).fetchone()
+            if (
+                index_existed
+                and mapping_existed
+                and state is not None
+                and state[0] == "1"
+                and self._grep_index_is_consistent()
+            ):
+                complete = True
+            else:
+                complete = self._backfill_grep_index()
+                self.connection.execute(
+                    """
+                    INSERT INTO grep_index_metadata(key, value) VALUES ('complete', ?)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                    """,
+                    ("1" if complete else "0",),
+                )
+        except sqlite3.OperationalError as error:
+            if not _is_fts_capability_error(error):
+                raise
+            self.connection.execute("ROLLBACK TO grep_index_init")
+            self.connection.execute("RELEASE grep_index_init")
+            logger.info(
+                "SQLite FTS5 trigram indexing is unavailable; using scan grep",
+                exc_info=True,
+            )
+            self._grep_index_available = False
+            return
+        self.connection.execute("RELEASE grep_index_init")
+        self._grep_index_available = complete
+
+    def _grep_index_is_consistent(self) -> bool:
+        inconsistent = self.connection.execute(
+            """
+            SELECT 1
+            FROM (
+                SELECT entries.rowid
+                FROM entries
+                LEFT JOIN grep_index_entries AS mapping
+                  ON mapping.user_id = entries.user_id
+                 AND mapping.writer_id = entries.writer_id
+                 AND mapping.source_key = entries.source_key
+                LEFT JOIN grep_index AS posting ON posting.rowid = mapping.rowid
+                WHERE mapping.rowid IS NULL
+                   OR mapping.path != entries.path
+                   OR mapping.content_hash != entries.content_hash
+                   OR posting.rowid IS NULL
+                UNION ALL
+                SELECT mapping.rowid
+                FROM grep_index_entries AS mapping
+                LEFT JOIN entries
+                  ON entries.user_id = mapping.user_id
+                 AND entries.writer_id = mapping.writer_id
+                 AND entries.source_key = mapping.source_key
+                WHERE entries.rowid IS NULL
+                UNION ALL
+                SELECT posting.rowid
+                FROM grep_index AS posting
+                LEFT JOIN grep_index_entries AS mapping
+                  ON mapping.rowid = posting.rowid
+                WHERE mapping.rowid IS NULL
+            )
+            LIMIT 1
+            """
+        ).fetchone()
+        return inconsistent is None
+
+    def _backfill_grep_index(self) -> bool:
+        orphaned_postings = self.connection.execute(
+            """
+            SELECT posting.rowid
+            FROM grep_index AS posting
+            LEFT JOIN grep_index_entries AS mapping ON mapping.rowid = posting.rowid
+            WHERE mapping.rowid IS NULL
+            """
+        ).fetchall()
+        for row in orphaned_postings:
+            self.connection.execute(
+                "DELETE FROM grep_index WHERE rowid = ?", (row["rowid"],)
+            )
+
+        orphaned = self.connection.execute(
+            """
+            SELECT mapping.rowid
+            FROM grep_index_entries AS mapping
+            LEFT JOIN entries
+              ON entries.user_id = mapping.user_id
+             AND entries.writer_id = mapping.writer_id
+             AND entries.source_key = mapping.source_key
+            WHERE entries.source_key IS NULL
+            """
+        ).fetchall()
+        for row in orphaned:
+            self.connection.execute(
+                "DELETE FROM grep_index WHERE rowid = ?", (row["rowid"],)
+            )
+            self.connection.execute(
+                "DELETE FROM grep_index_entries WHERE rowid = ?", (row["rowid"],)
+            )
+
+        rows = self.connection.execute(
+            """
+            SELECT entries.*, mapping.rowid AS index_rowid,
+                   mapping.path AS index_path,
+                   mapping.content_hash AS index_content_hash,
+                   EXISTS(
+                       SELECT 1 FROM grep_index
+                       WHERE grep_index.rowid = mapping.rowid
+                   ) AS has_posting
+            FROM entries
+            LEFT JOIN grep_index_entries AS mapping
+              ON mapping.user_id = entries.user_id
+             AND mapping.writer_id = entries.writer_id
+             AND mapping.source_key = entries.source_key
+            ORDER BY entries.user_id, entries.path
+            """
+        ).fetchall()
+        complete = True
+        for row in rows:
+            needs_content = (
+                row["index_rowid"] is None
+                or row["index_content_hash"] != row["content_hash"]
+                or not row["has_posting"]
+            )
+            if not needs_content:
+                if row["index_path"] != row["path"]:
+                    self.connection.execute(
+                        "UPDATE grep_index_entries SET path = ? WHERE rowid = ?",
+                        (row["path"], row["index_rowid"]),
+                    )
+                continue
+            object_path = self._object_path(row["user_id"], row["object_id"])
+            try:
+                data = object_path.read_bytes()
+            except OSError:
+                complete = False
+                continue
+            if _sha256(data) != row["content_hash"]:
+                complete = False
+                continue
+            try:
+                text = data.decode("utf-8")
+            except UnicodeDecodeError:
+                complete = False
+                continue
+            self._upsert_grep_index(
+                row["user_id"],
+                row["writer_id"],
+                row["source_key"],
+                row["path"],
+                row["content_hash"],
+                text,
+            )
+        return complete
 
     def register_machine(
         self,
@@ -1239,6 +1457,20 @@ class CtxfsStore:
             )
         if resume is not None and resume.mode == "search_start":
             resume = None
+        literal = _plain_literal_pattern(pattern)
+        if self._grep_index_available and literal is not None:
+            return self._grep_indexed_literal(
+                user_id,
+                pattern,
+                literal,
+                normalized_prefix,
+                prefix_hash,
+                pattern_hash,
+                deadline,
+                limit,
+                resume,
+                resume_path,
+            )
         matches: list[GrepMatch] = []
         incomplete = False
         resume_pending = resume is not None
@@ -1467,13 +1699,161 @@ class CtxfsStore:
             stopped_by=None if not incomplete else "catalog_mismatch",
         )
 
-    def _validate_grep_pattern(self, pattern: str, deadline: float) -> None:
-        if not _has_rg():
+    def _grep_indexed_literal(
+        self,
+        user_id: str,
+        pattern: str,
+        literal: str,
+        normalized_prefix: str,
+        prefix_hash: str,
+        pattern_hash: str,
+        deadline: float,
+        limit: int,
+        resume: _GrepCursor | None,
+        resume_path: str,
+    ) -> GrepPage:
+        prefix_start = f"{normalized_prefix}/" if normalized_prefix else ""
+        rows = self.connection.execute(
+            """
+            SELECT mapping.path, mapping.content_hash
+            FROM grep_index
+            JOIN grep_index_entries AS mapping
+              ON mapping.rowid = grep_index.rowid
+            WHERE grep_index MATCH ?
+              AND mapping.user_id = ?
+              AND (
+                  ? = ''
+                  OR mapping.path = ?
+                  OR substr(mapping.path, 1, ?) = ?
+              )
+            ORDER BY mapping.path
+            """,
+            (
+                _fts_literal_query(literal),
+                user_id,
+                normalized_prefix,
+                normalized_prefix,
+                len(prefix_start),
+                prefix_start,
+            ),
+        )
+        matches: list[GrepMatch] = []
+        incomplete = False
+        resume_pending = resume is not None
+        for row in rows:
+            path = row["path"]
+            if time.monotonic() >= deadline:
+                return _grep_timeout_page(
+                    matches,
+                    _grep_unsearched_cursor(
+                        normalized_prefix,
+                        pattern_hash,
+                        path,
+                        resume if resume_pending else None,
+                        row["content_hash"],
+                    ),
+                )
+            if resume_pending and path != resume_path:
+                continue
+            tree_path = self._tree_path(user_id, path)
+            if not tree_path.exists():
+                incomplete = True
+                continue
             try:
-                re.compile(pattern)
-            except re.error as exc:
-                raise ValueError("invalid ctxfs grep pattern") from exc
-            return
+                content_hash = _hash_path(tree_path, deadline)
+            except TimeoutError:
+                return _grep_timeout_page(
+                    matches,
+                    _grep_unsearched_cursor(
+                        normalized_prefix,
+                        pattern_hash,
+                        path,
+                        resume if resume_pending else None,
+                        row["content_hash"],
+                    ),
+                )
+            if content_hash != row["content_hash"]:
+                incomplete = True
+                continue
+            skip_through: tuple[int, int, int] | None = None
+            if resume_pending:
+                if (
+                    resume is not None
+                    and resume.content_hash is not None
+                    and resume.content_hash != content_hash
+                ):
+                    raise ValueError("ctxfs grep cursor is stale")
+                resume_pending = False
+                if resume is not None and resume.mode == "after_match":
+                    skip_through = resume.anchor
+            try:
+                path_result = self._grep_tree_path(
+                    pattern,
+                    tree_path,
+                    path,
+                    content_hash,
+                    deadline,
+                    limit - len(matches),
+                    skip_through=skip_through,
+                )
+            except TimeoutError:
+                return _grep_timeout_page(
+                    matches,
+                    _GrepCursor(
+                        prefix_hash=prefix_hash,
+                        pattern_hash=pattern_hash,
+                        path=_grep_relative_path(normalized_prefix, path),
+                        content_hash=content_hash,
+                        mode="after_match"
+                        if skip_through is not None
+                        else "file_start",
+                        anchor=skip_through,
+                    ),
+                )
+            if not path_result.anchor_found:
+                raise ValueError("ctxfs grep cursor is stale")
+            for match in path_result.matches:
+                matches.append(match)
+                if len(matches) >= limit:
+                    return GrepPage(
+                        items=matches,
+                        complete=False,
+                        stopped_by="limit",
+                        next_cursor=_grep_match_cursor(
+                            normalized_prefix, pattern_hash, match
+                        ),
+                    )
+            if path_result.stopped_by is not None:
+                next_cursor = None
+                if path_result.stopped_by == "timeout":
+                    next_cursor = _encode_grep_cursor(
+                        _GrepCursor(
+                            prefix_hash=prefix_hash,
+                            pattern_hash=pattern_hash,
+                            path=_grep_relative_path(normalized_prefix, path),
+                            content_hash=content_hash,
+                            mode="after_match"
+                            if skip_through is not None
+                            else "file_start",
+                            anchor=skip_through,
+                        )
+                    )
+                return GrepPage(
+                    items=matches,
+                    complete=False,
+                    stopped_by=path_result.stopped_by,
+                    next_cursor=next_cursor,
+                )
+        if resume_pending:
+            raise ValueError("ctxfs grep cursor is stale")
+        return GrepPage(
+            items=matches,
+            complete=not incomplete,
+            stopped_by=None if not incomplete else "catalog_mismatch",
+        )
+
+    def _validate_grep_pattern(self, pattern: str, deadline: float) -> None:
+        _require_rg()
 
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -1509,15 +1889,11 @@ class CtxfsStore:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError
-        use_rg = _has_rg()
-        command = (
-            _rg_command(pattern, tree_path)
-            if use_rg
-            else _python_grep_command(pattern, tree_path)
-        )
+        _require_rg()
+        command = _rg_command(pattern, tree_path)
         process = subprocess.Popen(
             command,
-            env=_rg_env() if use_rg else None,
+            env=_rg_env(),
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         )
@@ -1711,6 +2087,96 @@ class CtxfsStore:
                 now,
             ),
         )
+        self._upsert_grep_index(
+            user_id,
+            writer_id,
+            operation.source_key,
+            path,
+            content_hash,
+            text,
+        )
+
+    def _upsert_grep_index(
+        self,
+        user_id: str,
+        writer_id: str,
+        source_key: str,
+        path: str,
+        content_hash: str,
+        text: str,
+    ) -> None:
+        if not self._grep_index_available:
+            return
+        existing = self.connection.execute(
+            """
+            SELECT mapping.rowid, mapping.content_hash,
+                   EXISTS(
+                       SELECT 1 FROM grep_index
+                       WHERE grep_index.rowid = mapping.rowid
+                   ) AS has_posting
+            FROM grep_index_entries AS mapping
+            WHERE user_id = ? AND writer_id = ? AND source_key = ?
+            """,
+            (user_id, writer_id, source_key),
+        ).fetchone()
+        if existing is None:
+            cursor = self.connection.execute(
+                """
+                INSERT INTO grep_index_entries(
+                    user_id, writer_id, source_key, path, content_hash
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (user_id, writer_id, source_key, path, content_hash),
+            )
+            rowid = cursor.lastrowid
+            assert rowid is not None
+            self.connection.execute(
+                "INSERT INTO grep_index(rowid, content) VALUES (?, ?)",
+                (rowid, text),
+            )
+            return
+        rowid = existing["rowid"]
+        if existing["content_hash"] != content_hash or not existing["has_posting"]:
+            if existing["has_posting"]:
+                self.connection.execute(
+                    "DELETE FROM grep_index WHERE rowid = ?", (rowid,)
+                )
+            self.connection.execute(
+                "INSERT INTO grep_index(rowid, content) VALUES (?, ?)",
+                (rowid, text),
+            )
+        self.connection.execute(
+            """
+            UPDATE grep_index_entries
+            SET path = ?, content_hash = ?
+            WHERE rowid = ?
+            """,
+            (path, content_hash, rowid),
+        )
+
+    def _delete_grep_index(
+        self,
+        user_id: str,
+        writer_id: str,
+        source_key: str,
+    ) -> None:
+        if not self._grep_index_available:
+            return
+        row = self.connection.execute(
+            """
+            SELECT rowid FROM grep_index_entries
+            WHERE user_id = ? AND writer_id = ? AND source_key = ?
+            """,
+            (user_id, writer_id, source_key),
+        ).fetchone()
+        if row is None:
+            return
+        self.connection.execute(
+            "DELETE FROM grep_index WHERE rowid = ?", (row["rowid"],)
+        )
+        self.connection.execute(
+            "DELETE FROM grep_index_entries WHERE rowid = ?", (row["rowid"],)
+        )
 
     def _move(
         self,
@@ -1775,6 +2241,20 @@ class CtxfsStore:
                     source_key_by_path[old_path],
                 ),
             )
+            if self._grep_index_available:
+                self.connection.execute(
+                    """
+                    UPDATE grep_index_entries
+                    SET path = ?
+                    WHERE user_id = ? AND writer_id = ? AND source_key = ?
+                    """,
+                    (
+                        temp_logical_path,
+                        user_id,
+                        writer_id,
+                        source_key_by_path[old_path],
+                    ),
+                )
         for operation in operations:
             entry = entries_by_source[operation.source_key]
             path = _normalize_path(operation.path)
@@ -1810,6 +2290,15 @@ class CtxfsStore:
                     operation.source_key,
                 ),
             )
+            if self._grep_index_available:
+                self.connection.execute(
+                    """
+                    UPDATE grep_index_entries
+                    SET path = ?
+                    WHERE user_id = ? AND writer_id = ? AND source_key = ?
+                    """,
+                    (path, user_id, writer_id, operation.source_key),
+                )
 
     def _validated_move_entry(
         self,
@@ -1871,6 +2360,7 @@ class CtxfsStore:
             return
         self._require_authorized_path(user_id, writer_id, existing.path)
         self._remove_tree_entry(user_id, existing.path, undo_stack, cleanup_stack)
+        self._delete_grep_index(user_id, writer_id, operation.source_key)
         self.connection.execute(
             """
             DELETE FROM entries
@@ -2696,14 +3186,37 @@ def _rg_command(pattern: str, path: Path) -> list[str]:
     ]
 
 
-def _python_grep_command(pattern: str, path: Path) -> list[str]:
-    encoded_pattern = base64.urlsafe_b64encode(pattern.encode("utf-8")).decode("ascii")
-    worker = Path(__file__).with_name("_grep_worker.py")
-    return [sys.executable, "-S", str(worker), encoded_pattern, str(path)]
+def _require_rg() -> None:
+    executable = shutil.which("rg", path=os.environ.get("PATH", ""))
+    if executable is None:
+        raise RuntimeError(
+            "ctxfs grep requires ripgrep (rg); install ripgrep and restart ctxd"
+        )
+    _validate_rg_version(executable)
 
 
-def _has_rg() -> bool:
-    return shutil.which("rg", path=os.environ.get("PATH", "")) is not None
+@functools.lru_cache(maxsize=8)
+def _validate_rg_version(executable: str) -> None:
+    try:
+        completed = subprocess.run(
+            [executable, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        version_match = re.match(r"ripgrep (\d+)\.(\d+)\.(\d+)", completed.stdout)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError("ctxfs could not validate the installed ripgrep") from exc
+    if completed.returncode != 0 or version_match is None:
+        raise RuntimeError("ctxfs could not validate the installed ripgrep")
+    version = tuple(int(part) for part in version_match.groups())
+    if version < RIPGREP_MIN_VERSION:
+        required = ".".join(str(part) for part in RIPGREP_MIN_VERSION)
+        installed = ".".join(str(part) for part in version)
+        raise RuntimeError(
+            f"ctxfs requires ripgrep {required} or newer; found {installed}"
+        )
 
 
 def _hash_path(path: Path, deadline: float) -> str:
@@ -2993,6 +3506,18 @@ def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
         (table_name,),
     ).fetchone()
     return row is not None
+
+
+def _is_fts_capability_error(error: sqlite3.OperationalError) -> bool:
+    message = str(error).lower()
+    return any(
+        marker in message
+        for marker in (
+            "no such module: fts5",
+            "no such tokenizer: trigram",
+            "unrecognized option: contentless_delete",
+        )
+    )
 
 
 def _table_columns(connection: sqlite3.Connection, table_name: str) -> set[str]:

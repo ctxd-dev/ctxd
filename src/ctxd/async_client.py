@@ -64,14 +64,12 @@ class AsyncFilesClient:
         prefix: str = "",
         limit: int | None = None,
         timeout_seconds: float | None = None,
-        cursor: str | None = None,
     ):
         return await self._ctxfs().grep(
             pattern,
             prefix=prefix,
             limit=limit,
             timeout_seconds=timeout_seconds,
-            cursor=cursor,
         )
 
     async def read(self, path: str, *, max_bytes: int | None = None):

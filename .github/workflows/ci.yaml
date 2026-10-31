@@ -28,6 +28,9 @@ jobs:
       - name: Sync
         run: uv sync --locked
 
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
       - name: Run Tests
         run: uv run pytest tests -v
 

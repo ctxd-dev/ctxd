@@ -13,7 +13,7 @@
       "endpoint status": {"options": ["--help", "-h"], "positionals": []},
       "files": {"options": ["--help", "-h"], "positionals": []},
       "files glob": {"options": ["--help", "--limit", "--prefix", "-h"], "positionals": ["pattern"]},
-      "files grep": {"options": ["--cursor", "--help", "--limit", "--prefix", "--timeout-seconds", "-h"], "positionals": ["pattern"]},
+      "files grep": {"options": ["--help", "--limit", "--prefix", "--timeout-seconds", "-h"], "positionals": ["pattern"]},
       "files ls": {"options": ["--help", "--limit", "-h"], "positionals": ["path"]},
       "files read": {"options": ["--help", "--json", "--max-bytes", "-h"], "positionals": ["path"]},
       "files read-lines": {"options": ["--end", "--help", "--json", "--start", "-h"], "positionals": ["path"]},

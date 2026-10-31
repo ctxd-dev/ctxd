@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -5,7 +6,7 @@ import httpx
 import pytest
 
 import ctxd
-from ctxd import AsyncClient, Client, CtxfsClient, CtxfsGrepPage
+from ctxd import AsyncClient, Client, CtxfsClient, CtxfsGrepPage, CtxfsGrepResult
 from ctxd.config import (
     DEFAULT_CTXFS_SOCKET,
     CtxfsEndpointResolution,
@@ -16,12 +17,13 @@ from ctxd.config import (
     resolve_ctxfs_endpoint_details,
     save_ctxfs_api_key,
 )
-from ctxd.exceptions import CtxdError, CtxdProtocolError
+from ctxd.exceptions import CtxdError, CtxdIncompleteSearchError, CtxdProtocolError
 
 
 def test_ctxfs_grep_page_is_part_of_public_api() -> None:
     assert ctxd.CtxfsGrepPage is CtxfsGrepPage
     assert "CtxfsGrepPage" in ctxd.__all__
+    assert ctxd.CtxfsGrepResult is CtxfsGrepResult
 
 
 def test_removed_sdk_interfaces_are_absent() -> None:
@@ -295,16 +297,22 @@ def test_ctxfs_http_mcp_uses_endpoint_bearer(monkeypatch: pytest.MonkeyPatch) ->
     assert client.call_tool("tree", {"prefix": "Docs"}) == {"items": []}
 
 
-def test_ctxfs_http_mcp_extends_transport_timeout_for_max_grep_deadline(
+def test_ctxfs_http_mcp_allows_multi_page_grep_read_with_bounded_connection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = Client(ctxfs_endpoint="https://ctxfs.example")
 
     async def mock_request(self, method, url, **kwargs):
         del self
+        await asyncio.sleep(0)
         assert method == "POST"
         assert url == "/mcp"
-        assert kwargs["timeout"] == 65.0
+        timeout = kwargs["timeout"]
+        assert isinstance(timeout, httpx.Timeout)
+        assert timeout.read is None
+        assert timeout.connect == 30.0
+        assert timeout.write == 30.0
+        assert timeout.pool == 30.0
         assert kwargs["json"]["params"] == {
             "name": "grep",
             "arguments": {"pattern": "needle", "timeout_seconds": 60.0},
@@ -369,7 +377,7 @@ def test_synchronous_files_client_exposes_ctxfs_grep(
     assert client.files.grep("needle", prefix="root", limit=5).items[0].line == "needle"
 
 
-def test_synchronous_files_client_forwards_grep_continuation_options(
+def test_synchronous_files_client_automatically_resumes_grep(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = Client(ctxfs_endpoint="http://127.0.0.1:8765")
@@ -378,27 +386,26 @@ def test_synchronous_files_client_forwards_grep_continuation_options(
         self, method, url, *, params=None, headers=None, timeout=None
     ):
         assert method == "GET" and url == "/api/ctxfs/grep"
-        assert params == {
+        expected = {
             "pattern": "needle",
             "prefix": "root",
             "limit": 5,
             "timeout_seconds": 10.0,
-            "cursor": "next-page",
         }
-        assert timeout == 30.0
-        return httpx.Response(
-            200,
-            json={
+        if getattr(mock_request, "called", False):
+            expected["cursor"] = "later-page"
+            response = {"items": [], "complete": True}
+        else:
+            mock_request.called = True
+            response = {
                 "items": [],
                 "complete": False,
                 "stopped_by": "timeout",
                 "next_cursor": "later-page",
-                "continuation_required": True,
-                "continuation_hint": (
-                    "Search timed out; increase timeout_seconds or narrow prefix."
-                ),
-            },
-        )
+            }
+        assert params == expected
+        assert timeout == 30.0
+        return httpx.Response(200, json=response)
 
     monkeypatch.setattr("httpx.AsyncClient.request", mock_request)
     result = client.files.grep(
@@ -406,12 +413,9 @@ def test_synchronous_files_client_forwards_grep_continuation_options(
         prefix="root",
         limit=5,
         timeout_seconds=10.0,
-        cursor="next-page",
     )
-    assert result.next_cursor == "later-page"
-    assert result.continuation_required is True
-    assert result.continuation_hint is not None
-    assert "increase timeout_seconds" in result.continuation_hint
+    assert result.complete is True
+    assert not hasattr(result, "next_cursor")
 
 
 def test_synchronous_files_client_extends_transport_timeout_for_max_grep_deadline(
@@ -427,6 +431,22 @@ def test_synchronous_files_client_extends_transport_timeout_for_max_grep_deadlin
     monkeypatch.setattr("httpx.AsyncClient.request", mock_request)
     result = client.files.grep("needle", timeout_seconds=60.0)
     assert result.complete is True
+
+
+def test_synchronous_files_client_rejects_non_resumable_partial_grep(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = Client(ctxfs_endpoint="http://127.0.0.1:8765")
+
+    async def mock_request(self, method, url, **kwargs):
+        return httpx.Response(
+            200,
+            json={"items": [], "complete": False, "stopped_by": "catalog_mismatch"},
+        )
+
+    monkeypatch.setattr("httpx.AsyncClient.request", mock_request)
+    with pytest.raises(CtxdIncompleteSearchError, match="not provide an exhaustive"):
+        client.files.grep("needle")
 
 
 def test_default_endpoint_is_local_ctxfs(
