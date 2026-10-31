@@ -2,8 +2,9 @@
 title: 'Local tracker'
 ---
 
-The local tracker watches folders you select and keeps their ctxfs representation
-current. The tracker and ctxfs server are separate processes. Starting the
+The local tracker watches folders you select and synchronizes their ctxfs
+representation when a scan completes successfully. The tracker and ctxfs server
+are separate processes. Starting the
 tracker starts ctxfs only when the effective endpoint is the default managed
 local socket; an explicitly configured endpoint is checked instead.
 
@@ -79,6 +80,28 @@ The tracker polls registered folders every 10 seconds rather than subscribing
 to operating-system filesystem events. Consequently, a change may take up to
 one polling interval, plus processing time, to appear in ctxfs.
 
+## Incomplete scans and stale content
+
+A running tracker does not by itself guarantee that indexed content is current.
+A file read or stat error, invalid UTF-8 content, or an unavailable registered
+folder makes that folder's scan incomplete. The tracker still submits changes
+for files it read successfully, but it does not infer deletions for the affected
+folder from that scan. This folder-wide safeguard prevents a temporary access or
+decoding failure from deleting unrelated indexed content.
+
+Consequently, a file that was indexed earlier can remain available in ctxfs at
+its last successfully indexed version even after its source changes or becomes
+unreadable. The source folder remains authoritative; the retained ctxfs version
+is a temporary, potentially stale representation. Restarting the tracker does
+not correct it while the underlying read, stat, UTF-8, or folder-access problem
+remains.
+
+Restore access to the folder or file, or replace invalid content with valid
+UTF-8, then allow a later poll to complete. That complete scan reconciles
+updates and deletions. If you intentionally want to stop tracking the whole
+folder, `ctxd folders remove NAME` is different: it removes the tracked root
+from ctxfs rather than preserving it as an incomplete scan.
+
 ## Monitor
 
 ```bash
@@ -86,8 +109,9 @@ ctxd tracker status
 ctxd endpoint status
 ```
 
-A healthy setup reports the effective endpoint, `ctxfs healthy: true`, and a
-running tracker.
+A connected setup reports the effective endpoint, `ctxfs healthy: true`, and a
+running tracker. Process liveness and endpoint health do not prove that the
+latest folder scan completed or that every indexed file is current.
 
 ## Move a folder
 
@@ -133,5 +157,8 @@ certificate trust chain, and that the credential has `submit` plus the required
 prefix. Rotation revokes the old key immediately; run `ctxd logout --endpoint
 URL`, then `ctxd login --endpoint URL` and enter the newly printed token.
 
-If a change has not appeared, restart tracking with `ctxd tracker stop` followed
-by `ctxd tracker start`, then check `ctxd tracker status`.
+If a change has not appeared, check that the source folder still exists and that
+the affected file is readable, within the size limit, and valid UTF-8. Correct
+the source problem and allow another polling interval. Restarting with `ctxd
+tracker stop` followed by `ctxd tracker start` can recover a stopped process,
+but it cannot repair an unreadable folder or invalid source content.

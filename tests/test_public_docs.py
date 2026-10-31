@@ -107,6 +107,19 @@ def test_overview_describes_optional_tracker_and_endpoint_ownership() -> None:
     assert "Starting the tracker ensures the ctxfs server is running" not in text
 
 
+def test_tracker_docs_explain_incomplete_scan_stale_content_and_recovery() -> None:
+    guide = (PUBLIC_DOCS / "local-tracker.md").read_text()
+    quickstart = (PUBLIC_DOCS / "quickstart.md").read_text()
+
+    assert "does not by itself guarantee that indexed content is current" in guide
+    assert "does not infer deletions for the affected\nfolder" in guide
+    assert "last successfully indexed version" in guide
+    assert "replace invalid content with valid\nUTF-8" in guide
+    assert "Restarting the tracker does\nnot correct it" in guide
+    assert "`ctxd folders remove NAME` is different" in guide
+    assert "does not guarantee current content when a scan is incomplete" in quickstart
+
+
 def test_public_docs_describe_supported_authenticated_network_topology() -> None:
     public_text = "\n".join(path.read_text() for path in PUBLIC_DOCS.rglob("*.md"))
 

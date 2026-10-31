@@ -297,6 +297,84 @@ def test_tracker_sync_preserves_state_when_folder_scan_is_incomplete(
     assert "local-files/folder-1:1:2" in state_file.read_text()
 
 
+def test_tracker_sync_preserves_prior_file_after_read_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    docs = tmp_path / "Docs"
+    docs.mkdir()
+    source = docs / "notes.md"
+    source.write_text("new content")
+    folder = FolderConfig(
+        name="Documents", path=str(docs), prefix="local-files/folder-1"
+    )
+    source_key = f"{folder.prefix}:{source.stat().st_dev}:{source.stat().st_ino}"
+    state_file = tmp_path / "state.json"
+    state_file.write_text(
+        json.dumps({folder.prefix: {source_key: "sha256:old"}}) + "\n"
+    )
+    submissions = []
+    original_read_bytes = Path.read_bytes
+
+    def fail_target_read(path: Path) -> bytes:
+        if path == source:
+            raise OSError("simulated read failure")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", fail_target_read)
+    monkeypatch.setattr(
+        "ctxd.tracker._submit_operations",
+        lambda endpoint, *, writer_id, writer_prefix, operations: submissions.extend(
+            operations
+        ),
+    )
+
+    result = sync_once(
+        folders=[folder],
+        endpoint="http://ctxfs.local",
+        paths=TrackerPaths(state_file=state_file),
+    )
+
+    assert result == {"folders": 1, "operations": 0}
+    assert submissions == []
+    assert source_key in state_file.read_text()
+
+
+def test_tracker_sync_preserves_prior_file_after_invalid_utf8(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    docs = tmp_path / "Docs"
+    docs.mkdir()
+    source = docs / "notes.md"
+    source.write_bytes(b"\xff\xfe")
+    folder = FolderConfig(
+        name="Documents", path=str(docs), prefix="local-files/folder-1"
+    )
+    source_key = f"{folder.prefix}:{source.stat().st_dev}:{source.stat().st_ino}"
+    state_file = tmp_path / "state.json"
+    state_file.write_text(
+        json.dumps({folder.prefix: {source_key: "sha256:old"}}) + "\n"
+    )
+    submissions = []
+    monkeypatch.setattr(
+        "ctxd.tracker._submit_operations",
+        lambda endpoint, *, writer_id, writer_prefix, operations: submissions.extend(
+            operations
+        ),
+    )
+
+    result = sync_once(
+        folders=[folder],
+        endpoint="http://ctxfs.local",
+        paths=TrackerPaths(state_file=state_file),
+    )
+
+    assert result == {"folders": 1, "operations": 0}
+    assert submissions == []
+    assert source_key in state_file.read_text()
+
+
 def test_tracker_sync_deletes_files_for_removed_configured_folder(
     tmp_path: Path,
     monkeypatch,
