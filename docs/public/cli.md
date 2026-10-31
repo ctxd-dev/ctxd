@@ -152,12 +152,17 @@ file independently of the configuration location.
 
 The credentials file contains sensitive bearer credentials and machine
 registration state. Keep the file and its parent directory private. Changing
-either path variable starts using the bundle at the newly selected location;
-ctxd does not migrate credentials or registration state from the previous file.
+`CTXD_CREDENTIALS_PATH` starts using the bundle at the newly selected location.
+Changing `CTXD_CONFIG_PATH` changes the credentials location only when
+`CTXD_CREDENTIALS_PATH` is unset. ctxd does not migrate credentials or registration state
+from the previous file.
 
 For isolated automation or development, select both files explicitly:
 
 ```bash
+PRIVATE_STATE="$(mktemp -d)"
+chmod 700 "$PRIVATE_STATE"
+trap 'rm -rf "$PRIVATE_STATE"' EXIT
 CTXD_CONFIG_PATH="$PRIVATE_STATE/config.json" \
 CTXD_CREDENTIALS_PATH="$PRIVATE_STATE/credentials.json" \
 ctxd endpoint status
