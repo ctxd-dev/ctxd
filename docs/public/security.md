@@ -31,7 +31,7 @@ stand alone.
 | Scope | Purpose and affected endpoints |
 | --- | --- |
 | `status` | Read `/health` and initialize or ping MCP; combine with `read` for normal MCP readers |
-| `status:write` | Publish machine status during tracker synchronization; issued with a registered machine's `submit` grant |
+| `status:write` | Reserved for future machine-status publication; issued with a registered machine's `submit` grant but currently consumed by no endpoint |
 | `read` | Read the `/api/ctxfs` stat, listing, matching, and content endpoints and call MCP tools |
 | `submit` | Send tracker changes to `/api/ctxfs/submissions`, limited by server-owned prefix grants |
 | `enroll` | Call `/api/ctxfs/machines/register` once to obtain a machine credential |

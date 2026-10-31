@@ -69,7 +69,7 @@
       "enroll": {"purpose": "Bootstrap one machine credential", "leastPrivilege": "Issue as a one-use standalone credential", "affectedEndpoints": ["POST /api/ctxfs/machines/register"]},
       "read": {"purpose": "Read indexed paths and content", "leastPrivilege": "Grant to readers; combine with status for MCP", "affectedEndpoints": ["GET /api/ctxfs/*", "POST /mcp"]},
       "status": {"purpose": "Read service health and initialize MCP", "leastPrivilege": "Grant with read for normal MCP clients", "affectedEndpoints": ["GET /health", "POST /mcp"]},
-      "status:write": {"purpose": "Publish machine synchronization status", "leastPrivilege": "Issue only with a registered machine submit grant", "affectedEndpoints": ["machine status publication"]},
+      "status:write": {"purpose": "Reserve a capability for future machine-status publication", "leastPrivilege": "Issued only with a registered machine submit grant; no endpoint currently consumes it", "affectedEndpoints": []},
       "submit": {"purpose": "Submit tracker changes", "leastPrivilege": "Restrict with server-owned prefix grants", "affectedEndpoints": ["POST /api/ctxfs/submissions"]}
     }
   },

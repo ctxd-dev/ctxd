@@ -160,7 +160,12 @@ def test_public_surface_contract_matches_authorization_scopes() -> None:
         assert set(metadata) == {"purpose", "leastPrivilege", "affectedEndpoints"}, scope
         assert metadata["purpose"].strip(), scope
         assert metadata["leastPrivilege"].strip(), scope
-        assert metadata["affectedEndpoints"], scope
+        assert isinstance(metadata["affectedEndpoints"], list), scope
+        if scope == "status:write":
+            assert metadata["affectedEndpoints"] == [], scope
+            assert "no endpoint currently consumes it" in metadata["leastPrivilege"], scope
+        else:
+            assert metadata["affectedEndpoints"], scope
 
 
 def test_public_surface_contract_matches_environment_registry() -> None:
