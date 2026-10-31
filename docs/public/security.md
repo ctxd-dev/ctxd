@@ -22,6 +22,21 @@ security boundary. `read`, `submit`, `status`, and `admin` are distinct scopes;
 submission credentials are restricted by server-owned prefix grants. REST and
 MCP enforce the same policy.
 
+## Authorization scopes
+
+Grant only the capabilities a client needs. `admin` is all-capability and must
+stand alone; `enroll` is a one-use machine-bootstrap capability and also must
+stand alone.
+
+| Scope | Purpose and affected endpoints |
+| --- | --- |
+| `status` | Read `/health` and initialize or ping MCP; combine with `read` for normal MCP readers |
+| `status:write` | Publish machine status during tracker synchronization; issued with a registered machine's `submit` grant |
+| `read` | Read the `/api/ctxfs` stat, listing, matching, and content endpoints and call MCP tools |
+| `submit` | Send tracker changes to `/api/ctxfs/submissions`, limited by server-owned prefix grants |
+| `enroll` | Call `/api/ctxfs/machines/register` once to obtain a machine credential |
+| `admin` | Perform every operation; reserve for local server administration and credential lifecycle work |
+
 ## What ctxd stores
 
 ctxfs stores its local tree and catalog under `~/.ctxd/ctxfs` by default. The tracker stores configuration, state, and logs under `~/.ctxd/local`.

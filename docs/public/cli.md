@@ -6,6 +6,13 @@ title: 'CLI'
 The `ctxd` CLI manages the local tracker and ctxfs service and can connect to an
 externally managed ctxfs server.
 
+## Command coverage policy
+
+`ctxd --help` and `ctxd <command> --help` are the exhaustive command and option
+reference. This guide documents workflows and behavior-critical options rather
+than repeating every flag. The public surface contract classifies every command
+and option so additions and removals require an explicit documentation decision.
+
 ## Install
 
 ```bash
@@ -56,6 +63,24 @@ ctxd tracker stop
 The tracker synchronizes configured folders while it is running. It may run
 with zero folders; adding folders is optional unless this machine contributes
 content.
+
+## Machine identity
+
+Machine enrollment is optional for the default local Unix-socket workflow. Use
+it when a network ctxfs administrator gives the machine a one-use enrollment
+token:
+
+```bash
+CTXD_CTXFS_ENROLLMENT_TOKEN=... ctxd machine register \
+  --endpoint https://ctxfs.example.net:8443 --name laptop
+ctxd machine status
+ctxd machine configure --description "Build laptop"
+```
+
+Registration exchanges the enrollment token for machine credentials stored in
+the credentials file. `machine configure` changes local metadata and synchronizes
+it when the registered endpoint is reachable. Do not put enrollment tokens in
+shell history; interactive registration prompts without echo.
 
 ## Files
 
@@ -139,6 +164,8 @@ its configured endpoint.
 | Variable | Purpose |
 | --- | --- |
 | `CTXD_CONFIG_PATH` | Override the CLI configuration file |
+| `CTXD_CREDENTIALS_PATH` | Override the sensitive credential store; changing it does not migrate existing credentials |
 | `CTXD_CTXFS_SOCKET` | Use ctxfs through the selected Unix socket |
 | `CTXD_CTXFS_URL` | Use ctxfs through the selected HTTP URL |
 | `CTXD_CTXFS_API_KEY` | Supply a ctxfs HTTP bearer token without storing it |
+| `CTXD_CTXFS_ENROLLMENT_TOKEN` | Supply a one-use machine enrollment token without prompting |

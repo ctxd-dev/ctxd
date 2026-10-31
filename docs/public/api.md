@@ -30,6 +30,11 @@ authentication and authorization policy.
 | Read line range | `GET /api/ctxfs/read-lines` | `path`, `start_line`, `end_line` |
 | Match a regular expression | `GET /api/ctxfs/grep` | `pattern`, `prefix`, `limit`, `timeout_seconds`, `cursor` |
 | Submit tracker changes | `POST /api/ctxfs/submissions` | Tracker-managed submission payload |
+| Register a machine | `POST /api/ctxfs/machines/register` | One-use enrollment credential and machine metadata |
+| Prepare credential rotation | `POST /api/ctxfs/machines/{machine_id}/credentials/prepare` | Current machine credential |
+| Confirm credential rotation | `POST /api/ctxfs/machines/{machine_id}/credentials/confirm` | Replacement key identifier |
+| Revoke a machine credential | `DELETE /api/ctxfs/machines/{machine_id}/credential` | Current machine credential |
+| Check server health | `GET /health` | `status` credential |
 | MCP JSON-RPC | `POST /mcp` | MCP `initialize`, `ping`, `tools/list`, `tools/call` |
 
 REST and MCP paths use canonical ctxfs paths beneath `local-files/<ROOT_ID>/`.
@@ -54,6 +59,12 @@ clients need `status` for initialization and ping and `read` for tool discovery
 and calls. The submission endpoint requires `submit` and enforces the
 credential's prefix grants; it is used by the tracker rather than as a general
 write API.
+
+Machine lifecycle routes are used by `ctxd machine`; they are not required for
+the default local workflow. Registration requires the isolated `enroll` scope.
+The remaining machine credential-lifecycle routes accept only the current
+machine credential (or an administrator). `/health` is operational but remains
+authenticated on HTTP endpoints.
 
 ## Bounds and identity
 

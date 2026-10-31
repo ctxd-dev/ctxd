@@ -1,10 +1,74 @@
+import argparse
+import ast
 import json
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
+
+from ctxd.cli import _build_parser
+from ctxd.local_ctxfs_server import CtxfsAuthMode, create_ctxfs_app
+from ctxd.public_environment import PublicEnvironmentVariable
+from ctxfs.auth import Scope
 
 
 PUBLIC_DOCS = Path(__file__).parents[1] / "docs" / "public"
+SOURCE = Path(__file__).parents[1] / "src"
+
+
+def _surface_contract() -> dict:
+    return json.loads((PUBLIC_DOCS / "surface-contract.json").read_text())
+
+
+def _assert_inventory(name: str, runtime: set[str], contract: set[str]) -> None:
+    runtime_only = sorted(runtime - contract)
+    contract_only = sorted(contract - runtime)
+    assert not runtime_only and not contract_only, (
+        f"{name} documentation drift in docs/public/surface-contract.json; "
+        f"runtime only={runtime_only}; contract only={contract_only}"
+    )
+
+
+def _parser_inventory(parser: argparse.ArgumentParser) -> dict[str, dict[str, list[str]]]:
+    inventory: dict[str, dict[str, list[str]]] = {}
+
+    def walk(current: argparse.ArgumentParser, prefix: tuple[str, ...]) -> None:
+        for action in current._actions:
+            if not isinstance(action, argparse._SubParsersAction):
+                continue
+            for name, child in sorted(action.choices.items()):
+                path = (*prefix, name)
+                options = sorted(
+                    option
+                    for child_action in child._actions
+                    for option in child_action.option_strings
+                )
+                positionals = sorted(
+                    child_action.dest
+                    for child_action in child._actions
+                    if not child_action.option_strings
+                    and not isinstance(child_action, argparse._SubParsersAction)
+                )
+                inventory[" ".join(path)] = {
+                    "options": options,
+                    "positionals": positionals,
+                }
+                walk(child, path)
+
+    walk(parser, ())
+    return inventory
+
+
+def _assert_document_anchor(reference: str) -> None:
+    filename, separator, anchor = reference.partition("#")
+    assert separator and filename.endswith(".md"), reference
+    text = (PUBLIC_DOCS / filename).read_text()
+    headings = {
+        heading.lower().replace("`", "").replace(" ", "-")
+        for line in text.splitlines()
+        if (heading := line.lstrip("#").strip()) and line.startswith("#")
+    }
+    assert anchor in headings, f"missing documentation anchor {reference}"
 
 
 def test_public_docs_manifest_is_complete_and_safe() -> None:
@@ -37,6 +101,89 @@ def test_public_docs_manifest_is_complete_and_safe() -> None:
         if path.name != "README.md"
     )
     assert sorted(files) == actual
+
+
+def test_public_surface_contract_matches_cli_command_and_option_tree() -> None:
+    contract = _surface_contract()["cli"]
+    parser = _build_parser()
+    runtime = _parser_inventory(parser)
+    documented = contract["commands"]
+
+    _assert_inventory("CLI command", set(runtime), set(documented))
+    for command in sorted(runtime.keys() & documented.keys()):
+        assert runtime[command] == documented[command], (
+            f"CLI option/argument drift for {command!r} in "
+            "docs/public/surface-contract.json; "
+            f"runtime={runtime[command]}; contract={documented[command]}"
+        )
+    root_options = sorted(
+        option for action in parser._actions for option in action.option_strings
+    )
+    assert root_options == contract["rootOptions"], (
+        "CLI root option drift in docs/public/surface-contract.json; "
+        f"runtime={root_options}; contract={contract['rootOptions']}"
+    )
+
+
+def test_public_surface_contract_matches_http_routes() -> None:
+    contract = _surface_contract()["routes"]["entries"]
+    with tempfile.TemporaryDirectory() as directory:
+        app = create_ctxfs_app(
+            Path(directory), auth_mode=CtxfsAuthMode.TRUSTED_LOCAL
+        )
+        runtime = {
+            f"{method} {route.path}"
+            for route in app.routes
+            if not route.path.startswith(("/openapi", "/docs", "/redoc"))
+            for method in (route.methods or set()) - {"HEAD", "OPTIONS"}
+        }
+
+    _assert_inventory("HTTP route", runtime, set(contract))
+    allowed_classes = {"public", "operational", "machine-lifecycle", "tracker-only"}
+    invalid = {route: value for route, value in contract.items() if value not in allowed_classes}
+    assert not invalid, f"invalid HTTP route classifications: {invalid}"
+
+
+def test_public_surface_contract_matches_authorization_scopes() -> None:
+    runtime = {scope.value for scope in Scope}
+    documented = set(_surface_contract()["scopes"]["entries"])
+    _assert_inventory("authorization scope", runtime, documented)
+
+
+def test_public_surface_contract_matches_environment_registry() -> None:
+    runtime = {variable.value for variable in PublicEnvironmentVariable}
+    documented = set(_surface_contract()["environment"]["entries"])
+    _assert_inventory("public environment variable", runtime, documented)
+
+    bypasses: list[str] = []
+    for path in SOURCE.rglob("*.py"):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not node.args:
+                continue
+            function = node.func
+            if not (
+                isinstance(function, ast.Attribute)
+                and isinstance(function.value, ast.Name)
+                and function.value.id == "os"
+                and function.attr == "getenv"
+            ):
+                continue
+            argument = node.args[0]
+            if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+                if argument.value.startswith("CTXD_"):
+                    bypasses.append(f"{path.relative_to(SOURCE)}:{argument.value}")
+    assert not bypasses, (
+        "public CTXD_* lookups must use ctxd.public_environment so additions "
+        f"cannot bypass the registry: {bypasses}"
+    )
+
+
+def test_public_surface_contract_documentation_homes_exist() -> None:
+    contract = _surface_contract()
+    assert contract["schemaVersion"] == 1
+    for section in ("cli", "routes", "scopes", "environment"):
+        _assert_document_anchor(contract[section]["document"])
 
 
 def test_public_docs_have_starlight_frontmatter() -> None:
