@@ -34,7 +34,8 @@ The managed local deployment uses these default paths:
 | Installation identity and machine registration locks | `~/.ctxd/.ctxd-locks/identity-<digest>.lock` and `~/.ctxd/.ctxd-locks/register-<digest>.lock` | Persistent coordination files; digest names vary and contain no credential payload |
 | Tracker synchronization metadata | `~/.ctxd/local/tracker-state.json` | Persistent and sensitive |
 | Tracker process ID | `~/.ctxd/local/tracker.pid` | Runtime only |
-| Managed ctxfs process ID, socket, and lock | `~/.ctxd/local/ctxfs.pid`, `~/.ctxd/local/ctxfs.sock`, and `~/.ctxd/local/ctxfs.lock` | Runtime only |
+| Managed ctxfs process ID and socket | `~/.ctxd/local/ctxfs.pid` and `~/.ctxd/local/ctxfs.sock` | Runtime only |
+| Managed ctxfs coordination lock | `~/.ctxd/local/ctxfs.lock` | Persistent coordination artifact; contains no service state |
 | Managed ctxfs tree and catalog | `~/.ctxd/ctxfs/` | Persistent and sensitive |
 
 The detached tracker does not currently create a log file. Use `ctxd tracker
@@ -48,6 +49,9 @@ configuration file. The credential write lock and `.ctxd-locks/` directory are
 created beside the selected credentials file, including when either override
 changes that location. Their lock files persist after use; ctxd does not remove
 them automatically. Changing either variable does not move existing data.
+
+The managed ctxfs coordination lock also persists after the service exits; its
+runtime cleanup removes the process-ID file and socket, but not `ctxfs.lock`.
 
 The credentials file contains bearer credentials. The configuration file
 reveals registered source paths, the tracker state contains synchronization
@@ -111,7 +115,7 @@ pip uninstall ctxd
 it does not stop the managed ctxfs service, which can remain running across
 tracker stop and package uninstall. The CLI currently has no managed ctxfs stop
 command. It preserves configuration, credentials, synchronization state,
-indexed ctxfs data, and the original source folders.
+coordination locks, indexed ctxfs data, and the original source folders.
 Uninstalling the package also does not
 delete `~/.ctxd` or a path selected by an environment override.
 

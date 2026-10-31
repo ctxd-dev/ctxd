@@ -123,11 +123,15 @@ def test_security_docs_define_the_local_storage_contract() -> None:
             "Runtime only",
         ),
         (
-            "Managed ctxfs process ID, socket, and lock",
-            f"`{_documented_home_path(ctxfs_paths.pid_file)}`, "
-            f"`{_documented_home_path(ctxfs_paths.socket_path)}`, and "
-            f"`{_documented_home_path(ctxfs_paths.lock_file)}`",
+            "Managed ctxfs process ID and socket",
+            f"`{_documented_home_path(ctxfs_paths.pid_file)}` "
+            f"and `{_documented_home_path(ctxfs_paths.socket_path)}`",
             "Runtime only",
+        ),
+        (
+            "Managed ctxfs coordination lock",
+            f"`{_documented_home_path(ctxfs_paths.lock_file)}`",
+            "Persistent coordination artifact; contains no service state",
         ),
         (
             "Managed ctxfs tree and catalog",
@@ -145,6 +149,10 @@ def test_security_docs_define_the_local_storage_contract() -> None:
     ) in text
     assert (
         "Their lock files persist after use; ctxd does not remove\nthem automatically"
+    ) in text
+    assert (
+        "managed ctxfs coordination lock also persists after the service exits; its\n"
+        "runtime cleanup removes the process-ID file and socket, but not `ctxfs.lock`"
     ) in text
     assert "Changing either variable does not move existing data" in text
     assert "Stopping the tracker" not in text
