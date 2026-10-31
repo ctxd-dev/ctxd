@@ -58,20 +58,16 @@ TOOLS = [
     (
         "grep",
         (
-            "Search ctxfs file contents with a regular expression. Use tree or glob "
-            "to identify a narrow prefix before broad searches. Always inspect "
-            "complete, stopped_by, continuation_required, and next_cursor; an "
-            "incomplete page is not exhaustive. When continuation_required is true "
-            "and more evidence is needed, repeat grep with the same pattern and "
-            "prefix and pass next_cursor as cursor. After repeated timeout stops, "
-            "continue from the cursor with a larger timeout_seconds or narrower prefix."
+            "Search ctxfs file contents using ripgrep regular-expression syntax. "
+            "Results are ordered by path and line. Use tree or glob to identify a "
+            "narrow prefix before broad searches. Transport continuations are handled "
+            "automatically; a failure means the result was not exhaustive."
         ),
         {
             "pattern": {"type": "string"},
             "prefix": {"type": "string"},
             "limit": {"type": "integer", "minimum": 1},
             "timeout_seconds": {"type": "number", "minimum": 0.1, "maximum": 60.0},
-            "cursor": {"type": "string", "minLength": 1, "maxLength": 4096},
         },
         ["pattern"],
     ),
@@ -173,7 +169,6 @@ def execute_client_tool(
             prefix=arguments.get("prefix", ""),
             limit=arguments.get("limit"),
             timeout_seconds=arguments.get("timeout_seconds"),
-            cursor=arguments.get("cursor"),
         )
     else:
         raise ValueError(f"Unknown ctxfs tool: {name}")

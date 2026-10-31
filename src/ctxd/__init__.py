@@ -12,13 +12,19 @@ from ctxd.config import (
     save_config,
 )
 from ctxd.ctxfs_client import AsyncCtxfsClient, CtxfsClient
-from ctxd.exceptions import CtxdAuthError, CtxdError, CtxdProtocolError
+from ctxd.exceptions import (
+    CtxdAuthError,
+    CtxdError,
+    CtxdIncompleteSearchError,
+    CtxdProtocolError,
+)
 from ctxd.models import (
     CtxfsBounded,
     CtxfsDirectoryEntry,
     CtxfsEntry,
     CtxfsGrepMatch,
     CtxfsGrepPage,
+    CtxfsGrepResult,
     CtxfsReadLinesResult,
     CtxfsReadResult,
     CtxfsStatus,
@@ -35,12 +41,14 @@ __all__ = [
     "CtxfsEndpointResolution",
     "CtxfsGrepMatch",
     "CtxfsGrepPage",
+    "CtxfsGrepResult",
     "CtxfsReadLinesResult",
     "CtxfsReadResult",
     "CtxfsStatus",
     "CtxdClient",
     "CtxdAuthError",
     "CtxdError",
+    "CtxdIncompleteSearchError",
     "CtxdProtocolError",
     "SDK_NAME",
     "__version__",

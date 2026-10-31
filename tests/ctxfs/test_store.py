@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import os
+import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -1066,7 +1067,6 @@ def test_grep_falls_back_when_index_capability_is_unavailable(tmp_path, monkeypa
 
 
 def test_grep_pathological_regex_does_not_backtrack_indefinitely(tmp_path, monkeypatch):
-    monkeypatch.setenv("PATH", "")
     store = CtxfsStore(tmp_path / "ctxfs")
     store.register_prefix("user-1", "writer-1", "local_files/root")
     store.submit(
@@ -1085,44 +1085,64 @@ def test_grep_pathological_regex_does_not_backtrack_indefinitely(tmp_path, monke
     elapsed = time.monotonic() - started
 
     assert matches.items == []
-    assert matches.complete is False
-    assert matches.stopped_by == "timeout"
+    assert matches.complete is True
     assert elapsed < 1.0
 
 
-def test_grep_fallback_bounds_pathological_alternation_by_deadline(
+@pytest.mark.parametrize("pattern", ["needle", "n..dle", "\\p{L}+"])
+def test_grep_matches_canonical_ripgrep_invocation(tmp_path, pattern):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    logical_path = "local_files/root/notes.md"
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [_put(logical_path, "inode-1", "a needle\nUnicode café\n")],
+    )
+
+    tree_path = store._tree_path("user-1", logical_path)
+    completed = subprocess.run(
+        store_module._rg_command(pattern, tree_path),
+        env=store_module._rg_env(),
+        capture_output=True,
+        check=False,
+    )
+    expected = []
+    for raw_record in completed.stdout.splitlines():
+        record = json.loads(raw_record)
+        if record["type"] != "match":
+            continue
+        data = record["data"]
+        submatch = data["submatches"][0]
+        expected.append(
+            (
+                data["line_number"],
+                data["lines"]["text"].rstrip("\n"),
+                submatch["start"],
+                submatch["end"],
+            )
+        )
+
+    actual = store.grep("user-1", pattern, prefix="local_files/root")
+    assert [
+        (item.line_number, item.line, item.match_start, item.match_end)
+        for item in actual.items
+    ] == expected
+
+
+def test_grep_requires_ripgrep(
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv("PATH", "")
     store = CtxfsStore(tmp_path / "ctxfs")
     store.register_prefix("user-1", "writer-1", "local_files/root")
-    path = "local_files/root/notes.md"
-    store.submit(
-        "user-1",
-        "writer-1",
-        [_put(path, "inode-1", f"{'a' * 32}!\n")],
-    )
-
-    started = time.monotonic()
-    page = store.grep(
-        "user-1",
-        "(a|aa)+$",
-        prefix="local_files/root",
-        timeout_seconds=0.1,
-    )
-    elapsed = time.monotonic() - started
-
-    assert page.items == []
-    assert page.complete is False
-    assert page.stopped_by == "timeout"
-    assert page.next_cursor is not None
-    assert elapsed < 1.0
+    with pytest.raises(RuntimeError, match="requires ripgrep"):
+        store.grep("user-1", "needle", prefix="local_files/root")
 
 
 def test_grep_validation_timeout_is_bounded_and_resumable(tmp_path, monkeypatch):
     store = CtxfsStore(tmp_path / "ctxfs")
     real_popen = store_module.subprocess.Popen
-    real_has_rg = store_module._has_rg
 
     class HungValidation:
         returncode = None
@@ -1144,7 +1164,6 @@ def test_grep_validation_timeout_is_bounded_and_resumable(tmp_path, monkeypatch)
             return self.returncode
 
     process = HungValidation()
-    monkeypatch.setattr(store_module, "_has_rg", lambda: True)
     monkeypatch.setattr(
         store_module.subprocess, "Popen", lambda *args, **kwargs: process
     )
@@ -1157,7 +1176,6 @@ def test_grep_validation_timeout_is_bounded_and_resumable(tmp_path, monkeypatch)
     assert 0 < process.timeout <= 0.1
 
     monkeypatch.setattr(store_module.subprocess, "Popen", real_popen)
-    monkeypatch.setattr(store_module, "_has_rg", real_has_rg)
     resumed = store.grep("user-1", "needle", cursor=page.next_cursor)
     assert resumed.complete is True
 
@@ -1213,6 +1231,10 @@ import os
 import signal
 import sys
 import time
+
+if "--version" in sys.argv:
+    print("ripgrep 13.0.0")
+    raise SystemExit(0)
 
 path = sys.argv[-1]
 if os.path.basename(path) == "null":
@@ -1279,7 +1301,6 @@ with open(marker, "w", encoding="utf-8") as handle:
 
 
 def test_grep_limit_does_not_read_later_files(tmp_path, monkeypatch):
-    monkeypatch.setenv("PATH", "")
     store = CtxfsStore(tmp_path / "ctxfs")
     store.register_prefix("user-1", "writer-1", "local_files/root")
     store.submit(
@@ -1310,7 +1331,6 @@ def test_grep_limit_does_not_read_later_files(tmp_path, monkeypatch):
 
 
 def test_grep_timeout_does_not_inventory_whole_catalog(tmp_path, monkeypatch):
-    monkeypatch.setenv("PATH", "")
     store = CtxfsStore(tmp_path / "ctxfs")
     store.register_prefix("user-1", "writer-1", "local_files/root")
     store.submit(
@@ -1617,12 +1637,9 @@ def test_grep_cursor_stays_bounded_for_long_prefix_and_resumes_gap_free(
 
 
 @pytest.mark.parametrize("disk_only", [False, True])
-@pytest.mark.parametrize("use_fallback", [False, True])
 def test_grep_cursor_rejects_absent_anchor_when_pattern_has_no_matches(
-    tmp_path, monkeypatch, disk_only, use_fallback
+    tmp_path, monkeypatch, disk_only
 ):
-    if use_fallback:
-        monkeypatch.setattr(store_module, "_has_rg", lambda: False)
     store = CtxfsStore(tmp_path / "ctxfs")
     path = "local_files/root/a.md"
     if disk_only:
@@ -1751,6 +1768,10 @@ def test_grep_stops_on_oversized_rg_json_record(tmp_path, monkeypatch):
 import os
 import sys
 import time
+
+if "--version" in sys.argv:
+    print("ripgrep 13.0.0")
+    raise SystemExit(0)
 
 path = sys.argv[-1]
 if os.path.basename(path) == "null":

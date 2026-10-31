@@ -18,5 +18,9 @@ class CtxdProtocolError(CtxdError):
     """Raised when the MCP server response does not match the expected shape."""
 
 
+class CtxdIncompleteSearchError(CtxdError):
+    """Raised when ctxfs cannot return a trustworthy grep result."""
+
+
 class CtxdAuthError(CtxdError):
     """Raised when login, refresh, or credential resolution fails."""

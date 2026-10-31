@@ -5,12 +5,13 @@ import httpx
 
 from ctxd._metadata import get_user_agent
 from ctxd.config import resolve_ctxfs_api_key, resolve_ctxfs_endpoint_details
-from ctxd.exceptions import CtxdError, CtxdProtocolError
+from ctxd.exceptions import CtxdError, CtxdIncompleteSearchError, CtxdProtocolError
 from ctxd.models import (
     CtxfsBounded,
     CtxfsDirectoryEntry,
     CtxfsEntry,
     CtxfsGrepPage,
+    CtxfsGrepResult,
     CtxfsMachineRegistration,
     CtxfsReadLinesResult,
     CtxfsReadResult,
@@ -19,6 +20,7 @@ from ctxd.models import (
 
 _USE_CLIENT_API_KEY = object()
 _GREP_TRANSPORT_OVERHEAD_SECONDS = 5.0
+_GREP_MAX_TRANSPORT_PAGES = 100
 
 
 class AsyncCtxfsClient:
@@ -164,7 +166,42 @@ class AsyncCtxfsClient:
         prefix: str = "",
         limit: int | None = None,
         timeout_seconds: float | None = None,
-        cursor: str | None = None,
+    ) -> CtxfsGrepResult:
+        items = []
+        cursor: str | None = None
+        for _ in range(_GREP_MAX_TRANSPORT_PAGES):
+            page = await self._grep_page(
+                pattern,
+                prefix=prefix,
+                limit=None if limit is None else max(1, limit - len(items)),
+                timeout_seconds=timeout_seconds,
+                cursor=cursor,
+            )
+            items.extend(page.items)
+            if page.complete:
+                return CtxfsGrepResult(
+                    items=items, complete=True, stopped_by=page.stopped_by
+                )
+            if page.stopped_by == "limit" and limit is not None:
+                return CtxfsGrepResult(
+                    items=items, complete=True, stopped_by="limit"
+                )
+            if page.next_cursor is None:
+                raise _incomplete_grep_error(page.stopped_by)
+            cursor = page.next_cursor
+        raise CtxdIncompleteSearchError(
+            "ctxfs grep exceeded its continuation safety limit; narrow the prefix "
+            "or pattern and retry"
+        )
+
+    async def _grep_page(
+        self,
+        pattern: str,
+        *,
+        prefix: str,
+        limit: int | None,
+        timeout_seconds: float | None,
+        cursor: str | None,
     ) -> CtxfsGrepPage:
         params = _drop_none(
             {
@@ -332,14 +369,12 @@ class CtxfsFiles:
         prefix: str = "",
         limit: int | None = None,
         timeout_seconds: float | None = None,
-        cursor: str | None = None,
-    ) -> CtxfsGrepPage:
+    ) -> CtxfsGrepResult:
         return self._client.grep(
             pattern,
             prefix=prefix,
             limit=limit,
             timeout_seconds=timeout_seconds,
-            cursor=cursor,
         )
 
 
@@ -436,15 +471,13 @@ class CtxfsClient:
         prefix: str = "",
         limit: int | None = None,
         timeout_seconds: float | None = None,
-        cursor: str | None = None,
-    ) -> CtxfsGrepPage:
+    ) -> CtxfsGrepResult:
         return _run(
             self._async_client.grep(
                 pattern,
                 prefix=prefix,
                 limit=limit,
                 timeout_seconds=timeout_seconds,
-                cursor=cursor,
             )
         )
 
@@ -456,6 +489,14 @@ def _run(coro):
     from ctxd.client import Client
 
     return Client._run(coro)
+
+
+def _incomplete_grep_error(stopped_by: str | None) -> CtxdIncompleteSearchError:
+    reason = stopped_by or "an unknown safety bound"
+    return CtxdIncompleteSearchError(
+        f"ctxfs grep stopped because of {reason} and cannot provide an exhaustive "
+        "result; narrow the prefix or pattern and retry"
+    )
 
 
 def _ensure_managed_local_started() -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import fnmatch
+import functools
 import hashlib
 import json
 import logging
@@ -12,7 +13,6 @@ import selectors
 import shutil
 import sqlite3
 import subprocess
-import sys
 import time
 import unicodedata
 import uuid
@@ -55,6 +55,7 @@ GREP_MIN_TIMEOUT_SECONDS = 0.1
 GREP_MAX_TIMEOUT_SECONDS = 60.0
 GREP_MAX_CURSOR_BYTES = 4096
 GREP_JSON_CHUNK_BYTES = 64 * 1024
+RIPGREP_MIN_VERSION = (13, 0, 0)
 GREP_MAX_JSON_RECORD_BYTES = 1_000_000
 _GREP_CONTENT_HASH_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _GREP_PATH_IDENTITY_RE = re.compile(r"stat:\d+:\d+:\d+:-?\d+:-?\d+\Z")
@@ -1852,12 +1853,7 @@ class CtxfsStore:
         )
 
     def _validate_grep_pattern(self, pattern: str, deadline: float) -> None:
-        if not _has_rg():
-            try:
-                re.compile(pattern)
-            except re.error as exc:
-                raise ValueError("invalid ctxfs grep pattern") from exc
-            return
+        _require_rg()
 
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -1893,15 +1889,11 @@ class CtxfsStore:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError
-        use_rg = _has_rg()
-        command = (
-            _rg_command(pattern, tree_path)
-            if use_rg
-            else _python_grep_command(pattern, tree_path)
-        )
+        _require_rg()
+        command = _rg_command(pattern, tree_path)
         process = subprocess.Popen(
             command,
-            env=_rg_env() if use_rg else None,
+            env=_rg_env(),
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         )
@@ -3194,14 +3186,37 @@ def _rg_command(pattern: str, path: Path) -> list[str]:
     ]
 
 
-def _python_grep_command(pattern: str, path: Path) -> list[str]:
-    encoded_pattern = base64.urlsafe_b64encode(pattern.encode("utf-8")).decode("ascii")
-    worker = Path(__file__).with_name("_grep_worker.py")
-    return [sys.executable, "-S", str(worker), encoded_pattern, str(path)]
+def _require_rg() -> None:
+    executable = shutil.which("rg", path=os.environ.get("PATH", ""))
+    if executable is None:
+        raise RuntimeError(
+            "ctxfs grep requires ripgrep (rg); install ripgrep and restart ctxd"
+        )
+    _validate_rg_version(executable)
 
 
-def _has_rg() -> bool:
-    return shutil.which("rg", path=os.environ.get("PATH", "")) is not None
+@functools.lru_cache(maxsize=8)
+def _validate_rg_version(executable: str) -> None:
+    try:
+        completed = subprocess.run(
+            [executable, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        version_match = re.match(r"ripgrep (\d+)\.(\d+)\.(\d+)", completed.stdout)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError("ctxfs could not validate the installed ripgrep") from exc
+    if completed.returncode != 0 or version_match is None:
+        raise RuntimeError("ctxfs could not validate the installed ripgrep")
+    version = tuple(int(part) for part in version_match.groups())
+    if version < RIPGREP_MIN_VERSION:
+        required = ".".join(str(part) for part in RIPGREP_MIN_VERSION)
+        installed = ".".join(str(part) for part in version)
+        raise RuntimeError(
+            f"ctxfs requires ripgrep {required} or newer; found {installed}"
+        )
 
 
 def _hash_path(path: Path, deadline: float) -> str:

@@ -129,7 +129,9 @@ does not have that local folder configuration uses the canonical
 | `grep` | Match a regular expression beneath a prefix |
 
 ctxfs deliberately exposes no shell and no arbitrary commands. `grep` uses
-regular-expression matching, not semantic search.
+ripgrep's Rust regular-expression syntax, not semantic search. ripgrep is a
+required runtime dependency (version 13.0.0 or newer); ctxfs never substitutes
+a different regex engine.
 
 Plain patterns of at least three characters that contain no regular-expression
 metacharacters use a local trigram index to identify candidate catalog files.
@@ -159,13 +161,11 @@ See the [ctxfs API reference](/docs/api) for every endpoint and parameter.
 
 Listing and matching operations accept a `limit`. Read operations accept byte or line bounds. Responses include completeness information; callers must not treat a truncated response as exhaustive.
 
-Grep also accepts a per-request `timeout_seconds` from 0.1 to 60 seconds and
-defaults to 2 seconds. A resumable incomplete response sets
-`continuation_required` and includes an opaque `next_cursor` plus a
-`continuation_hint`; repeat the same pattern and prefix with that cursor. Use
-`tree` or `glob` to choose a narrow prefix before broad grep. After repeated
-timeout stops, continue from the cursor with a larger timeout or narrower prefix
-rather than restarting. A cursor is rejected if its resume file changed.
+Grep accepts a per-request `timeout_seconds` from 0.1 to 60 seconds and defaults
+to 2 seconds. The SDK, CLI, and MCP tool automatically resume transport pages;
+agents never manage cursors. If a safety bound prevents an exhaustive result,
+grep fails explicitly and asks the caller to narrow its prefix or pattern. The
+raw HTTP endpoint retains opaque cursors for transport implementations.
 
 File reads also include content identity information. An agent can use it to detect whether a cited file changed between reads.
 

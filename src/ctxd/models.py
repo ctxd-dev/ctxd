@@ -101,3 +101,11 @@ class CtxfsGrepPage(BaseModel):
     next_cursor: str | None = None
     continuation_required: bool = False
     continuation_hint: str | None = None
+
+
+class CtxfsGrepResult(BaseModel):
+    """Agent-facing grep result without transport pagination details."""
+
+    items: list[CtxfsGrepMatch] = Field(default_factory=list)
+    complete: bool = True
+    stopped_by: str | None = None

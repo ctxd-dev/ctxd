@@ -238,8 +238,6 @@ def test_files_grep_uses_ctxfs_without_backend_selection() -> None:
                     "needle",
                     "--timeout-seconds",
                     "7.5",
-                    "--cursor",
-                    "next-page",
                 ]
             )
             == 0
@@ -249,7 +247,6 @@ def test_files_grep_uses_ctxfs_without_backend_selection() -> None:
         prefix="",
         limit=None,
         timeout_seconds=7.5,
-        cursor="next-page",
     )
 
 
