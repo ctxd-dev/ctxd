@@ -104,8 +104,7 @@ The status distinguishes these synchronization states:
 
 Status includes UTC epoch-second timestamps for the last attempt and last
 complete success, folder and operation counts where available, and a safe error
-category for failures. It never persists the raw exception message, source
-paths, endpoint URL, credentials, or file content.
+category for failures.
 
 The tracker does not create a persistent text log. Use `ctxd tracker status`
 for synchronization health.
