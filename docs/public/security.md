@@ -33,6 +33,7 @@ The managed local deployment uses these default paths:
 | Credential write lock | `~/.ctxd/credentials.lock` | Persistent coordination file; contains no credential payload |
 | Installation identity and machine registration locks | `~/.ctxd/.ctxd-locks/identity-<digest>.lock` and `~/.ctxd/.ctxd-locks/register-<digest>.lock` | Persistent coordination files; digest names vary and contain no credential payload |
 | Tracker synchronization metadata | `~/.ctxd/local/tracker-state.json` | Persistent and sensitive |
+| Tracker current-health record | `~/.ctxd/local/tracker-health.json` | Persistent |
 | Tracker process ID | `~/.ctxd/local/tracker.pid` | Runtime only |
 | Managed ctxfs process ID and socket | `~/.ctxd/local/ctxfs.pid` and `~/.ctxd/local/ctxfs.sock` | Runtime only |
 | Managed ctxfs coordination lock | `~/.ctxd/local/ctxfs.lock` | Persistent coordination artifact; contains no service state |

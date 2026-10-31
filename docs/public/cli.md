@@ -139,12 +139,33 @@ its configured endpoint.
 | Variable | Purpose |
 | --- | --- |
 | `CTXD_CONFIG_PATH` | Override the CLI configuration file |
-| `CTXD_CREDENTIALS_PATH` | Override the client credentials file |
+| `CTXD_CREDENTIALS_PATH` | Override the client credentials and machine-registration file |
 | `CTXD_CTXFS_SOCKET` | Use ctxfs through the selected Unix socket |
 | `CTXD_CTXFS_URL` | Use ctxfs through the selected HTTP URL |
 | `CTXD_CTXFS_API_KEY` | Supply a ctxfs HTTP bearer token without storing it |
 
-If `CTXD_CREDENTIALS_PATH` is unset while `CTXD_CONFIG_PATH` is set, credentials
-default to `credentials.json` beside the selected configuration file. Changing
-either variable does not move an existing file. See [Security and
-data](/docs/security) for the complete local storage layout.
+Client credentials default to `~/.ctxd/credentials.json`. If
+`CTXD_CREDENTIALS_PATH` is unset and `CTXD_CONFIG_PATH` is set, ctxd instead
+uses `credentials.json` beside the selected configuration file. Setting
+`CTXD_CREDENTIALS_PATH` explicitly takes precedence and selects the credentials
+file independently of the configuration location.
+
+The credentials file contains sensitive bearer credentials and machine
+registration state. Keep the file and its parent directory private. Changing
+`CTXD_CREDENTIALS_PATH` starts using the bundle at the newly selected location.
+Changing `CTXD_CONFIG_PATH` changes the credentials location only when
+`CTXD_CREDENTIALS_PATH` is unset. ctxd does not migrate credentials or registration state
+from the previous file.
+
+For isolated automation or development, select both files explicitly:
+
+```bash
+PRIVATE_STATE="$(mktemp -d)"
+chmod 700 "$PRIVATE_STATE"
+trap 'rm -rf "$PRIVATE_STATE"' EXIT
+CTXD_CONFIG_PATH="$PRIVATE_STATE/config.json" \
+CTXD_CREDENTIALS_PATH="$PRIVATE_STATE/credentials.json" \
+ctxd endpoint status
+```
+
+See [Security and data](/docs/security) for the complete local storage layout.
