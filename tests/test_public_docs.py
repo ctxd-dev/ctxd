@@ -7,6 +7,8 @@ import subprocess
 import sys
 import tempfile
 
+import pytest
+
 from ctxd.cli import _build_parser
 from ctxd.local_ctxfs_server import CtxfsAuthMode, create_ctxfs_app
 from ctxd.public_environment import PublicEnvironmentVariable
@@ -70,6 +72,14 @@ def _assert_document_anchor(reference: str) -> None:
         if (heading := line.lstrip("#").strip()) and line.startswith("#")
     }
     assert anchor in headings, f"missing documentation anchor {reference}"
+
+
+def _http_route_inventory(app) -> set[str]:
+    return {
+        f"{method} {route.path}"
+        for route in app.routes
+        for method in (route.methods or set()) - {"HEAD", "OPTIONS"}
+    }
 
 
 def _markdown_table_code_values(
@@ -161,17 +171,22 @@ def test_public_surface_contract_matches_cli_command_and_option_tree() -> None:
 
 
 def test_public_surface_contract_matches_http_routes() -> None:
-    contract = _surface_contract()["routes"]["entries"]
+    route_contract = _surface_contract()["routes"]
+    contract = route_contract["entries"]
+    excluded = route_contract["excludedFrameworkRoutes"]
     with tempfile.TemporaryDirectory() as directory:
         app = create_ctxfs_app(
             Path(directory), auth_mode=CtxfsAuthMode.TRUSTED_LOCAL
         )
-        runtime = {
-            f"{method} {route.path}"
-            for route in app.routes
-            if not route.path.startswith(("/openapi", "/docs", "/redoc"))
-            for method in (route.methods or set()) - {"HEAD", "OPTIONS"}
-        }
+        all_runtime = _http_route_inventory(app)
+
+    assert all(reason.strip() for reason in excluded.values())
+    _assert_inventory(
+        "excluded framework route",
+        all_runtime - set(contract),
+        set(excluded),
+    )
+    runtime = all_runtime - set(excluded)
 
     _assert_inventory("HTTP route", runtime, set(contract))
     allowed_classes = {"public", "operational", "machine-lifecycle", "tracker-only"}
@@ -185,6 +200,25 @@ def test_public_surface_contract_matches_http_routes() -> None:
     assert not invalid, f"invalid HTTP route classifications: {invalid}"
     prose = _markdown_table_code_values("api.md", "Operations", column=1)
     _assert_inventory("HTTP route prose", set(contract), prose)
+
+
+def test_http_route_contract_does_not_hide_similarly_prefixed_public_routes() -> None:
+    route_contract = _surface_contract()["routes"]
+    with tempfile.TemporaryDirectory() as directory:
+        app = create_ctxfs_app(
+            Path(directory), auth_mode=CtxfsAuthMode.TRUSTED_LOCAL
+        )
+
+        @app.get("/docs-export")
+        def docs_export() -> dict[str, bool]:
+            return {"ok": True}
+
+        runtime = _http_route_inventory(app) - set(
+            route_contract["excludedFrameworkRoutes"]
+        )
+
+    with pytest.raises(AssertionError, match="GET /docs-export"):
+        _assert_inventory("HTTP route", runtime, set(route_contract["entries"]))
 
 
 def test_public_surface_contract_matches_authorization_scopes() -> None:

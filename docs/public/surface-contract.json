@@ -80,6 +80,12 @@
   },
   "routes": {
     "document": "api.md#operations",
+    "excludedFrameworkRoutes": {
+      "GET /docs": "FastAPI-generated interactive OpenAPI UI",
+      "GET /docs/oauth2-redirect": "FastAPI-generated OAuth redirect helper",
+      "GET /openapi.json": "FastAPI-generated OpenAPI schema",
+      "GET /redoc": "FastAPI-generated ReDoc UI"
+    },
     "entries": {
       "DELETE /api/ctxfs/machines/{machine_id}/credential": {"classification": "machine-lifecycle", "purpose": "Revoke the current machine credential"},
       "GET /api/ctxfs/glob": {"classification": "public", "purpose": "Match canonical paths by glob"},
