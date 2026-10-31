@@ -86,8 +86,25 @@ ctxd tracker status
 ctxd endpoint status
 ```
 
-A healthy setup reports the effective endpoint, `ctxfs healthy: true`, and a
-running tracker.
+A healthy setup reports the effective endpoint, `ctxfs healthy: true`, a
+running tracker, and `last sync result: success`. Process liveness and
+synchronization health are separate: a tracker may remain running after a sync
+failure.
+
+The status distinguishes these synchronization states:
+
+- `sync diagnostics: not-attempted`: no persisted attempt exists yet.
+- `last sync result: success`: the most recent scan completed and its operations
+  were submitted.
+- `last sync result: failed`: the most recent attempt raised an error.
+- `last sync result: incomplete`: at least one folder could not be scanned
+  completely, so conservative prior tracker state may have been retained.
+- `sync diagnostics: unavailable`: the health record exists but cannot be read
+  or validated.
+
+Status includes UTC epoch-second timestamps for the last attempt and last
+complete success, folder and operation counts where available, and a safe error
+category for failures.
 
 ## Move a folder
 
@@ -133,5 +150,7 @@ certificate trust chain, and that the credential has `submit` plus the required
 prefix. Rotation revokes the old key immediately; run `ctxd logout --endpoint
 URL`, then `ctxd login --endpoint URL` and enter the newly printed token.
 
-If a change has not appeared, restart tracking with `ctxd tracker stop` followed
-by `ctxd tracker start`, then check `ctxd tracker status`.
+If a change has not appeared, check the last sync result first. For `failed`,
+confirm endpoint availability and credentials. For `incomplete`, confirm every
+registered folder is readable. Then restart tracking with `ctxd tracker stop`
+followed by `ctxd tracker start` and check `ctxd tracker status` again.

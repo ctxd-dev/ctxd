@@ -159,6 +159,20 @@ def test_security_docs_describe_os_account_isolation_without_claiming_a_sandbox(
     assert "installed per user" not in text
 
 
+def test_tracker_docs_match_structured_diagnostics_and_navigation() -> None:
+    quickstart = (PUBLIC_DOCS / "quickstart.md").read_text()
+    tracker = (PUBLIC_DOCS / "local-tracker.md").read_text()
+    security = (PUBLIC_DOCS / "security.md").read_text()
+
+    assert "for monitoring, moves, and removal" in quickstart
+    assert "for upgrades, moves, logs, and removal" not in quickstart
+    assert "last sync result: success" in tracker
+    assert "last sync result: failed" in tracker
+    assert "last sync result: incomplete" in tracker
+    assert "does not create a persistent text log" in security
+    assert "configuration, state, and logs" not in security
+
+
 def test_documented_network_command_groups_exist_in_cli_help() -> None:
     commands = (
         ("server", "serve"),

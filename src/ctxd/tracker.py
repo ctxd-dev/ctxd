@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
+import tempfile
 import time
 import traceback
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -15,6 +18,9 @@ from ctxd.config import resolve_ctxfs_api_key, resolve_ctxfs_endpoint
 from ctxd.folders import FolderConfig, list_folders
 
 MAX_TRACKED_FILE_BYTES = 5_000_000
+MAX_HEALTH_FILE_BYTES = 4_096
+HEALTH_FILE_VERSION = 1
+SAFE_SYNC_ERROR_MESSAGE = "Synchronization failed; retry or run a foreground sync."
 TRACKED_SUFFIXES = {
     ".cfg",
     ".css",
@@ -38,6 +44,7 @@ TRACKED_SUFFIXES = {
 @dataclass(frozen=True)
 class TrackerPaths:
     state_file: Path
+    health_file: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -58,7 +65,11 @@ class TrackedFile:
 def default_tracker_paths(local_home: Path | None = None) -> TrackerPaths:
     if local_home is None:
         local_home = Path.home() / ".ctxd" / "local"
-    return TrackerPaths(state_file=local_home.expanduser() / "tracker-state.json")
+    local_home = local_home.expanduser()
+    return TrackerPaths(
+        state_file=local_home / "tracker-state.json",
+        health_file=local_home / "tracker-health.json",
+    )
 
 
 def sync_once(
@@ -66,7 +77,7 @@ def sync_once(
     folders: list[FolderConfig] | None = None,
     endpoint: str | None = None,
     paths: TrackerPaths | None = None,
-) -> dict[str, int]:
+) -> dict[str, int | bool]:
     if folders is None:
         folders = list_folders()
     if paths is None:
@@ -76,10 +87,12 @@ def sync_once(
     current: dict[str, dict[str, TrackedFile]] = {}
     submissions: list[tuple[str, str, list[dict[str, Any]]]] = []
     current_prefixes = {folder.prefix for folder in folders}
+    complete = True
 
     for folder in folders:
         previous_files = previous.get(folder.prefix, {})
         scan = _scan_folder(folder, previous_files=previous_files)
+        complete = complete and scan.complete
         folder_current = dict(previous_files) if not scan.complete else {}
         folder_current.update(scan.current)
         current[folder.prefix] = folder_current
@@ -126,17 +139,214 @@ def sync_once(
     return {
         "folders": len(folders),
         "operations": submitted,
+        "complete": complete,
     }
 
 
-def run_forever(interval_seconds: float = 10.0) -> None:
+def run_forever(
+    interval_seconds: float = 10.0,
+    *,
+    paths: TrackerPaths | None = None,
+    clock: Callable[[], float] | None = None,
+) -> None:
+    if paths is None:
+        paths = default_tracker_paths()
+    if clock is None:
+        clock = time.time
+    health = load_tracker_health(paths.health_file) or _empty_health()
     while True:
+        attempted_at = int(clock())
+        if health["last_success"] is not None:
+            attempted_at = max(attempted_at, health["last_success"])
         try:
-            sync_once()
+            result = sync_once(paths=paths)
         except Exception as exc:
             print(f"ctxd tracker sync failed: {exc}", flush=True)
             traceback.print_exception(type(exc), exc, exc.__traceback__)
+            health = {
+                **health,
+                "last_attempt": attempted_at,
+                "last_result": "failed",
+                "last_error_category": _safe_error_category(exc),
+                "last_error_message": SAFE_SYNC_ERROR_MESSAGE,
+                "complete": None,
+                "folders_scanned": None,
+                "operations": None,
+            }
+        else:
+            complete = bool(result["complete"])
+            health = {
+                **health,
+                "last_attempt": attempted_at,
+                "last_result": "success" if complete else "incomplete",
+                "last_error_category": None,
+                "last_error_message": None,
+                "complete": complete,
+                "folders_scanned": int(result["folders"]),
+                "operations": int(result["operations"]),
+            }
+            if complete:
+                health["last_success"] = attempted_at
+        _persist_health_safely(paths.health_file, health)
         time.sleep(interval_seconds)
+
+
+def load_tracker_health(path: Path | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    try:
+        if path.stat().st_size > MAX_HEALTH_FILE_BYTES:
+            return None
+        raw = path.read_text(encoding="utf-8")
+        payload = json.loads(raw)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not _valid_health(payload):
+        return None
+    return payload
+
+
+def _empty_health() -> dict[str, Any]:
+    return {
+        "version": HEALTH_FILE_VERSION,
+        "last_attempt": None,
+        "last_success": None,
+        "last_result": None,
+        "last_error_category": None,
+        "last_error_message": None,
+        "complete": None,
+        "folders_scanned": None,
+        "operations": None,
+    }
+
+
+def _valid_health(payload: object) -> bool:
+    if (
+        not isinstance(payload, dict)
+        or not isinstance(payload.get("version"), int)
+        or isinstance(payload["version"], bool)
+        or payload["version"] != HEALTH_FILE_VERSION
+    ):
+        return False
+    expected = set(_empty_health())
+    if set(payload) != expected:
+        return False
+    if payload["last_result"] not in {None, "success", "incomplete", "failed"}:
+        return False
+    for key in ("last_attempt", "last_success", "folders_scanned", "operations"):
+        value = payload[key]
+        if value is not None and (
+            not isinstance(value, int) or isinstance(value, bool) or value < 0
+        ):
+            return False
+    if payload["complete"] is not None and not isinstance(payload["complete"], bool):
+        return False
+    category = payload["last_error_category"]
+    if category is not None and (
+        not isinstance(category, str)
+        or len(category) > 64
+        or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", category) is None
+    ):
+        return False
+    message = payload["last_error_message"]
+    if message is not None and message != SAFE_SYNC_ERROR_MESSAGE:
+        return False
+
+    last_attempt = payload["last_attempt"]
+    last_success = payload["last_success"]
+    last_result = payload["last_result"]
+    complete = payload["complete"]
+    folders_scanned = payload["folders_scanned"]
+    operations = payload["operations"]
+
+    if last_success is not None and (
+        last_attempt is None or last_success > last_attempt
+    ):
+        return False
+    if last_result is None:
+        return all(
+            value is None
+            for value in (
+                last_attempt,
+                last_success,
+                category,
+                message,
+                complete,
+                folders_scanned,
+                operations,
+            )
+        )
+    if last_attempt is None:
+        return False
+    if last_result == "success":
+        return (
+            last_success == last_attempt
+            and complete is True
+            and folders_scanned is not None
+            and operations is not None
+            and category is None
+            and message is None
+        )
+    if last_result == "incomplete":
+        return (
+            complete is False
+            and folders_scanned is not None
+            and operations is not None
+            and category is None
+            and message is None
+        )
+    return (
+        complete is None
+        and folders_scanned is None
+        and operations is None
+        and category is not None
+        and message == SAFE_SYNC_ERROR_MESSAGE
+    )
+
+
+def _safe_error_category(exc: Exception) -> str:
+    category = type(exc).__name__[:64]
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", category) is None:
+        return "SyncError"
+    return category
+
+
+def _persist_health_safely(path: Path | None, health: dict[str, Any]) -> None:
+    if path is None:
+        return
+    try:
+        _save_health(path, health)
+    except (OSError, ValueError):
+        print("ctxd tracker could not persist synchronization diagnostics", flush=True)
+
+
+def _save_health(path: Path, health: dict[str, Any]) -> None:
+    if not _valid_health(health):
+        raise ValueError("invalid tracker health state")
+    serialized = json.dumps(health, sort_keys=True, separators=(",", ":")) + "\n"
+    encoded = serialized.encode("utf-8")
+    if len(encoded) > MAX_HEALTH_FILE_BYTES:
+        raise ValueError("tracker health state exceeds size bound")
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.parent.chmod(0o700)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", prefix=f".{path.name}.", dir=path.parent, delete=False
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            os.chmod(temporary.fileno(), 0o600)
+            temporary.write(encoded)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        temporary_path.replace(path)
+        path.chmod(0o600)
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def _scan_folder(
