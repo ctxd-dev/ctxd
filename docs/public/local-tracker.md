@@ -107,11 +107,8 @@ complete success, folder and operation counts where available, and a safe error
 category for failures. It never persists the raw exception message, source
 paths, endpoint URL, credentials, or file content.
 
-The tracker stores only its current structured health record at
-`~/.ctxd/local/tracker-health.json`. The file is bounded, replaced atomically,
-and readable only by the current user; the containing directory is also private.
-The tracker does not create a persistent text log. A failure to update the
-health record does not stop synchronization, but status may remain stale.
+The tracker does not create a persistent text log. Use `ctxd tracker status`
+for synchronization health.
 
 ## Move a folder
 
