@@ -154,6 +154,10 @@ def test_public_surface_contract_matches_cli_command_and_option_tree() -> None:
         assert set(details) == {"classification", "document"}, command
         assert details["classification"] in allowed_classes, command
         _assert_document_anchor(details["document"])
+    prose = _markdown_table_code_values(
+        "cli.md", "Command coverage policy", column=0
+    )
+    _assert_inventory("CLI command prose", set(documented), prose)
 
 
 def test_public_surface_contract_matches_http_routes() -> None:

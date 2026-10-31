@@ -13,6 +13,42 @@ reference. This guide documents workflows and behavior-critical options rather
 than repeating every flag. The public surface contract classifies every command
 and option so additions and removals require an explicit documentation decision.
 
+| Command | Classification | Documentation home |
+| --- | --- | --- |
+| `endpoint` | Workflow | Configuration |
+| `endpoint set` | Workflow | Configuration |
+| `endpoint status` | Workflow | Configuration |
+| `files` | Workflow | Files |
+| `files glob` | Workflow | Files |
+| `files grep` | Workflow | Files |
+| `files ls` | Workflow | Files |
+| `files read` | Workflow | Files |
+| `files read-lines` | Workflow | Files |
+| `files stat` | Workflow | Files |
+| `files tree` | Workflow | Files |
+| `folders` | Workflow | Folders |
+| `folders add` | Workflow | Folders |
+| `folders list` | Workflow | Folders |
+| `folders remove` | Workflow | Folders |
+| `keys` | Administration | Server credentials |
+| `keys create` | Administration | Server credentials |
+| `keys list` | Administration | Server credentials |
+| `keys revoke` | Administration | Server credentials |
+| `keys rotate` | Administration | Server credentials |
+| `login` | Workflow | Configuration |
+| `logout` | Workflow | Configuration |
+| `machine` | Optional workflow | Machine identity |
+| `machine configure` | Optional workflow | Machine identity |
+| `machine register` | Optional workflow | Machine identity |
+| `machine status` | Optional workflow | Machine identity |
+| `server` | Administration | ctxfs |
+| `server serve` | Administration | ctxfs |
+| `status` | Workflow | Configuration |
+| `tracker` | Workflow | Tracker |
+| `tracker start` | Workflow | Tracker |
+| `tracker status` | Workflow | Tracker |
+| `tracker stop` | Workflow | Tracker |
+
 ## Install
 
 ```bash
