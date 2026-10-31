@@ -594,6 +594,17 @@ def _handle_tracker(args: argparse.Namespace) -> int:
         print(f"tracker running: {state['running']}")
         print(f"tracker pid: {state['pid']}")
         print(f"folders: {state['folders']}")
+        print(f"sync diagnostics: {state['diagnostic_state']}")
+        if state["diagnostic_state"] == "available":
+            print(f"last sync result: {state['last_result']}")
+            print(f"last sync attempt: {state['last_attempt']}")
+            print(f"last successful sync: {state['last_success']}")
+            print(f"last scan complete: {state['complete']}")
+            print(f"folders scanned: {state['folders_scanned']}")
+            print(f"operations submitted: {state['operations']}")
+            if state["last_error_category"] is not None:
+                print(f"last sync error: {state['last_error_category']}")
+                print(f"diagnostic: {state['last_error_message']}")
         return 0
 
     raise ValueError("Unsupported tracker command.")

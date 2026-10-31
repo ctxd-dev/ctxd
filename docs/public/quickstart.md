@@ -41,8 +41,9 @@ is also its CLI path alias.
 ctxd tracker start
 ```
 
-The tracker runs separately from ctxfs and keeps the folders you added
-synchronized.
+The tracker runs separately from ctxfs and scans the folders you added. A
+running process does not guarantee current content when a scan is incomplete;
+see the local tracker guide for failure and recovery behavior.
 
 Verify both processes:
 
@@ -51,9 +52,10 @@ ctxd endpoint status
 ctxd tracker status
 ```
 
-Look for `ctxfs healthy: true` and `tracker running: True`. `ctxd tracker
-status` only reports tracker state. With the default endpoint, `ctxd endpoint
-status` ensures local ctxfs is running before checking its health.
+Look for `ctxfs healthy: true`, `tracker running: True`, and a successful last
+sync result. A running process alone does not prove that synchronization is
+succeeding. With the default endpoint, `ctxd endpoint status` ensures local
+ctxfs is running before checking its health.
 
 ## 5. Read from ctxfs
 
@@ -63,13 +65,13 @@ ctxd files read Documents/notes.md
 ctxd files grep "deployment" --prefix Documents --limit 20
 ```
 
-Tracked files are synchronized while the tracker runs. The same commands read
-from a configured authenticated network endpoint when the client has the same
-folder alias. A separate reader uses canonical paths such as
+Tracked files are synchronized after successful scans while the tracker runs.
+The same commands read from a configured authenticated network endpoint when
+the client has the same folder alias. A separate reader uses canonical paths such as
 `local-files/<ROOT_ID>/notes.md`.
 
 ## Next steps
 
-- [Local tracker](/docs/local-tracker) for upgrades, moves, logs, and removal
+- [Local tracker](/docs/local-tracker) for monitoring, moves, and removal
 - [ctxfs](/docs/ctxfs) for the filesystem model and all seven reads
 - [ctxfs API](/docs/api) for endpoint parameters and authentication

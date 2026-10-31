@@ -13,6 +13,7 @@ from ctxd.exceptions import CtxdAuthError
 from ctxd.public_environment import PublicEnvironmentVariable, getenv
 
 DEFAULT_CREDENTIALS_PATH = Path.home() / ".ctxd" / "credentials.json"
+CREDENTIALS_PATH_ENV_VAR = "CTXD_CREDENTIALS_PATH"
 
 
 def get_credentials_path() -> Path:

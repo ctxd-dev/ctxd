@@ -15,10 +15,11 @@ from ctxd.config import resolve_ctxfs_endpoint_details
 from ctxd.ctxfs_client import CtxfsClient
 from ctxd.folders import list_folders
 from ctxd.local_ctxfs_service import ensure_started
-from ctxd.tracker import run_forever, sync_once
+from ctxd.tracker import default_tracker_paths, load_tracker_health, run_forever, sync_once
 
 DEFAULT_LOCAL_HOME = Path.home() / ".ctxd" / "local"
 DEFAULT_PID_FILE_NAME = "tracker.pid"
+DEFAULT_HEALTH_FILE_NAME = "tracker-health.json"
 PROCESS_MARKER = "ctxd.tracker_service"
 
 
@@ -26,6 +27,7 @@ PROCESS_MARKER = "ctxd.tracker_service"
 class TrackerServicePaths:
     local_home: Path
     pid_file: Path
+    health_file: Path | None = None
 
 
 def default_paths(local_home: Path | None = None) -> TrackerServicePaths:
@@ -35,6 +37,7 @@ def default_paths(local_home: Path | None = None) -> TrackerServicePaths:
     return TrackerServicePaths(
         local_home=local_home,
         pid_file=local_home / DEFAULT_PID_FILE_NAME,
+        health_file=local_home / DEFAULT_HEALTH_FILE_NAME,
     )
 
 
@@ -43,11 +46,23 @@ def status(paths: TrackerServicePaths | None = None) -> dict[str, object]:
         paths = default_paths()
     pid = _read_pid(paths.pid_file)
     running = _pid_matches(pid, PROCESS_MARKER) if pid is not None else False
-    return {
+    health_path = paths.health_file or paths.local_home / DEFAULT_HEALTH_FILE_NAME
+    try:
+        health_exists = health_path.exists()
+    except OSError:
+        health_exists = True
+    health = load_tracker_health(health_path)
+    result: dict[str, object] = {
         "running": running,
         "pid": pid,
         "folders": len(list_folders()),
+        "diagnostic_state": (
+            "available" if health is not None else "unavailable" if health_exists else "not-attempted"
+        ),
     }
+    if health is not None:
+        result.update(health)
+    return result
 
 
 def start(paths: TrackerServicePaths | None = None) -> dict[str, object]:
@@ -65,6 +80,7 @@ def start(paths: TrackerServicePaths | None = None) -> dict[str, object]:
             endpoint=resolution.endpoint, timeout=2.0
         ).validate_authentication()
     paths.local_home.mkdir(parents=True, exist_ok=True)
+    paths.local_home.chmod(0o700)
     command = [sys.executable, "-m", "ctxd.tracker_service", "run"]
     process = subprocess.Popen(
         command,
@@ -109,7 +125,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "run":
         try:
-            run_forever(interval_seconds=args.interval)
+            paths = default_paths()
+            run_forever(
+                interval_seconds=args.interval,
+                paths=default_tracker_paths(paths.local_home),
+            )
         except KeyboardInterrupt:
             pass
         return 0

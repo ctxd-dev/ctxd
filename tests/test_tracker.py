@@ -5,7 +5,14 @@ from pathlib import Path
 import pytest
 
 from ctxd.folders import FolderConfig
-from ctxd.tracker import TrackerPaths, _submit_operations, run_forever, sync_once
+from ctxd.tracker import (
+    SAFE_SYNC_ERROR_MESSAGE,
+    TrackerPaths,
+    _submit_operations,
+    load_tracker_health,
+    run_forever,
+    sync_once,
+)
 
 
 def test_tracker_http_submission_sends_ctxfs_endpoint_credential(monkeypatch) -> None:
@@ -78,7 +85,7 @@ def test_tracker_sync_submits_text_files_and_persists_state(
         paths=TrackerPaths(state_file=tmp_path / "state.json"),
     )
 
-    assert result == {"folders": 1, "operations": 1}
+    assert result == {"folders": 1, "operations": 1, "complete": True}
     assert len(submissions) == 1
     assert submissions[0]["writer_id"] == "ctxd-tracker:local-files/folder-1"
     operation = submissions[0]["operations"][0]
@@ -250,7 +257,7 @@ def test_tracker_sync_submits_delete_for_missing_file(
         paths=TrackerPaths(state_file=state_file),
     )
 
-    assert result == {"folders": 1, "operations": 1}
+    assert result == {"folders": 1, "operations": 1, "complete": True}
     assert submissions == [
         {
             "kind": "delete",
@@ -292,9 +299,187 @@ def test_tracker_sync_preserves_state_when_folder_scan_is_incomplete(
         paths=TrackerPaths(state_file=state_file),
     )
 
-    assert result == {"folders": 1, "operations": 0}
+    assert result == {"folders": 1, "operations": 0, "complete": False}
     assert submissions == []
     assert "local-files/folder-1:1:2" in state_file.read_text()
+
+
+def test_tracker_sync_preserves_prior_file_after_read_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    docs = tmp_path / "Docs"
+    docs.mkdir()
+    source = docs / "notes.md"
+    source.write_text("new content")
+    folder = FolderConfig(
+        name="Documents", path=str(docs), prefix="local-files/folder-1"
+    )
+    source_key = f"{folder.prefix}:{source.stat().st_dev}:{source.stat().st_ino}"
+    state_file = tmp_path / "state.json"
+    state_file.write_text(
+        json.dumps({folder.prefix: {source_key: "sha256:old"}}) + "\n"
+    )
+    submissions = []
+    original_read_bytes = Path.read_bytes
+
+    def fail_target_read(path: Path) -> bytes:
+        if path == source:
+            raise OSError("simulated read failure")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", fail_target_read)
+    monkeypatch.setattr(
+        "ctxd.tracker._submit_operations",
+        lambda endpoint, *, writer_id, writer_prefix, operations: submissions.extend(
+            operations
+        ),
+    )
+
+    result = sync_once(
+        folders=[folder],
+        endpoint="http://ctxfs.local",
+        paths=TrackerPaths(state_file=state_file),
+    )
+
+    assert result == {"folders": 1, "operations": 0, "complete": False}
+    assert submissions == []
+    assert source_key in state_file.read_text()
+
+
+def test_tracker_sync_preserves_prior_file_after_stat_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    docs = tmp_path / "Docs"
+    docs.mkdir()
+    source = docs / "notes.md"
+    source.write_text("new content")
+    folder = FolderConfig(
+        name="Documents", path=str(docs), prefix="local-files/folder-1"
+    )
+    initial_stat = source.stat()
+    source_key = f"{folder.prefix}:{initial_stat.st_dev}:{initial_stat.st_ino}"
+    state_file = tmp_path / "state.json"
+    state_file.write_text(
+        json.dumps({folder.prefix: {source_key: "sha256:old"}}) + "\n"
+    )
+    submissions = []
+    original_stat = Path.stat
+
+    def fail_target_stat(path: Path, *args, **kwargs):
+        if path == source:
+            raise OSError("simulated stat failure")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", fail_target_stat)
+    monkeypatch.setattr(
+        "ctxd.tracker._submit_operations",
+        lambda endpoint, *, writer_id, writer_prefix, operations: submissions.extend(
+            operations
+        ),
+    )
+
+    result = sync_once(
+        folders=[folder],
+        endpoint="http://ctxfs.local",
+        paths=TrackerPaths(state_file=state_file),
+    )
+
+    assert result == {"folders": 1, "operations": 0, "complete": False}
+    assert submissions == []
+    assert source_key in state_file.read_text()
+
+
+def test_tracker_sync_preserves_prior_file_after_invalid_utf8(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    docs = tmp_path / "Docs"
+    docs.mkdir()
+    source = docs / "notes.md"
+    source.write_bytes(b"\xff\xfe")
+    folder = FolderConfig(
+        name="Documents", path=str(docs), prefix="local-files/folder-1"
+    )
+    source_key = f"{folder.prefix}:{source.stat().st_dev}:{source.stat().st_ino}"
+    state_file = tmp_path / "state.json"
+    state_file.write_text(
+        json.dumps({folder.prefix: {source_key: "sha256:old"}}) + "\n"
+    )
+    submissions = []
+    monkeypatch.setattr(
+        "ctxd.tracker._submit_operations",
+        lambda endpoint, *, writer_id, writer_prefix, operations: submissions.extend(
+            operations
+        ),
+    )
+
+    result = sync_once(
+        folders=[folder],
+        endpoint="http://ctxfs.local",
+        paths=TrackerPaths(state_file=state_file),
+    )
+
+    assert result == {"folders": 1, "operations": 0, "complete": False}
+    assert submissions == []
+    assert source_key in state_file.read_text()
+
+
+def test_incomplete_scan_updates_readable_file_without_deleting_unseen_entries(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    docs = tmp_path / "Docs"
+    docs.mkdir()
+    unreadable = docs / "unreadable.md"
+    unreadable.write_bytes(b"\xff")
+    readable = docs / "readable.md"
+    readable.write_text("new readable content")
+    folder = FolderConfig(
+        name="Documents", path=str(docs), prefix="local-files/folder-1"
+    )
+    unreadable_key = (
+        f"{folder.prefix}:{unreadable.stat().st_dev}:{unreadable.stat().st_ino}"
+    )
+    readable_key = (
+        f"{folder.prefix}:{readable.stat().st_dev}:{readable.stat().st_ino}"
+    )
+    unseen_key = f"{folder.prefix}:1:999"
+    state_file = tmp_path / "state.json"
+    state_file.write_text(
+        json.dumps(
+            {
+                folder.prefix: {
+                    unreadable_key: "sha256:old-unreadable",
+                    readable_key: "sha256:old-readable",
+                    unseen_key: "sha256:old-unseen",
+                }
+            }
+        )
+        + "\n"
+    )
+    submissions = []
+
+    def submit(endpoint, *, writer_id, writer_prefix, operations):
+        del endpoint, writer_id, writer_prefix
+        submissions.extend(operations)
+
+    monkeypatch.setattr("ctxd.tracker._submit_operations", submit)
+
+    result = sync_once(
+        folders=[folder],
+        endpoint="http://ctxfs.local",
+        paths=TrackerPaths(state_file=state_file),
+    )
+
+    assert result == {"folders": 1, "operations": 1, "complete": False}
+    assert [operation["kind"] for operation in submissions] == ["put"]
+    assert submissions[0]["source_key"] == readable_key
+    saved = json.loads(state_file.read_text())[folder.prefix]
+    assert unreadable_key in saved
+    assert unseen_key in saved
+    assert saved[readable_key]["source_version"] != "sha256:old-readable"
 
 
 def test_tracker_sync_deletes_files_for_removed_configured_folder(
@@ -329,7 +514,7 @@ def test_tracker_sync_deletes_files_for_removed_configured_folder(
         paths=TrackerPaths(state_file=state_file),
     )
 
-    assert result == {"folders": 0, "operations": 1}
+    assert result == {"folders": 0, "operations": 1, "complete": True}
     assert submissions == [
         {
             "endpoint": "http://ctxfs.local",
@@ -347,13 +532,17 @@ def test_tracker_sync_deletes_files_for_removed_configured_folder(
     assert state_file.read_text() == "{}\n"
 
 
-def test_tracker_run_forever_continues_after_sync_failure(monkeypatch) -> None:
+def test_tracker_run_forever_continues_after_sync_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
     calls = {"sync": 0}
 
-    def sync_once_side_effect():
+    def sync_once_side_effect(**kwargs):
+        del kwargs
         calls["sync"] += 1
         if calls["sync"] == 1:
             raise RuntimeError("temporary failure")
+        return {"folders": 0, "operations": 0, "complete": True}
 
     def sleep_side_effect(interval):
         del interval
@@ -364,6 +553,268 @@ def test_tracker_run_forever_continues_after_sync_failure(monkeypatch) -> None:
     monkeypatch.setattr("ctxd.tracker.time.sleep", sleep_side_effect)
 
     with pytest.raises(KeyboardInterrupt):
-        run_forever(interval_seconds=0.01)
+        run_forever(
+            interval_seconds=0.01,
+            paths=TrackerPaths(
+                state_file=tmp_path / "state.json",
+                health_file=tmp_path / "health.json",
+            ),
+        )
 
     assert calls["sync"] == 2
+
+
+def test_tracker_health_records_success_and_preserves_it_after_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    paths = TrackerPaths(
+        state_file=tmp_path / "local" / "tracker-state.json",
+        health_file=tmp_path / "local" / "tracker-health.json",
+    )
+    results: list[object] = [
+        {"folders": 2, "operations": 3, "complete": True},
+        RuntimeError("secret /Users/alice https://ctxfs.example token-123"),
+    ]
+
+    def sync_side_effect(**kwargs):
+        assert kwargs == {"paths": paths}
+        result = results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    sleeps = 0
+
+    def sleep_side_effect(interval):
+        nonlocal sleeps
+        assert interval == 0.01
+        sleeps += 1
+        if sleeps == 2:
+            raise KeyboardInterrupt
+
+    ticks = iter([100, 200])
+    monkeypatch.setattr("ctxd.tracker.sync_once", sync_side_effect)
+    monkeypatch.setattr("ctxd.tracker.time.sleep", sleep_side_effect)
+
+    with pytest.raises(KeyboardInterrupt):
+        run_forever(interval_seconds=0.01, paths=paths, clock=lambda: next(ticks))
+
+    health = load_tracker_health(paths.health_file)
+    assert health == {
+        "version": 1,
+        "last_attempt": 200,
+        "last_success": 100,
+        "last_result": "failed",
+        "last_error_category": "RuntimeError",
+        "last_error_message": SAFE_SYNC_ERROR_MESSAGE,
+        "complete": None,
+        "folders_scanned": None,
+        "operations": None,
+    }
+    persisted = paths.health_file.read_text()
+    assert "/Users/alice" not in persisted
+    assert "ctxfs.example" not in persisted
+    assert "token-123" not in persisted
+    assert paths.health_file.stat().st_mode & 0o777 == 0o600
+    assert paths.health_file.parent.stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.parametrize(
+    "health",
+    [
+        {
+            "version": 1,
+            "last_attempt": 10,
+            "last_success": 10,
+            "last_result": "success",
+            "last_error_category": None,
+            "last_error_message": None,
+            "complete": True,
+            "folders_scanned": 2,
+            "operations": 3,
+        },
+        {
+            "version": 1,
+            "last_attempt": 20,
+            "last_success": 10,
+            "last_result": "incomplete",
+            "last_error_category": None,
+            "last_error_message": None,
+            "complete": False,
+            "folders_scanned": 2,
+            "operations": 1,
+        },
+        {
+            "version": 1,
+            "last_attempt": 30,
+            "last_success": 10,
+            "last_result": "failed",
+            "last_error_category": "RuntimeError",
+            "last_error_message": SAFE_SYNC_ERROR_MESSAGE,
+            "complete": None,
+            "folders_scanned": None,
+            "operations": None,
+        },
+    ],
+)
+def test_load_tracker_health_accepts_writer_record_shapes(
+    tmp_path: Path, health: dict[str, object]
+) -> None:
+    health_file = tmp_path / "tracker-health.json"
+    health_file.write_text(json.dumps(health))
+
+    assert load_tracker_health(health_file) == health
+
+
+def test_tracker_health_marks_incomplete_without_advancing_last_success(
+    tmp_path: Path, monkeypatch
+) -> None:
+    paths = TrackerPaths(
+        state_file=tmp_path / "tracker-state.json",
+        health_file=tmp_path / "tracker-health.json",
+    )
+    calls = iter(
+        [
+            {"folders": 1, "operations": 4, "complete": True},
+            {"folders": 1, "operations": 0, "complete": False},
+        ]
+    )
+    monkeypatch.setattr("ctxd.tracker.sync_once", lambda **kwargs: next(calls))
+    sleeps = 0
+
+    def stop_after_two(_interval):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 2:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr("ctxd.tracker.time.sleep", stop_after_two)
+    ticks = iter([10, 20])
+
+    with pytest.raises(KeyboardInterrupt):
+        run_forever(paths=paths, clock=lambda: next(ticks))
+
+    health = load_tracker_health(paths.health_file)
+    assert health is not None
+    assert health["last_result"] == "incomplete"
+    assert health["last_attempt"] == 20
+    assert health["last_success"] == 10
+    assert health["complete"] is False
+    assert health["folders_scanned"] == 1
+
+
+@pytest.mark.parametrize(
+    "second_result, expected_result",
+    [
+        (RuntimeError("temporary failure"), "failed"),
+        ({"folders": 1, "operations": 0, "complete": False}, "incomplete"),
+    ],
+)
+def test_tracker_health_handles_clock_regression_after_success(
+    tmp_path: Path, monkeypatch, second_result: object, expected_result: str
+) -> None:
+    paths = TrackerPaths(
+        state_file=tmp_path / "tracker-state.json",
+        health_file=tmp_path / "tracker-health.json",
+    )
+    results = iter(
+        [
+            {"folders": 1, "operations": 1, "complete": True},
+            second_result,
+        ]
+    )
+    sync_calls = 0
+
+    def sync_side_effect(**kwargs):
+        nonlocal sync_calls
+        sync_calls += 1
+        result = next(results)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    sleep_calls = 0
+
+    def stop_after_two(_interval):
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls == 2:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr("ctxd.tracker.sync_once", sync_side_effect)
+    monkeypatch.setattr("ctxd.tracker.time.sleep", stop_after_two)
+    ticks = iter([20, 10])
+
+    with pytest.raises(KeyboardInterrupt):
+        run_forever(paths=paths, clock=lambda: next(ticks))
+
+    assert sync_calls == 2
+    assert sleep_calls == 2
+    health = load_tracker_health(paths.health_file)
+    assert health is not None
+    assert health["last_attempt"] == 20
+    assert health["last_success"] == 20
+    assert health["last_result"] == expected_result
+
+
+def test_tracker_health_survives_restart_and_write_failures_do_not_stop_sync(
+    tmp_path: Path, monkeypatch
+) -> None:
+    paths = TrackerPaths(
+        state_file=tmp_path / "tracker-state.json",
+        health_file=tmp_path / "tracker-health.json",
+    )
+    paths.health_file.write_text(
+        '{"complete":true,"folders_scanned":1,"last_attempt":10,'
+        '"last_error_category":null,"last_error_message":null,'
+        '"last_result":"success","last_success":10,"operations":1,"version":1}\n'
+    )
+    calls = 0
+
+    def successful_sync(**kwargs):
+        nonlocal calls
+        calls += 1
+        return {"folders": 1, "operations": 0, "complete": True}
+
+    monkeypatch.setattr("ctxd.tracker.sync_once", successful_sync)
+    monkeypatch.setattr(
+        "ctxd.tracker._save_health", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("read only"))
+    )
+    monkeypatch.setattr(
+        "ctxd.tracker.time.sleep", lambda _interval: (_ for _ in ()).throw(KeyboardInterrupt())
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        run_forever(paths=paths, clock=lambda: 20)
+
+    assert calls == 1
+
+
+def test_tracker_health_validation_failure_does_not_stop_sync(
+    tmp_path: Path, monkeypatch
+) -> None:
+    paths = TrackerPaths(
+        state_file=tmp_path / "tracker-state.json",
+        health_file=tmp_path / "tracker-health.json",
+    )
+    calls = 0
+
+    def successful_sync(**kwargs):
+        nonlocal calls
+        calls += 1
+        return {"folders": 1, "operations": 0, "complete": True}
+
+    monkeypatch.setattr("ctxd.tracker.sync_once", successful_sync)
+    monkeypatch.setattr(
+        "ctxd.tracker._save_health",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("invalid state")),
+    )
+    monkeypatch.setattr(
+        "ctxd.tracker.time.sleep",
+        lambda _interval: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        run_forever(paths=paths, clock=lambda: 20)
+
+    assert calls == 1

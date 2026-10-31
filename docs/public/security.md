@@ -39,7 +39,49 @@ stand alone.
 
 ## What ctxd stores
 
-ctxfs stores its local tree and catalog under `~/.ctxd/ctxfs` by default. The tracker stores configuration, state, and logs under `~/.ctxd/local`.
+The managed local deployment uses these default paths:
+
+| Data | Default location | Lifecycle |
+| --- | --- | --- |
+| CLI settings, registered source paths, and generated ctxfs prefixes | `~/.ctxd/config.json` | Persistent |
+| Client bearer credentials and machine registration state | `~/.ctxd/credentials.json` | Persistent and sensitive |
+| Credential write lock | `~/.ctxd/credentials.lock` | Persistent coordination file; contains no credential payload |
+| Installation identity and machine registration locks | `~/.ctxd/.ctxd-locks/identity-<digest>.lock` and `~/.ctxd/.ctxd-locks/register-<digest>.lock` | Persistent coordination files; digest names vary and contain no credential payload |
+| Tracker synchronization metadata | `~/.ctxd/local/tracker-state.json` | Persistent and sensitive |
+| Tracker current-health record | `~/.ctxd/local/tracker-health.json` | Persistent |
+| Tracker process ID | `~/.ctxd/local/tracker.pid` | Runtime only |
+| Managed ctxfs process ID and socket | `~/.ctxd/local/ctxfs.pid` and `~/.ctxd/local/ctxfs.sock` | Runtime only |
+| Managed ctxfs coordination lock | `~/.ctxd/local/ctxfs.lock` | Persistent coordination artifact; contains no service state |
+| Managed ctxfs tree and catalog | `~/.ctxd/ctxfs/` | Persistent and sensitive |
+
+The detached tracker does not currently create a log file. Use `ctxd tracker
+status` and `ctxd endpoint status` for the available health information.
+
+`CTXD_CONFIG_PATH` selects a different configuration file.
+`CTXD_CREDENTIALS_PATH` independently selects a different credentials file and
+takes precedence for that file. If only `CTXD_CONFIG_PATH` is set, the
+credentials file defaults to `credentials.json` beside the selected
+configuration file. The credential write lock and `.ctxd-locks/` directory are
+created beside the selected credentials file, including when either override
+changes that location. Their lock files persist after use; ctxd does not remove
+them automatically. Changing either variable does not move existing data.
+
+The managed ctxfs coordination lock also persists after the service exits; its
+runtime cleanup removes the process-ID file and socket, but not `ctxfs.lock`.
+
+The credentials file contains bearer credentials. The configuration file
+reveals registered source paths, the tracker state contains synchronization
+metadata, and the ctxfs data root contains indexed representations of tracked
+content. ctxd sets the configuration, credentials, tracker state, process-ID,
+and lock files to user read/write only where supported. The managed ctxfs
+service also sets its `~/.ctxd/local/` runtime directory and `~/.ctxd/ctxfs/`
+data directory to user-only access and creates its Unix socket with private
+permissions. It does not change permissions on source folders or on parent
+directories of paths selected by environment overrides.
+
+These permissions are not encryption and do not protect state from other
+processes running as the same operating-system account or from operating-system
+administrators.
 
 Text files that need no transformation may be linked into the ctxfs tree instead of copied when the filesystem supports it. Content that requires transformation is stored as a ctxfs-owned representation. The source files remain in their original folders.
 
@@ -85,6 +127,20 @@ ctxd tracker stop
 pip uninstall ctxd
 ```
 
-Uninstalling does not delete `~/.ctxd`. If you choose to remove that directory
-manually, review the path first: it contains ctxd-managed configuration, tracker
-state, and ctxfs data, but not the tracked source folders themselves.
+`ctxd tracker stop` stops the tracker and removes its runtime process-ID file;
+it does not stop the managed ctxfs service, which can remain running across
+tracker stop and package uninstall. The CLI currently has no managed ctxfs stop
+command. It preserves configuration, credentials, synchronization state,
+coordination locks, indexed ctxfs data, and the original source folders.
+Uninstalling the package also does not
+delete `~/.ctxd` or a path selected by an environment override.
+
+If you choose to remove `~/.ctxd` manually, first use operating-system process
+management to find and end any process owned by the current user whose command
+identifies `ctxd.local_ctxfs_service`, then confirm it has exited and review the
+path. Do this before deleting runtime files; `ctxd tracker stop` is not
+sufficient for this step. Removing `~/.ctxd` deletes the default ctxd-managed
+configuration, credentials, tracker state, runtime files, and indexed ctxfs
+data. It does not
+delete the original tracked source folders. Data stored at paths selected by
+`CTXD_CONFIG_PATH` or `CTXD_CREDENTIALS_PATH` must be reviewed separately.
