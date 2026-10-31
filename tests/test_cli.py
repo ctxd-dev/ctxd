@@ -132,6 +132,48 @@ def test_status_starts_default_local_ctxfs() -> None:
     assert "ctxfs healthy: true" in stdout.getvalue()
 
 
+def test_tracker_status_prints_sync_health_without_raw_error() -> None:
+    state = {
+        "running": True,
+        "pid": 123,
+        "folders": 2,
+        "diagnostic_state": "available",
+        "last_result": "failed",
+        "last_attempt": 20,
+        "last_success": 10,
+        "complete": None,
+        "folders_scanned": None,
+        "operations": None,
+        "last_error_category": "RuntimeError",
+        "last_error_message": "Synchronization failed; retry or run a foreground sync.",
+    }
+    stdout = StringIO()
+    with patch("ctxd.cli.tracker_status", return_value=state), redirect_stdout(stdout):
+        assert main(["tracker", "status"]) == 0
+
+    output = stdout.getvalue()
+    assert "tracker running: True" in output
+    assert "last sync result: failed" in output
+    assert "last successful sync: 10" in output
+    assert "last sync error: RuntimeError" in output
+    assert "secret" not in output
+
+
+def test_tracker_status_prints_fresh_diagnostic_state() -> None:
+    state = {
+        "running": True,
+        "pid": 123,
+        "folders": 0,
+        "diagnostic_state": "not-attempted",
+    }
+    stdout = StringIO()
+    with patch("ctxd.cli.tracker_status", return_value=state), redirect_stdout(stdout):
+        assert main(["tracker", "status"]) == 0
+
+    assert "sync diagnostics: not-attempted" in stdout.getvalue()
+    assert "last sync result" not in stdout.getvalue()
+
+
 def test_machine_register_uses_environment_token_without_printing_secrets() -> None:
     stdout = StringIO()
     status = SimpleNamespace(

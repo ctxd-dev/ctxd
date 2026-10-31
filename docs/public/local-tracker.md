@@ -109,9 +109,25 @@ ctxd tracker status
 ctxd endpoint status
 ```
 
-A connected setup reports the effective endpoint, `ctxfs healthy: true`, and a
-running tracker. Process liveness and endpoint health do not prove that the
-latest folder scan completed or that every indexed file is current.
+A healthy setup reports the effective endpoint, `ctxfs healthy: true`, a
+running tracker, and `last sync result: success`. Process liveness and
+synchronization health are separate: a tracker may remain running after a sync
+failure, and liveness alone does not prove that every indexed file is current.
+
+The status distinguishes these synchronization states:
+
+- `sync diagnostics: not-attempted`: no persisted attempt exists yet.
+- `last sync result: success`: the most recent scan completed and its operations
+  were submitted.
+- `last sync result: failed`: the most recent attempt raised an error.
+- `last sync result: incomplete`: at least one folder could not be scanned
+  completely, so conservative prior tracker state may have been retained.
+- `sync diagnostics: unavailable`: the health record exists but cannot be read
+  or validated.
+
+Status includes UTC epoch-second timestamps for the last attempt and last
+complete success, folder and operation counts where available, and a safe error
+category for failures.
 
 ## Move a folder
 
@@ -157,8 +173,9 @@ certificate trust chain, and that the credential has `submit` plus the required
 prefix. Rotation revokes the old key immediately; run `ctxd logout --endpoint
 URL`, then `ctxd login --endpoint URL` and enter the newly printed token.
 
-If a change has not appeared, check that the source folder still exists and that
-the affected file is readable, within the size limit, and valid UTF-8. Correct
-the source problem and allow another polling interval. Restarting with `ctxd
-tracker stop` followed by `ctxd tracker start` can recover a stopped process,
-but it cannot repair an unreadable folder or invalid source content.
+If a change has not appeared, check the last sync result first. For `failed`,
+confirm endpoint availability and credentials. For `incomplete`, check that the
+source folder still exists and that affected files are readable, within the size
+limit, and valid UTF-8. Correct the source problem and allow another polling
+interval. Restarting with `ctxd tracker stop` followed by `ctxd tracker start`
+can recover a stopped process, but it cannot repair invalid source content.

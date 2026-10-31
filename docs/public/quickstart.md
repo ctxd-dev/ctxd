@@ -52,9 +52,10 @@ ctxd endpoint status
 ctxd tracker status
 ```
 
-Look for `ctxfs healthy: true` and `tracker running: True`. `ctxd tracker
-status` only reports tracker state. With the default endpoint, `ctxd endpoint
-status` ensures local ctxfs is running before checking its health.
+Look for `ctxfs healthy: true`, `tracker running: True`, and a successful last
+sync result. A running process alone does not prove that synchronization is
+succeeding. With the default endpoint, `ctxd endpoint status` ensures local
+ctxfs is running before checking its health.
 
 ## 5. Read from ctxfs
 
@@ -71,6 +72,6 @@ the client has the same folder alias. A separate reader uses canonical paths suc
 
 ## Next steps
 
-- [Local tracker](/docs/local-tracker) for upgrades, moves, logs, and removal
+- [Local tracker](/docs/local-tracker) for monitoring, moves, and removal
 - [ctxfs](/docs/ctxfs) for the filesystem model and all seven reads
 - [ctxfs API](/docs/api) for endpoint parameters and authentication
