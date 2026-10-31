@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from ctxd.local_ctxfs_server import CtxfsAuthMode, create_ctxfs_app
 from ctxfs import (
     CtxfsStore,
+    GrepMatch,
     GrepPage,
     MachineCredentialCoordinator,
     MachineCredentialNotCurrentError,
@@ -255,7 +256,7 @@ def test_local_ctxfs_mcp_reads_in_process(tmp_path) -> None:
     assert result.get("isError") is None
 
 
-def test_local_ctxfs_mcp_grep_forwards_timeout_and_cursor(
+def test_local_ctxfs_mcp_grep_hides_and_consumes_transport_pages(
     tmp_path, monkeypatch
 ) -> None:
     calls = []
@@ -280,7 +281,35 @@ def test_local_ctxfs_mcp_grep_forwards_timeout_and_cursor(
                 "cursor": cursor,
             }
         )
-        return GrepPage(items=[], complete=True)
+        if cursor is None:
+            return GrepPage(
+                items=[
+                    GrepMatch(
+                        path="local-files/root/one.md",
+                        line_number=1,
+                        line="needle one",
+                        match_start=0,
+                        match_end=6,
+                        content_hash="sha256:one",
+                    )
+                ],
+                complete=False,
+                stopped_by="timeout",
+                next_cursor="next-page",
+            )
+        return GrepPage(
+            items=[
+                GrepMatch(
+                    path="local-files/root/two.md",
+                    line_number=1,
+                    line="needle two",
+                    match_start=0,
+                    match_end=6,
+                    content_hash="sha256:two",
+                )
+            ],
+            complete=True,
+        )
 
     monkeypatch.setattr(CtxfsStore, "grep", grep)
     client = TestClient(
@@ -298,9 +327,7 @@ def test_local_ctxfs_mcp_grep_forwards_timeout_and_cursor(
                 "arguments": {
                     "pattern": "needle",
                     "prefix": "local-files/root",
-                    "limit": 17,
                     "timeout_seconds": 7.5,
-                    "cursor": "next-page",
                 },
             },
         },
@@ -312,11 +339,28 @@ def test_local_ctxfs_mcp_grep_forwards_timeout_and_cursor(
             "user_id": "local",
             "pattern": "needle",
             "prefix": "local-files/root",
-            "limit": 17,
+            "limit": 1000,
+            "timeout_seconds": 7.5,
+            "cursor": None,
+        },
+        {
+            "user_id": "local",
+            "pattern": "needle",
+            "prefix": "local-files/root",
+            "limit": 1000,
             "timeout_seconds": 7.5,
             "cursor": "next-page",
-        }
+        },
     ]
+    assert "structuredContent" in response.json()["result"], response.json()
+    result = response.json()["result"]["structuredContent"]
+    assert [item["line"] for item in result["items"]] == [
+        "needle one",
+        "needle two",
+    ]
+    assert result["complete"] is True
+    assert "next_cursor" not in result
+    assert "continuation_required" not in result
 
 
 def test_bearer_mode_rejects_missing_malformed_invalid_and_revoked_keys(

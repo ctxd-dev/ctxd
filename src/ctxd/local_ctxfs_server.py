@@ -9,7 +9,9 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from ctxd.exceptions import CtxdIncompleteSearchError
 from ctxd.mcp_server import handle_message
+from ctxd.models import CtxfsGrepResult
 from ctxfs import (
     Bounded,
     CtxfsOperation,
@@ -40,6 +42,7 @@ from ctxfs.store import CatalogBindingConflictError, CatalogConflictError
 LOCAL_CTXFS_USER_ID = "local"
 DEFAULT_CTXFS_HOST = "127.0.0.1"
 DEFAULT_CTXFS_PORT = 8765
+_GREP_MAX_TRANSPORT_PAGES = 100
 T = TypeVar("T")
 
 
@@ -570,19 +573,64 @@ def _execute_ctxfs_tool(
                 arguments["end_line"],
             )
         if name == "grep":
-            return _call_store(
-                store.grep,
-                LOCAL_CTXFS_USER_ID,
-                arguments["pattern"],
+            return _execute_ctxfs_grep(
+                store,
+                pattern=arguments["pattern"],
                 prefix=arguments.get("prefix", ""),
-                limit=arguments.get("limit", 1000),
+                limit=arguments.get("limit"),
                 timeout_seconds=arguments.get("timeout_seconds", 2.0),
-                cursor=arguments.get("cursor"),
             )
         raise ValueError(f"Unknown ctxfs tool: {name}")
 
     value = _with_store(root, execute)
     return value.model_dump(mode="json")
+
+
+def _execute_ctxfs_grep(
+    store: CtxfsStore,
+    *,
+    pattern: str,
+    prefix: str,
+    limit: int | None,
+    timeout_seconds: float,
+) -> CtxfsGrepResult:
+    """Hide raw HTTP pagination from the local MCP agent surface."""
+    items = []
+    cursor: str | None = None
+    for _ in range(_GREP_MAX_TRANSPORT_PAGES):
+        page = _call_store(
+            store.grep,
+            LOCAL_CTXFS_USER_ID,
+            pattern,
+            prefix=prefix,
+            limit=1000 if limit is None else max(1, limit - len(items)),
+            timeout_seconds=timeout_seconds,
+            cursor=cursor,
+        )
+        items.extend(page.items)
+        if page.complete:
+            return CtxfsGrepResult(
+                items=[item.model_dump(mode="json") for item in items],
+                complete=True,
+                stopped_by=page.stopped_by,
+            )
+        if page.stopped_by == "limit" and limit is not None:
+            return CtxfsGrepResult(
+                items=[item.model_dump(mode="json") for item in items],
+                complete=True,
+                stopped_by="limit",
+            )
+        if page.next_cursor is None:
+            reason = page.stopped_by or "an unknown safety bound"
+            raise CtxdIncompleteSearchError(
+                f"ctxfs grep stopped because of {reason} without a continuation; "
+                "narrow the prefix or pattern and retry"
+            )
+        cursor = page.next_cursor
+    raise CtxdIncompleteSearchError(
+        "ctxfs grep exceeded its continuation safety limit; narrow the prefix "
+        "or pattern and retry"
+    )
 
 
 def _reject_user_id_query(user_id: str | None = Query(default=None)) -> None:

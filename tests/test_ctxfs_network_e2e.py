@@ -355,7 +355,15 @@ def _assert_rest_mcp_parity(
             "tools/call",
             params={"name": tool, "arguments": arguments},
         )
-        assert mcp["result"]["structuredContent"] == rest.json()
+        expected = rest.json()
+        if tool == "grep":
+            for transport_field in (
+                "next_cursor",
+                "continuation_required",
+                "continuation_hint",
+            ):
+                expected.pop(transport_field, None)
+        assert mcp["result"]["structuredContent"] == expected
         results[tool] = rest.json()
     return results
 
