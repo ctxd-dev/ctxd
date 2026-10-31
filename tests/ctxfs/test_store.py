@@ -344,7 +344,7 @@ def test_tree_glob_and_grep_surface_disk_only_paths_as_incomplete(tmp_path):
     assert matches.complete is False
     assert matches.stopped_by == "catalog_mismatch"
 
-    grep = store.grep("user-1", "needle", prefix="local_files/root1")
+    grep = store.grep("user-1", "needl[e]", prefix="local_files/root1")
     expected_hash = "sha256:" + hashlib.sha256(b"needle\n").hexdigest()
     assert [(item.path, item.content_hash) for item in grep.items] == [
         (path, expected_hash)
@@ -773,11 +773,269 @@ def test_grep_skips_missing_tree_paths(tmp_path):
     store.submit("user-1", "writer-1", [_put(path, "inode-1", "needle")])
     store._tree_path("user-1", path).unlink()
 
-    matches = store.grep("user-1", "needle", prefix="local_files/root")
+    matches = store.grep("user-1", "needl[e]", prefix="local_files/root")
 
     assert matches.items == []
     assert matches.complete is False
     assert matches.stopped_by == "catalog_mismatch"
+
+
+def test_indexed_literal_reads_only_candidate_files(tmp_path, monkeypatch):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+    operations = [
+        _put(
+            f"local_files/root/{index:03}.md",
+            f"inode-{index}",
+            f"unrelated content {index}\n",
+        )
+        for index in range(200)
+    ]
+    operations.append(
+        _put("local_files/root/match.md", "inode-match", "MedThink recovery plan\n")
+    )
+    store.submit("user-1", "writer-1", operations)
+    visited = []
+    original = store._grep_tree_path
+
+    def record_candidate(pattern, tree_path, logical_path, *args, **kwargs):
+        visited.append(logical_path)
+        return original(pattern, tree_path, logical_path, *args, **kwargs)
+
+    monkeypatch.setattr(store, "_grep_tree_path", record_candidate)
+
+    page = store.grep("user-1", "MedThink", prefix="local_files/root")
+
+    assert [match.path for match in page.items] == ["local_files/root/match.md"]
+    assert page.complete is True
+    assert visited == ["local_files/root/match.md"]
+
+
+def test_indexed_literal_verifies_case_and_non_regex_punctuation(tmp_path):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [
+            _put("local_files/root/lower.md", "lower", "med-think\n"),
+            _put("local_files/root/exact.md", "exact", "Med-Think\n"),
+        ],
+    )
+
+    page = store.grep("user-1", "Med-Think", prefix="local_files/root")
+
+    assert [match.path for match in page.items] == ["local_files/root/exact.md"]
+
+
+def test_indexed_literal_isolated_by_user_and_prefix(tmp_path):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    store.register_prefix("user-1", "writer-a", "root/a")
+    store.register_prefix("user-1", "writer-b", "root/b")
+    store.register_prefix("user-2", "writer-a", "root/a")
+    store.submit("user-1", "writer-a", [_put("root/a/one.md", "one", "MedThink")])
+    store.submit("user-1", "writer-b", [_put("root/b/two.md", "two", "MedThink")])
+    store.submit("user-2", "writer-a", [_put("root/a/three.md", "three", "MedThink")])
+
+    page = store.grep("user-1", "MedThink", prefix="root/a")
+
+    assert [match.path for match in page.items] == ["root/a/one.md"]
+
+
+def test_indexed_literal_tracks_update_move_and_delete(tmp_path):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+    source = "local_files/root/source.md"
+    destination = "local_files/root/destination.md"
+    store.submit("user-1", "writer-1", [_put(source, "inode-1", "old value")])
+
+    store.submit("user-1", "writer-1", [_put(source, "inode-1", "MedThink value")])
+    assert [item.path for item in store.grep("user-1", "MedThink").items] == [source]
+    assert store.grep("user-1", "old value").items == []
+
+    entry = store.stat("user-1", source)
+    assert entry is not None
+    store.submit(
+        "user-1",
+        "writer-1",
+        [
+            MoveOperation(
+                source_key="inode-1",
+                path=destination,
+                source_version="v2",
+                expected_content_hash=entry.content_hash,
+            )
+        ],
+    )
+    assert [item.path for item in store.grep("user-1", "MedThink").items] == [
+        destination
+    ]
+
+    store.submit(
+        "user-1",
+        "writer-1",
+        [DeleteOperation(source_key="inode-1", source_version="v3")],
+    )
+    assert store.grep("user-1", "MedThink").items == []
+
+
+def test_indexed_literal_backfills_existing_catalog(tmp_path, monkeypatch):
+    root = tmp_path / "ctxfs"
+    store = CtxfsStore(root)
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [_put("local_files/root/notes.md", "inode-1", "MedThink")],
+    )
+    with store.connection:
+        store.connection.execute("DROP TABLE grep_index")
+        store.connection.execute("DROP TABLE grep_index_entries")
+    store.close()
+
+    migrated = CtxfsStore(root)
+
+    assert [item.path for item in migrated.grep("user-1", "MedThink").items] == [
+        "local_files/root/notes.md"
+    ]
+    migrated.close()
+    reopened = CtxfsStore(root)
+    assert (
+        reopened.connection.execute(
+            "SELECT COUNT(*) FROM grep_index_entries"
+        ).fetchone()[0]
+        == 1
+    )
+    reopened.close()
+
+    def unexpected_backfill(self):
+        raise AssertionError("completed indexes must not be rescanned at startup")
+
+    monkeypatch.setattr(CtxfsStore, "_backfill_grep_index", unexpected_backfill)
+    cached = CtxfsStore(root)
+    assert [item.path for item in cached.grep("user-1", "MedThink").items] == [
+        "local_files/root/notes.md"
+    ]
+
+
+def test_incomplete_index_backfill_uses_scan_until_repaired(tmp_path, monkeypatch):
+    root = tmp_path / "ctxfs"
+    store = CtxfsStore(root)
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [_put("local_files/root/notes.md", "inode-1", "MedThink")],
+    )
+    entry = store.stat("user-1", "local_files/root/notes.md")
+    assert entry is not None
+    object_path = store._object_path("user-1", entry.object_id)
+    with store.connection:
+        store.connection.execute("DROP TABLE grep_index")
+        store.connection.execute("DROP TABLE grep_index_entries")
+    store.close()
+
+    original_read_bytes = store_module.Path.read_bytes
+
+    def fail_object_read(path):
+        if path == object_path:
+            raise OSError("object temporarily unavailable")
+        return original_read_bytes(path)
+
+    with monkeypatch.context() as context:
+        context.setattr(store_module.Path, "read_bytes", fail_object_read)
+        degraded = CtxfsStore(root)
+        assert degraded._grep_index_available is False
+        assert [item.path for item in degraded.grep("user-1", "MedThink").items] == [
+            "local_files/root/notes.md"
+        ]
+        degraded.close()
+
+    repaired = CtxfsStore(root)
+    assert repaired._grep_index_available is True
+    assert [item.path for item in repaired.grep("user-1", "MedThink").items] == [
+        "local_files/root/notes.md"
+    ]
+
+
+def test_index_update_rolls_back_with_failed_submission(tmp_path, monkeypatch):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+
+    def fail_index_update(*args, **kwargs):
+        raise RuntimeError("index update failed")
+
+    monkeypatch.setattr(store, "_upsert_grep_index", fail_index_update)
+    with pytest.raises(RuntimeError, match="index update failed"):
+        store.submit(
+            "user-1",
+            "writer-1",
+            [_put("local_files/root/notes.md", "inode-1", "MedThink")],
+        )
+
+    assert store.stat("user-1", "local_files/root/notes.md") is None
+    assert (
+        store.connection.execute("SELECT COUNT(*) FROM grep_index_entries").fetchone()[
+            0
+        ]
+        == 0
+    )
+
+
+def test_indexed_literal_is_catalog_authoritative_for_disk_only_paths(tmp_path):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    disk_path = store._tree_path("user-1", "local_files/root/orphan.md")
+    disk_path.parent.mkdir(parents=True)
+    disk_path.write_text("MedThink\n")
+
+    literal = store.grep("user-1", "MedThink", prefix="local_files/root")
+    regex = store.grep("user-1", "MedThink.*", prefix="local_files/root")
+
+    assert literal.items == []
+    assert literal.complete is True
+    assert [item.path for item in regex.items] == ["local_files/root/orphan.md"]
+    assert regex.stopped_by == "catalog_mismatch"
+
+
+def test_regex_and_short_literal_keep_scan_path(tmp_path, monkeypatch):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [_put("local_files/root/notes.md", "inode-1", "needle ab")],
+    )
+    original = store._iter_entries_under_prefix
+    calls = 0
+
+    def record_scan(*args):
+        nonlocal calls
+        calls += 1
+        yield from original(*args)
+
+    monkeypatch.setattr(store, "_iter_entries_under_prefix", record_scan)
+
+    assert store.grep("user-1", "needl[e]").items
+    assert store.grep("user-1", "ab").items
+    assert calls == 2
+
+
+def test_grep_falls_back_when_index_capability_is_unavailable(tmp_path, monkeypatch):
+    def disable_index(self):
+        self._grep_index_available = False
+
+    monkeypatch.setattr(CtxfsStore, "_initialize_grep_index", disable_index)
+    store = CtxfsStore(tmp_path / "ctxfs")
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [_put("local_files/root/notes.md", "inode-1", "MedThink")],
+    )
+
+    assert [item.path for item in store.grep("user-1", "MedThink").items] == [
+        "local_files/root/notes.md"
+    ]
 
 
 def test_grep_pathological_regex_does_not_backtrack_indefinitely(tmp_path, monkeypatch):
@@ -860,7 +1118,9 @@ def test_grep_validation_timeout_is_bounded_and_resumable(tmp_path, monkeypatch)
 
     process = HungValidation()
     monkeypatch.setattr(store_module, "_has_rg", lambda: True)
-    monkeypatch.setattr(store_module.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(
+        store_module.subprocess, "Popen", lambda *args, **kwargs: process
+    )
 
     page = store.grep("user-1", "needle", timeout_seconds=0.1)
 
@@ -906,7 +1166,7 @@ def test_grep_invalid_utf8_match_offsets_slice_returned_line(tmp_path):
     )
     store._tree_path("user-1", path).write_bytes(b"be\xffta needle\n")
 
-    matches = store.grep("user-1", "needle", prefix="local_files/root")
+    matches = store.grep("user-1", "needl[e]", prefix="local_files/root")
 
     assert len(matches.items) == 1
     match = matches.items[0]
@@ -1049,7 +1309,7 @@ def test_grep_timeout_does_not_inventory_whole_catalog(tmp_path, monkeypatch):
     monkeypatch.setattr(store_module.time, "monotonic", lambda: next(ticks))
 
     page = store.grep(
-        "user-1", "needle", prefix="local_files/root", timeout_seconds=0.1
+        "user-1", "needl[e]", prefix="local_files/root", timeout_seconds=0.1
     )
 
     assert page.stopped_by == "timeout"
@@ -1059,7 +1319,7 @@ def test_grep_timeout_does_not_inventory_whole_catalog(tmp_path, monkeypatch):
     monkeypatch.setattr(store_module.time, "monotonic", real_monotonic)
     resumed = store.grep(
         "user-1",
-        "needle",
+        "needl[e]",
         prefix="local_files/root",
         cursor=page.next_cursor,
     )
@@ -1101,7 +1361,9 @@ def test_grep_catalog_hash_timeout_cursor_rejects_mutation(tmp_path, monkeypatch
     path = "local_files/root/a.md"
     store.submit("user-1", "writer-1", [_put(path, "inode-a", "needle\n")])
     monkeypatch.setattr(
-        store_module, "_hash_path", lambda path, deadline: (_ for _ in ()).throw(TimeoutError)
+        store_module,
+        "_hash_path",
+        lambda path, deadline: (_ for _ in ()).throw(TimeoutError),
     )
 
     first = store.grep("user-1", "needle", prefix="local_files/root")
@@ -1109,7 +1371,9 @@ def test_grep_catalog_hash_timeout_cursor_rejects_mutation(tmp_path, monkeypatch
     monkeypatch.undo()
 
     with pytest.raises(ValueError, match="cursor is stale"):
-        store.grep("user-1", "needle", prefix="local_files/root", cursor=first.next_cursor)
+        store.grep(
+            "user-1", "needle", prefix="local_files/root", cursor=first.next_cursor
+        )
 
 
 def test_grep_disk_inventory_timeout_resumes_disk_only_file(tmp_path, monkeypatch):
@@ -1121,13 +1385,15 @@ def test_grep_disk_inventory_timeout_resumes_disk_only_file(tmp_path, monkeypatc
     ticks = iter((0.0, 0.2))
     monkeypatch.setattr(store_module.time, "monotonic", lambda: next(ticks))
 
-    first = store.grep("user-1", "needle", prefix="local_files/root", timeout_seconds=0.1)
+    first = store.grep(
+        "user-1", "needl[e]", prefix="local_files/root", timeout_seconds=0.1
+    )
 
     assert first.stopped_by == "timeout"
     assert first.next_cursor is not None
     monkeypatch.setattr(store_module.time, "monotonic", real_monotonic)
     resumed = store.grep(
-        "user-1", "needle", prefix="local_files/root", cursor=first.next_cursor
+        "user-1", "needl[e]", prefix="local_files/root", cursor=first.next_cursor
     )
     assert [match.line for match in resumed.items] == ["needle"]
     assert resumed.stopped_by == "catalog_mismatch"
@@ -1143,13 +1409,18 @@ def test_grep_disk_inventory_timeout_cursor_rejects_mutation(tmp_path, monkeypat
     monkeypatch.setattr(store_module.time, "monotonic", lambda: next(ticks))
 
     first = store.grep(
-        "user-1", "needle", prefix="local_files/root", timeout_seconds=0.1
+        "user-1", "needl[e]", prefix="local_files/root", timeout_seconds=0.1
     )
     disk_path.write_text("changed content\n")
     monkeypatch.setattr(store_module.time, "monotonic", real_monotonic)
 
     with pytest.raises(ValueError, match="cursor is stale"):
-        store.grep("user-1", "needle", prefix="local_files/root", cursor=first.next_cursor)
+        store.grep(
+            "user-1",
+            "needl[e]",
+            prefix="local_files/root",
+            cursor=first.next_cursor,
+        )
 
 
 def test_grep_pages_resume_without_gaps_or_duplicates(tmp_path):
@@ -1210,7 +1481,8 @@ def test_grep_timeout_while_seeking_resume_keeps_cursor(
             ],
         )
 
-    first = store.grep("user-1", "needle", prefix="local_files/root", limit=2)
+    pattern = "needl[e]" if disk_only else "needle"
+    first = store.grep("user-1", pattern, prefix="local_files/root", limit=2)
     assert [match.path for match in first.items] == paths[:2]
     assert first.next_cursor is not None
 
@@ -1219,7 +1491,7 @@ def test_grep_timeout_while_seeking_resume_keeps_cursor(
     monkeypatch.setattr(store_module.time, "monotonic", lambda: next(ticks))
     timed_out = store.grep(
         "user-1",
-        "needle",
+        pattern,
         prefix="local_files/root",
         timeout_seconds=0.1,
         cursor=first.next_cursor,
@@ -1231,7 +1503,7 @@ def test_grep_timeout_while_seeking_resume_keeps_cursor(
     monkeypatch.setattr(store_module.time, "monotonic", real_monotonic)
     resumed = store.grep(
         "user-1",
-        "needle",
+        pattern,
         prefix="local_files/root",
         cursor=timed_out.next_cursor,
     )

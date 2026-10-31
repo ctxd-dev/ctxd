@@ -131,6 +131,19 @@ does not have that local folder configuration uses the canonical
 ctxfs deliberately exposes no shell and no arbitrary commands. `grep` uses
 regular-expression matching, not semantic search.
 
+Plain patterns of at least three characters that contain no regular-expression
+metacharacters use a local trigram index to identify candidate catalog files.
+ctxfs still verifies every candidate with the regular-expression matcher, so
+case sensitivity, matching lines, and offsets are unchanged. General regular
+expressions and shorter literals use the scan path.
+
+Indexed literal results are authoritative over cataloged ctxfs entries. They do
+not inventory private tree storage for files added outside ctxfs. Regex searches
+retain the scan path and its `catalog_mismatch` diagnostics for that kind of
+storage drift. The index is maintained with catalog writes; opening a catalog
+created by an older ctxd version performs a one-time synchronous backfill, which
+temporarily increases startup work and permanently increases local index storage.
+
 ## Verify a tracked file
 
 ```bash

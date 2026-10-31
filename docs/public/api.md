@@ -59,6 +59,13 @@ write API.
 
 Directory, tree, glob, and grep responses are bounded by `limit`. Check the response's completeness fields before treating a result as exhaustive. Grep uses a 2-second timeout by default; `timeout_seconds` accepts 0.1 through 60 seconds. A resumable result sets `continuation_required` and provides both `next_cursor` and a `continuation_hint`; repeat the same pattern and prefix with that value as `cursor`. After repeated timeout stops, increase `timeout_seconds` or narrow the prefix without restarting from the beginning. Cursors are opaque and become stale if the file being resumed changes. File reads include content identity metadata so a caller can detect changed content.
 
+Grep transparently candidate-indexes plain, metacharacter-free patterns of at
+least three characters, then verifies candidates with the normal regex matcher.
+Other regex patterns use the scan path. Indexed literal completeness covers the
+ctxfs catalog and intentionally excludes files placed directly in private tree
+storage; use a regex scan when diagnosing such catalog/storage drift. Older
+catalogs receive a one-time synchronous index backfill when first opened.
+
 `read` accepts at most 5,000,000 bytes. The default is 1,000,000 bytes. Use `read-lines` when an agent needs only a section of a large file.
 
 ## Errors
