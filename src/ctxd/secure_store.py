@@ -10,17 +10,18 @@ from pathlib import Path
 from typing import Any
 
 from ctxd.exceptions import CtxdAuthError
+from ctxd.public_environment import PublicEnvironmentVariable, getenv
 
 DEFAULT_CREDENTIALS_PATH = Path.home() / ".ctxd" / "credentials.json"
 CREDENTIALS_PATH_ENV_VAR = "CTXD_CREDENTIALS_PATH"
 
 
 def get_credentials_path() -> Path:
-    configured = os.getenv(CREDENTIALS_PATH_ENV_VAR)
+    configured = getenv(PublicEnvironmentVariable.CREDENTIALS_PATH)
     if configured:
         return Path(configured).expanduser()
 
-    config_path = os.getenv("CTXD_CONFIG_PATH")
+    config_path = getenv(PublicEnvironmentVariable.CONFIG_PATH)
     if config_path:
         return Path(config_path).expanduser().parent / "credentials.json"
 

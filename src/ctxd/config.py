@@ -11,6 +11,7 @@ from ctxd.secure_store import (
     load_ctxfs_api_key,
     save_ctxfs_api_key as save_stored_ctxfs_api_key,
 )
+from ctxd.public_environment import PublicEnvironmentVariable, getenv
 
 DEFAULT_CONFIG_PATH = Path.home() / ".ctxd" / "config.json"
 DEFAULT_CTXFS_SOCKET = Path.home() / ".ctxd" / "local" / "ctxfs.sock"
@@ -26,7 +27,7 @@ class CtxfsEndpointResolution:
 
 
 def get_config_path() -> Path:
-    configured = os.getenv("CTXD_CONFIG_PATH")
+    configured = getenv(PublicEnvironmentVariable.CONFIG_PATH)
     if configured:
         return Path(configured).expanduser()
     return DEFAULT_CONFIG_PATH
@@ -125,7 +126,7 @@ def resolve_ctxfs_api_key(
         return None
     if api_key and api_key.strip():
         return api_key.strip()
-    env_api_key = os.getenv("CTXD_CTXFS_API_KEY")
+    env_api_key = getenv(PublicEnvironmentVariable.CTXFS_API_KEY)
     if env_api_key and env_api_key.strip():
         return env_api_key.strip()
     return load_ctxfs_api_key(endpoint=resolved_endpoint)
@@ -165,13 +166,13 @@ def resolve_ctxfs_endpoint_details(
             _socket_endpoint(socket_path.strip()), "argument-socket", False
         )
 
-    env_url = os.getenv("CTXD_CTXFS_URL")
+    env_url = getenv(PublicEnvironmentVariable.CTXFS_URL)
     if env_url and env_url.strip():
         return CtxfsEndpointResolution(
             normalize_ctxfs_endpoint(env_url), "environment-url", False
         )
 
-    env_socket = os.getenv("CTXD_CTXFS_SOCKET")
+    env_socket = getenv(PublicEnvironmentVariable.CTXFS_SOCKET)
     if env_socket and env_socket.strip():
         return CtxfsEndpointResolution(
             _socket_endpoint(env_socket.strip()), "environment-socket", False

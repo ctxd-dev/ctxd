@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 1,
+  "policy": {
+    "cliOptions": "ctxd --help is exhaustive; prose documents workflows and behavior-critical options",
+    "intentionalExclusions": "Internal module CLIs, framework-generated HTTP routes, and test-only environment variables are excluded"
+  },
+  "cli": {
+    "document": "cli.md#command-coverage-policy",
+    "rootOptions": ["--help", "--version", "-h"],
+    "commands": {
+      "endpoint": {"options": ["--help", "-h"], "positionals": []},
+      "endpoint set": {"options": ["--help", "-h"], "positionals": ["url"]},
+      "endpoint status": {"options": ["--help", "-h"], "positionals": []},
+      "files": {"options": ["--help", "-h"], "positionals": []},
+      "files glob": {"options": ["--help", "--limit", "--prefix", "-h"], "positionals": ["pattern"]},
+      "files grep": {"options": ["--cursor", "--help", "--limit", "--prefix", "--timeout-seconds", "-h"], "positionals": ["pattern"]},
+      "files ls": {"options": ["--help", "--limit", "-h"], "positionals": ["path"]},
+      "files read": {"options": ["--help", "--json", "--max-bytes", "-h"], "positionals": ["path"]},
+      "files read-lines": {"options": ["--end", "--help", "--json", "--start", "-h"], "positionals": ["path"]},
+      "files stat": {"options": ["--help", "-h"], "positionals": ["path"]},
+      "files tree": {"options": ["--depth", "--help", "--limit", "-h"], "positionals": ["prefix"]},
+      "folders": {"options": ["--help", "-h"], "positionals": []},
+      "folders add": {"options": ["--help", "--name", "-h"], "positionals": ["path"]},
+      "folders list": {"options": ["--help", "-h"], "positionals": []},
+      "folders remove": {"options": ["--help", "-h"], "positionals": ["name"]},
+      "keys": {"options": ["--help", "--root", "-h"], "positionals": []},
+      "keys create": {"options": ["--expires-at", "--help", "--json", "--name", "--prefix", "--scope", "-h"], "positionals": []},
+      "keys list": {"options": ["--help", "--json", "-h"], "positionals": []},
+      "keys revoke": {"options": ["--help", "--json", "-h"], "positionals": ["key_id"]},
+      "keys rotate": {"options": ["--help", "--json", "-h"], "positionals": ["key_id"]},
+      "login": {"options": ["--endpoint", "--help", "-h"], "positionals": []},
+      "logout": {"options": ["--endpoint", "--help", "-h"], "positionals": []},
+      "machine": {"options": ["--help", "-h"], "positionals": []},
+      "machine configure": {"options": ["--clear-description", "--description", "--help", "--json", "--name", "-h"], "positionals": []},
+      "machine register": {"options": ["--clear-description", "--description", "--endpoint", "--help", "--json", "--name", "-h"], "positionals": []},
+      "machine status": {"options": ["--endpoint", "--help", "--json", "-h"], "positionals": []},
+      "server": {"options": ["--help", "-h"], "positionals": []},
+      "server serve": {"options": ["--advertised-url", "--allow-network", "--credential-root", "--help", "--host", "--port", "--root", "--socket", "--tls-cert", "--tls-key", "-h"], "positionals": []},
+      "status": {"options": ["--endpoint", "--help", "-h"], "positionals": []},
+      "tracker": {"options": ["--help", "-h"], "positionals": []},
+      "tracker start": {"options": ["--help", "-h"], "positionals": []},
+      "tracker status": {"options": ["--help", "-h"], "positionals": []},
+      "tracker stop": {"options": ["--help", "-h"], "positionals": []}
+    },
+    "commandMetadata": {
+      "endpoint": {"classification": "workflow", "document": "cli.md#configuration"},
+      "endpoint set": {"classification": "workflow", "document": "cli.md#configuration"},
+      "endpoint status": {"classification": "workflow", "document": "cli.md#configuration"},
+      "files": {"classification": "workflow", "document": "cli.md#files"},
+      "files glob": {"classification": "workflow", "document": "cli.md#files"},
+      "files grep": {"classification": "workflow", "document": "cli.md#files"},
+      "files ls": {"classification": "workflow", "document": "cli.md#files"},
+      "files read": {"classification": "workflow", "document": "cli.md#files"},
+      "files read-lines": {"classification": "workflow", "document": "cli.md#files"},
+      "files stat": {"classification": "workflow", "document": "cli.md#files"},
+      "files tree": {"classification": "workflow", "document": "cli.md#files"},
+      "folders": {"classification": "workflow", "document": "cli.md#folders"},
+      "folders add": {"classification": "workflow", "document": "cli.md#folders"},
+      "folders list": {"classification": "workflow", "document": "cli.md#folders"},
+      "folders remove": {"classification": "workflow", "document": "cli.md#folders"},
+      "keys": {"classification": "administration", "document": "cli.md#server-credentials"},
+      "keys create": {"classification": "administration", "document": "cli.md#server-credentials"},
+      "keys list": {"classification": "administration", "document": "cli.md#server-credentials"},
+      "keys revoke": {"classification": "administration", "document": "cli.md#server-credentials"},
+      "keys rotate": {"classification": "administration", "document": "cli.md#server-credentials"},
+      "login": {"classification": "workflow", "document": "cli.md#configuration"},
+      "logout": {"classification": "workflow", "document": "cli.md#configuration"},
+      "machine": {"classification": "optional-workflow", "document": "cli.md#machine-identity"},
+      "machine configure": {"classification": "optional-workflow", "document": "cli.md#machine-identity"},
+      "machine register": {"classification": "optional-workflow", "document": "cli.md#machine-identity"},
+      "machine status": {"classification": "optional-workflow", "document": "cli.md#machine-identity"},
+      "server": {"classification": "administration", "document": "cli.md#ctxfs"},
+      "server serve": {"classification": "administration", "document": "cli.md#ctxfs"},
+      "status": {"classification": "workflow", "document": "cli.md#configuration"},
+      "tracker": {"classification": "workflow", "document": "cli.md#tracker"},
+      "tracker start": {"classification": "workflow", "document": "cli.md#tracker"},
+      "tracker status": {"classification": "workflow", "document": "cli.md#tracker"},
+      "tracker stop": {"classification": "workflow", "document": "cli.md#tracker"}
+    }
+  },
+  "routes": {
+    "document": "api.md#operations",
+    "excludedFrameworkRoutes": {
+      "GET /docs": "FastAPI-generated interactive OpenAPI UI",
+      "GET /docs/oauth2-redirect": "FastAPI-generated OAuth redirect helper",
+      "GET /openapi.json": "FastAPI-generated OpenAPI schema",
+      "GET /redoc": "FastAPI-generated ReDoc UI"
+    },
+    "entries": {
+      "DELETE /api/ctxfs/machines/{machine_id}/credential": {"classification": "machine-lifecycle", "purpose": "Revoke the current machine credential"},
+      "GET /api/ctxfs/glob": {"classification": "public", "purpose": "Match canonical paths by glob"},
+      "GET /api/ctxfs/grep": {"classification": "public", "purpose": "Search indexed file contents"},
+      "GET /api/ctxfs/ls": {"classification": "public", "purpose": "List a canonical directory"},
+      "GET /api/ctxfs/read": {"classification": "public", "purpose": "Read bounded file content"},
+      "GET /api/ctxfs/read-lines": {"classification": "public", "purpose": "Read a bounded line range"},
+      "GET /api/ctxfs/stat": {"classification": "public", "purpose": "Read canonical path metadata"},
+      "GET /api/ctxfs/tree": {"classification": "public", "purpose": "Walk a bounded canonical subtree"},
+      "GET /health": {"classification": "operational", "purpose": "Check authenticated server health"},
+      "POST /api/ctxfs/machines/register": {"classification": "machine-lifecycle", "purpose": "Exchange a one-use enrollment credential for machine credentials"},
+      "POST /api/ctxfs/machines/{machine_id}/credentials/confirm": {"classification": "machine-lifecycle", "purpose": "Confirm a prepared machine credential rotation"},
+      "POST /api/ctxfs/machines/{machine_id}/credentials/prepare": {"classification": "machine-lifecycle", "purpose": "Prepare a replacement machine credential"},
+      "POST /api/ctxfs/submissions": {"classification": "tracker-only", "purpose": "Submit tracker-owned indexed-content changes"},
+      "POST /mcp": {"classification": "public", "purpose": "Serve ctxfs MCP JSON-RPC"}
+    }
+  },
+  "scopes": {
+    "document": "security.md#authorization-scopes",
+    "entries": {
+      "admin": {"purpose": "Perform every server operation", "leastPrivilege": "Reserve for server administration; it must stand alone", "affectedEndpoints": ["all"]},
+      "enroll": {"purpose": "Bootstrap one machine credential", "leastPrivilege": "Issue as a one-use standalone credential", "affectedEndpoints": ["POST /api/ctxfs/machines/register"]},
+      "read": {"purpose": "Read indexed paths and content", "leastPrivilege": "Grant to readers; combine with status for MCP", "affectedEndpoints": ["GET /api/ctxfs/*", "POST /mcp"]},
+      "status": {"purpose": "Read service health and initialize MCP", "leastPrivilege": "Grant with read for normal MCP clients", "affectedEndpoints": ["GET /health", "POST /mcp"]},
+      "status:write": {"purpose": "Reserve a capability for future machine-status publication", "leastPrivilege": "Issued only with a registered machine submit grant; no endpoint currently consumes it", "affectedEndpoints": []},
+      "submit": {"purpose": "Submit tracker changes", "leastPrivilege": "Restrict with server-owned prefix grants", "affectedEndpoints": ["POST /api/ctxfs/submissions"]}
+    }
+  },
+  "environment": {
+    "document": "cli.md#environment",
+    "entries": {
+      "CTXD_CONFIG_PATH": {"purpose": "Override the CLI configuration file and derive a sibling credentials.json fallback", "precedence": "Overrides the default configuration path; CTXD_CREDENTIALS_PATH overrides its credential-path fallback"},
+      "CTXD_CREDENTIALS_PATH": {"purpose": "Override the sensitive credential store", "precedence": "Overrides both CTXD_CONFIG_PATH-derived and default credential paths; no migration occurs"},
+      "CTXD_CTXFS_API_KEY": {"purpose": "Supply an HTTP bearer token without storing it", "precedence": "Overrides endpoint-scoped stored credentials"},
+      "CTXD_CTXFS_ENROLLMENT_TOKEN": {"purpose": "Supply a one-use machine enrollment token", "precedence": "Used before an interactive prompt"},
+      "CTXD_CTXFS_SOCKET": {"purpose": "Select a ctxfs Unix socket", "precedence": "Used after explicit arguments and CTXD_CTXFS_URL, before stored configuration"},
+      "CTXD_CTXFS_URL": {"purpose": "Select a ctxfs HTTP endpoint", "precedence": "Used after explicit arguments and before CTXD_CTXFS_SOCKET or stored configuration"}
+    }
+  }
+}
