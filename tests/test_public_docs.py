@@ -1,6 +1,5 @@
 import json
 from pathlib import Path
-import re
 import subprocess
 import sys
 
@@ -80,23 +79,50 @@ def test_security_docs_define_the_local_storage_contract() -> None:
     text = (PUBLIC_DOCS / "security.md").read_text()
 
     ctxfs_paths = default_ctxfs_paths()
-    persistent_paths = (
-        _documented_home_path(DEFAULT_CONFIG_PATH),
-        _documented_home_path(DEFAULT_CREDENTIALS_PATH),
-        _documented_home_path(default_tracker_paths().state_file),
-        _documented_home_path(ctxfs_paths.root, directory=True),
-    )
-    runtime_paths = (
-        _documented_home_path(default_tracker_service_paths().pid_file),
-        _documented_home_path(ctxfs_paths.pid_file),
-        _documented_home_path(ctxfs_paths.socket_path),
-        _documented_home_path(ctxfs_paths.lock_file),
-    )
     storage_table = text.split(
         "The managed local deployment uses these default paths:", 1
     )[1].split("The detached tracker", 1)[0]
-    documented_paths = set(re.findall(r"`([^`]+)`", storage_table))
-    assert documented_paths == set((*persistent_paths, *runtime_paths))
+    storage_rows = tuple(
+        tuple(cell.strip() for cell in line.strip("|").split("|"))
+        for line in storage_table.splitlines()
+        if line.startswith("|")
+    )
+    assert storage_rows == (
+        ("Data", "Default location", "Lifecycle"),
+        ("---", "---", "---"),
+        (
+            "CLI settings, registered source paths, and generated ctxfs prefixes",
+            f"`{_documented_home_path(DEFAULT_CONFIG_PATH)}`",
+            "Persistent",
+        ),
+        (
+            "Client bearer credentials and machine registration state",
+            f"`{_documented_home_path(DEFAULT_CREDENTIALS_PATH)}`",
+            "Persistent and sensitive",
+        ),
+        (
+            "Tracker synchronization metadata",
+            f"`{_documented_home_path(default_tracker_paths().state_file)}`",
+            "Persistent and sensitive",
+        ),
+        (
+            "Tracker process ID",
+            f"`{_documented_home_path(default_tracker_service_paths().pid_file)}`",
+            "Runtime only",
+        ),
+        (
+            "Managed ctxfs process ID, socket, and lock",
+            f"`{_documented_home_path(ctxfs_paths.pid_file)}`, "
+            f"`{_documented_home_path(ctxfs_paths.socket_path)}`, and "
+            f"`{_documented_home_path(ctxfs_paths.lock_file)}`",
+            "Runtime only",
+        ),
+        (
+            "Managed ctxfs tree and catalog",
+            f"`{_documented_home_path(ctxfs_paths.root, directory=True)}`",
+            "Persistent and sensitive",
+        ),
+    )
 
     assert "The detached tracker does not currently create a log file" in text
     assert "`CTXD_CREDENTIALS_PATH` independently selects" in text
