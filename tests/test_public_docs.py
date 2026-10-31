@@ -101,6 +101,18 @@ def test_security_docs_define_the_local_storage_contract() -> None:
             "Persistent and sensitive",
         ),
         (
+            "Credential write lock",
+            f"`{_documented_home_path(DEFAULT_CREDENTIALS_PATH.with_suffix('.lock'))}`",
+            "Persistent coordination file; contains no credential payload",
+        ),
+        (
+            "Installation identity and machine registration locks",
+            "`~/.ctxd/.ctxd-locks/identity-<digest>.lock` and "
+            "`~/.ctxd/.ctxd-locks/register-<digest>.lock`",
+            "Persistent coordination files; digest names vary and contain no "
+            "credential payload",
+        ),
+        (
             "Tracker synchronization metadata",
             f"`{_documented_home_path(default_tracker_paths().state_file)}`",
             "Persistent and sensitive",
@@ -127,9 +139,21 @@ def test_security_docs_define_the_local_storage_contract() -> None:
     assert "The detached tracker does not currently create a log file" in text
     assert "`CTXD_CREDENTIALS_PATH` independently selects" in text
     assert "credentials file defaults to `credentials.json` beside" in text
+    assert (
+        "credential write lock and `.ctxd-locks/` directory are\ncreated beside "
+        "the selected credentials file"
+    ) in text
+    assert (
+        "Their lock files persist after use; ctxd does not remove\nthem automatically"
+    ) in text
     assert "Changing either variable does not move existing data" in text
     assert "Stopping the tracker" not in text
     assert "`ctxd tracker stop` stops the tracker" in text
+    assert "it does not stop the managed ctxfs service" in text
+    assert "can remain running across\ntracker stop and package uninstall" in text
+    assert "CLI currently has no managed ctxfs stop\ncommand" in text
+    assert "identifies `ctxd.local_ctxfs_service`" in text
+    assert "`ctxd tracker stop` is not\nsufficient for this step" in text
     assert "Uninstalling the package also does not\ndelete `~/.ctxd`" in text
     assert "It does not\ndelete the original tracked source folders" in text
     assert "These permissions are not encryption" in text
