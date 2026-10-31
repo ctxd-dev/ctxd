@@ -525,6 +525,60 @@ def test_tracker_health_marks_incomplete_without_advancing_last_success(
     assert health["folders_scanned"] == 1
 
 
+@pytest.mark.parametrize(
+    "second_result, expected_result",
+    [
+        (RuntimeError("temporary failure"), "failed"),
+        ({"folders": 1, "operations": 0, "complete": False}, "incomplete"),
+    ],
+)
+def test_tracker_health_handles_clock_regression_after_success(
+    tmp_path: Path, monkeypatch, second_result: object, expected_result: str
+) -> None:
+    paths = TrackerPaths(
+        state_file=tmp_path / "tracker-state.json",
+        health_file=tmp_path / "tracker-health.json",
+    )
+    results = iter(
+        [
+            {"folders": 1, "operations": 1, "complete": True},
+            second_result,
+        ]
+    )
+    sync_calls = 0
+
+    def sync_side_effect(**kwargs):
+        nonlocal sync_calls
+        sync_calls += 1
+        result = next(results)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    sleep_calls = 0
+
+    def stop_after_two(_interval):
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls == 2:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr("ctxd.tracker.sync_once", sync_side_effect)
+    monkeypatch.setattr("ctxd.tracker.time.sleep", stop_after_two)
+    ticks = iter([20, 10])
+
+    with pytest.raises(KeyboardInterrupt):
+        run_forever(paths=paths, clock=lambda: next(ticks))
+
+    assert sync_calls == 2
+    assert sleep_calls == 2
+    health = load_tracker_health(paths.health_file)
+    assert health is not None
+    assert health["last_attempt"] == 20
+    assert health["last_success"] == 20
+    assert health["last_result"] == expected_result
+
+
 def test_tracker_health_survives_restart_and_write_failures_do_not_stop_sync(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -550,6 +604,36 @@ def test_tracker_health_survives_restart_and_write_failures_do_not_stop_sync(
     )
     monkeypatch.setattr(
         "ctxd.tracker.time.sleep", lambda _interval: (_ for _ in ()).throw(KeyboardInterrupt())
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        run_forever(paths=paths, clock=lambda: 20)
+
+    assert calls == 1
+
+
+def test_tracker_health_validation_failure_does_not_stop_sync(
+    tmp_path: Path, monkeypatch
+) -> None:
+    paths = TrackerPaths(
+        state_file=tmp_path / "tracker-state.json",
+        health_file=tmp_path / "tracker-health.json",
+    )
+    calls = 0
+
+    def successful_sync(**kwargs):
+        nonlocal calls
+        calls += 1
+        return {"folders": 1, "operations": 0, "complete": True}
+
+    monkeypatch.setattr("ctxd.tracker.sync_once", successful_sync)
+    monkeypatch.setattr(
+        "ctxd.tracker._save_health",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("invalid state")),
+    )
+    monkeypatch.setattr(
+        "ctxd.tracker.time.sleep",
+        lambda _interval: (_ for _ in ()).throw(KeyboardInterrupt()),
     )
 
     with pytest.raises(KeyboardInterrupt):

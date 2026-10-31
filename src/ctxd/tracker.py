@@ -156,6 +156,8 @@ def run_forever(
     health = load_tracker_health(paths.health_file) or _empty_health()
     while True:
         attempted_at = int(clock())
+        if health["last_success"] is not None:
+            attempted_at = max(attempted_at, health["last_success"])
         try:
             result = sync_once(paths=paths)
         except Exception as exc:
@@ -314,7 +316,7 @@ def _persist_health_safely(path: Path | None, health: dict[str, Any]) -> None:
         return
     try:
         _save_health(path, health)
-    except OSError:
+    except (OSError, ValueError):
         print("ctxd tracker could not persist synchronization diagnostics", flush=True)
 
 
