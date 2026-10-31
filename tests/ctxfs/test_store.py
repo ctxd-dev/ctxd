@@ -1870,6 +1870,12 @@ def test_move_cycle_uses_temporary_path(tmp_path):
     assert submission.state == "applied"
     assert store.read("user-1", path_a).text == "beta"
     assert store.read("user-1", path_b).text == "alpha"
+    alpha_matches = store.grep("user-1", "alpha", prefix="local_files/root")
+    beta_matches = store.grep("user-1", "beta", prefix="local_files/root")
+    assert [match.path for match in alpha_matches.items] == [path_b]
+    assert alpha_matches.complete is True
+    assert [match.path for match in beta_matches.items] == [path_a]
+    assert beta_matches.complete is True
 
 
 def test_duplicate_move_source_key_fails_before_mutation(tmp_path):
