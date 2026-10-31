@@ -41,8 +41,9 @@ is also its CLI path alias.
 ctxd tracker start
 ```
 
-The tracker runs separately from ctxfs and keeps the folders you added
-synchronized.
+The tracker runs separately from ctxfs and scans the folders you added. A
+running process does not guarantee current content when a scan is incomplete;
+see the local tracker guide for failure and recovery behavior.
 
 Verify both processes:
 
@@ -64,9 +65,9 @@ ctxd files read Documents/notes.md
 ctxd files grep "deployment" --prefix Documents --limit 20
 ```
 
-Tracked files are synchronized while the tracker runs. The same commands read
-from a configured authenticated network endpoint when the client has the same
-folder alias. A separate reader uses canonical paths such as
+Tracked files are synchronized after successful scans while the tracker runs.
+The same commands read from a configured authenticated network endpoint when
+the client has the same folder alias. A separate reader uses canonical paths such as
 `local-files/<ROOT_ID>/notes.md`.
 
 ## Next steps
