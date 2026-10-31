@@ -109,8 +109,10 @@ def test_public_surface_contract_matches_cli_command_and_option_tree() -> None:
     parser = _build_parser()
     runtime = _parser_inventory(parser)
     documented = contract["commands"]
+    metadata = contract["commandMetadata"]
 
     _assert_inventory("CLI command", set(runtime), set(documented))
+    _assert_inventory("CLI command classification", set(runtime), set(metadata))
     for command in sorted(runtime.keys() & documented.keys()):
         assert runtime[command] == documented[command], (
             f"CLI option/argument drift for {command!r} in "
@@ -124,6 +126,11 @@ def test_public_surface_contract_matches_cli_command_and_option_tree() -> None:
         "CLI root option drift in docs/public/surface-contract.json; "
         f"runtime={root_options}; contract={contract['rootOptions']}"
     )
+    allowed_classes = {"workflow", "optional-workflow", "administration"}
+    for command, details in metadata.items():
+        assert set(details) == {"classification", "document"}, command
+        assert details["classification"] in allowed_classes, command
+        _assert_document_anchor(details["document"])
 
 
 def test_public_surface_contract_matches_http_routes() -> None:
