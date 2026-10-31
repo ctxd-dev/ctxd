@@ -419,6 +419,62 @@ def test_tracker_sync_preserves_prior_file_after_invalid_utf8(
     assert source_key in state_file.read_text()
 
 
+def test_incomplete_scan_updates_readable_file_without_deleting_unseen_entries(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    docs = tmp_path / "Docs"
+    docs.mkdir()
+    unreadable = docs / "unreadable.md"
+    unreadable.write_bytes(b"\xff")
+    readable = docs / "readable.md"
+    readable.write_text("new readable content")
+    folder = FolderConfig(
+        name="Documents", path=str(docs), prefix="local-files/folder-1"
+    )
+    unreadable_key = (
+        f"{folder.prefix}:{unreadable.stat().st_dev}:{unreadable.stat().st_ino}"
+    )
+    readable_key = (
+        f"{folder.prefix}:{readable.stat().st_dev}:{readable.stat().st_ino}"
+    )
+    unseen_key = f"{folder.prefix}:1:999"
+    state_file = tmp_path / "state.json"
+    state_file.write_text(
+        json.dumps(
+            {
+                folder.prefix: {
+                    unreadable_key: "sha256:old-unreadable",
+                    readable_key: "sha256:old-readable",
+                    unseen_key: "sha256:old-unseen",
+                }
+            }
+        )
+        + "\n"
+    )
+    submissions = []
+
+    def submit(endpoint, *, writer_id, writer_prefix, operations):
+        del endpoint, writer_id, writer_prefix
+        submissions.extend(operations)
+
+    monkeypatch.setattr("ctxd.tracker._submit_operations", submit)
+
+    result = sync_once(
+        folders=[folder],
+        endpoint="http://ctxfs.local",
+        paths=TrackerPaths(state_file=state_file),
+    )
+
+    assert result == {"folders": 1, "operations": 1}
+    assert [operation["kind"] for operation in submissions] == ["put"]
+    assert submissions[0]["source_key"] == readable_key
+    saved = json.loads(state_file.read_text())[folder.prefix]
+    assert unreadable_key in saved
+    assert unseen_key in saved
+    assert saved[readable_key]["source_version"] != "sha256:old-readable"
+
+
 def test_tracker_sync_deletes_files_for_removed_configured_folder(
     tmp_path: Path,
     monkeypatch,
