@@ -3,7 +3,6 @@
 import argparse
 import getpass
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -32,6 +31,7 @@ from ctxd.machine_identity import (
     register_machine,
     unchanged_description,
 )
+from ctxd.public_environment import PublicEnvironmentVariable, getenv
 from ctxd.tracker_service import (
     start as tracker_start,
     status as tracker_status,
@@ -502,7 +502,7 @@ def _description_argument(args: argparse.Namespace) -> str | None | object:
 def _resolve_enrollment_token(endpoint: str) -> str | None:
     if endpoint.startswith("unix://"):
         return None
-    value = os.getenv("CTXD_CTXFS_ENROLLMENT_TOKEN")
+    value = getenv(PublicEnvironmentVariable.CTXFS_ENROLLMENT_TOKEN)
     if value and value.strip():
         return value.strip()
     if sys.stdin.isatty():
@@ -536,7 +536,7 @@ def _emit_machine_status(status, *, as_json: bool) -> int:
 
 
 def _resolve_ctxfs_login_api_key(endpoint: str) -> tuple[str | None, bool]:
-    env_api_key = os.getenv("CTXD_CTXFS_API_KEY")
+    env_api_key = getenv(PublicEnvironmentVariable.CTXFS_API_KEY)
     if env_api_key and env_api_key.strip():
         return env_api_key.strip(), False
     try:

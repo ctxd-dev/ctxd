@@ -6,6 +6,49 @@ title: 'CLI'
 The `ctxd` CLI manages the local tracker and ctxfs service and can connect to an
 externally managed ctxfs server.
 
+## Command coverage policy
+
+`ctxd --help` and `ctxd <command> --help` are the exhaustive command and option
+reference. This guide documents workflows and behavior-critical options rather
+than repeating every flag. The public surface contract classifies every command
+and option so additions and removals require an explicit documentation decision.
+
+| Command | Classification | Documentation home |
+| --- | --- | --- |
+| `endpoint` | Workflow | Configuration |
+| `endpoint set` | Workflow | Configuration |
+| `endpoint status` | Workflow | Configuration |
+| `files` | Workflow | Files |
+| `files glob` | Workflow | Files |
+| `files grep` | Workflow | Files |
+| `files ls` | Workflow | Files |
+| `files read` | Workflow | Files |
+| `files read-lines` | Workflow | Files |
+| `files stat` | Workflow | Files |
+| `files tree` | Workflow | Files |
+| `folders` | Workflow | Folders |
+| `folders add` | Workflow | Folders |
+| `folders list` | Workflow | Folders |
+| `folders remove` | Workflow | Folders |
+| `keys` | Administration | Server credentials |
+| `keys create` | Administration | Server credentials |
+| `keys list` | Administration | Server credentials |
+| `keys revoke` | Administration | Server credentials |
+| `keys rotate` | Administration | Server credentials |
+| `login` | Workflow | Configuration |
+| `logout` | Workflow | Configuration |
+| `machine` | Optional workflow | Machine identity |
+| `machine configure` | Optional workflow | Machine identity |
+| `machine register` | Optional workflow | Machine identity |
+| `machine status` | Optional workflow | Machine identity |
+| `server` | Administration | ctxfs |
+| `server serve` | Administration | ctxfs |
+| `status` | Workflow | Configuration |
+| `tracker` | Workflow | Tracker |
+| `tracker start` | Workflow | Tracker |
+| `tracker status` | Workflow | Tracker |
+| `tracker stop` | Workflow | Tracker |
+
 ## Install
 
 ```bash
@@ -56,6 +99,27 @@ ctxd tracker stop
 The tracker synchronizes configured folders while it is running. It may run
 with zero folders; adding folders is optional unless this machine contributes
 content.
+
+## Machine identity
+
+Machine enrollment is optional for the default local Unix-socket workflow. Use
+it when a network ctxfs administrator gives the machine a one-use enrollment
+token:
+
+```bash
+ctxd machine register --endpoint https://ctxfs.example.net:8443 --name laptop
+ctxd machine status
+ctxd machine configure --description "Build laptop"
+```
+
+Registration exchanges the enrollment token for machine credentials stored in
+the credentials file. `machine configure` changes local metadata only. Until a
+future server metadata-update operation exists, `ctxd machine status` reports
+that changed registered metadata is pending a server update. Interactive
+registration prompts for the enrollment token without echo. For unattended
+automation, have a protected secret manager inject `CTXD_CTXFS_ENROLLMENT_TOKEN`
+directly into the process environment; do not place the token in command text,
+scripts, or shell history.
 
 ## Files
 
@@ -138,7 +202,12 @@ its configured endpoint.
 
 | Variable | Purpose |
 | --- | --- |
-| `CTXD_CONFIG_PATH` | Override the CLI configuration file |
+| `CTXD_CONFIG_PATH` | Override the CLI configuration file; unless `CTXD_CREDENTIALS_PATH` is set, credentials fall back to `credentials.json` beside this file |
+| `CTXD_CREDENTIALS_PATH` | Override the sensitive credential store, including the `CTXD_CONFIG_PATH` fallback; changing it does not migrate existing credentials |
 | `CTXD_CTXFS_SOCKET` | Use ctxfs through the selected Unix socket |
 | `CTXD_CTXFS_URL` | Use ctxfs through the selected HTTP URL |
 | `CTXD_CTXFS_API_KEY` | Supply a ctxfs HTTP bearer token without storing it |
+| `CTXD_CTXFS_ENROLLMENT_TOKEN` | Supply a one-use machine enrollment token without prompting |
+
+`CTXD_CREDENTIALS_PATH` has precedence over the credentials location derived
+from `CTXD_CONFIG_PATH`. Neither variable moves data from a previous location.
