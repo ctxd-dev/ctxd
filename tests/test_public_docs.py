@@ -72,6 +72,29 @@ def _assert_document_anchor(reference: str) -> None:
     assert anchor in headings, f"missing documentation anchor {reference}"
 
 
+def _markdown_table_code_values(
+    filename: str, heading: str, *, column: int
+) -> set[str]:
+    """Return backtick-delimited identifiers from one Markdown table column."""
+    text = (PUBLIC_DOCS / filename).read_text()
+    section_start = text.index(f"## {heading}")
+    section = text[section_start:]
+    next_heading = section.find("\n## ", 1)
+    if next_heading != -1:
+        section = section[:next_heading]
+    values: set[str] = set()
+    for line in section.splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if len(cells) <= column:
+            continue
+        match = re.fullmatch(r"`([^`]+)`", cells[column])
+        if match:
+            values.add(match.group(1))
+    return values
+
+
 def test_public_docs_manifest_is_complete_and_safe() -> None:
     manifest = json.loads((PUBLIC_DOCS / "manifest.json").read_text())
 
@@ -156,6 +179,8 @@ def test_public_surface_contract_matches_http_routes() -> None:
         or not value["purpose"].strip()
     }
     assert not invalid, f"invalid HTTP route classifications: {invalid}"
+    prose = _markdown_table_code_values("api.md", "Operations", column=1)
+    _assert_inventory("HTTP route prose", set(contract), prose)
 
 
 def test_public_surface_contract_matches_authorization_scopes() -> None:
@@ -173,6 +198,10 @@ def test_public_surface_contract_matches_authorization_scopes() -> None:
             assert "no endpoint currently consumes it" in metadata["leastPrivilege"], scope
         else:
             assert metadata["affectedEndpoints"], scope
+    prose = _markdown_table_code_values(
+        "security.md", "Authorization scopes", column=0
+    )
+    _assert_inventory("authorization scope prose", documented, prose)
 
 
 def test_public_surface_contract_matches_environment_registry() -> None:
@@ -192,6 +221,8 @@ def test_public_surface_contract_matches_environment_registry() -> None:
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
                 source_variables.update(re.findall(r"\bCTXD_[A-Z0-9_]+\b", node.value))
     _assert_inventory("CTXD_* source literal", source_variables, runtime)
+    prose = _markdown_table_code_values("cli.md", "Environment", column=0)
+    _assert_inventory("public environment variable prose", documented, prose)
 
 
 def test_public_surface_contract_documentation_homes_exist() -> None:

@@ -71,8 +71,7 @@ it when a network ctxfs administrator gives the machine a one-use enrollment
 token:
 
 ```bash
-CTXD_CTXFS_ENROLLMENT_TOKEN=... ctxd machine register \
-  --endpoint https://ctxfs.example.net:8443 --name laptop
+ctxd machine register --endpoint https://ctxfs.example.net:8443 --name laptop
 ctxd machine status
 ctxd machine configure --description "Build laptop"
 ```
@@ -80,9 +79,11 @@ ctxd machine configure --description "Build laptop"
 Registration exchanges the enrollment token for machine credentials stored in
 the credentials file. `machine configure` changes local metadata only. Until a
 future server metadata-update operation exists, `ctxd machine status` reports
-that changed registered metadata is pending a server update. Do not put
-enrollment tokens in shell history; interactive registration prompts without
-echo.
+that changed registered metadata is pending a server update. Interactive
+registration prompts for the enrollment token without echo. For unattended
+automation, have a protected secret manager inject `CTXD_CTXFS_ENROLLMENT_TOKEN`
+directly into the process environment; do not place the token in command text,
+scripts, or shell history.
 
 ## Files
 
@@ -165,9 +166,12 @@ its configured endpoint.
 
 | Variable | Purpose |
 | --- | --- |
-| `CTXD_CONFIG_PATH` | Override the CLI configuration file |
-| `CTXD_CREDENTIALS_PATH` | Override the sensitive credential store; changing it does not migrate existing credentials |
+| `CTXD_CONFIG_PATH` | Override the CLI configuration file; unless `CTXD_CREDENTIALS_PATH` is set, credentials fall back to `credentials.json` beside this file |
+| `CTXD_CREDENTIALS_PATH` | Override the sensitive credential store, including the `CTXD_CONFIG_PATH` fallback; changing it does not migrate existing credentials |
 | `CTXD_CTXFS_SOCKET` | Use ctxfs through the selected Unix socket |
 | `CTXD_CTXFS_URL` | Use ctxfs through the selected HTTP URL |
 | `CTXD_CTXFS_API_KEY` | Supply a ctxfs HTTP bearer token without storing it |
 | `CTXD_CTXFS_ENROLLMENT_TOKEN` | Supply a one-use machine enrollment token without prompting |
+
+`CTXD_CREDENTIALS_PATH` has precedence over the credentials location derived
+from `CTXD_CONFIG_PATH`. Neither variable moves data from a previous location.

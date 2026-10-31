@@ -111,7 +111,7 @@
   "environment": {
     "document": "cli.md#environment",
     "entries": {
-      "CTXD_CONFIG_PATH": {"purpose": "Override the CLI configuration file", "precedence": "Overrides the default configuration path"},
+      "CTXD_CONFIG_PATH": {"purpose": "Override the CLI configuration file and derive a sibling credentials.json fallback", "precedence": "Overrides the default configuration path; CTXD_CREDENTIALS_PATH overrides its credential-path fallback"},
       "CTXD_CREDENTIALS_PATH": {"purpose": "Override the sensitive credential store", "precedence": "Overrides both CTXD_CONFIG_PATH-derived and default credential paths; no migration occurs"},
       "CTXD_CTXFS_API_KEY": {"purpose": "Supply an HTTP bearer token without storing it", "precedence": "Overrides endpoint-scoped stored credentials"},
       "CTXD_CTXFS_ENROLLMENT_TOKEN": {"purpose": "Supply a one-use machine enrollment token", "precedence": "Used before an interactive prompt"},
