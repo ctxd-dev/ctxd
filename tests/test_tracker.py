@@ -441,6 +441,53 @@ def test_tracker_health_records_success_and_preserves_it_after_failure(
     assert paths.health_file.parent.stat().st_mode & 0o777 == 0o700
 
 
+@pytest.mark.parametrize(
+    "health",
+    [
+        {
+            "version": 1,
+            "last_attempt": 10,
+            "last_success": 10,
+            "last_result": "success",
+            "last_error_category": None,
+            "last_error_message": None,
+            "complete": True,
+            "folders_scanned": 2,
+            "operations": 3,
+        },
+        {
+            "version": 1,
+            "last_attempt": 20,
+            "last_success": 10,
+            "last_result": "incomplete",
+            "last_error_category": None,
+            "last_error_message": None,
+            "complete": False,
+            "folders_scanned": 2,
+            "operations": 1,
+        },
+        {
+            "version": 1,
+            "last_attempt": 30,
+            "last_success": 10,
+            "last_result": "failed",
+            "last_error_category": "RuntimeError",
+            "last_error_message": SAFE_SYNC_ERROR_MESSAGE,
+            "complete": None,
+            "folders_scanned": None,
+            "operations": None,
+        },
+    ],
+)
+def test_load_tracker_health_accepts_writer_record_shapes(
+    tmp_path: Path, health: dict[str, object]
+) -> None:
+    health_file = tmp_path / "tracker-health.json"
+    health_file.write_text(json.dumps(health))
+
+    assert load_tracker_health(health_file) == health
+
+
 def test_tracker_health_marks_incomplete_without_advancing_last_success(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -219,7 +219,12 @@ def _empty_health() -> dict[str, Any]:
 
 
 def _valid_health(payload: object) -> bool:
-    if not isinstance(payload, dict) or payload.get("version") != HEALTH_FILE_VERSION:
+    if (
+        not isinstance(payload, dict)
+        or not isinstance(payload.get("version"), int)
+        or isinstance(payload["version"], bool)
+        or payload["version"] != HEALTH_FILE_VERSION
+    ):
         return False
     expected = set(_empty_health())
     if set(payload) != expected:
@@ -228,9 +233,11 @@ def _valid_health(payload: object) -> bool:
         return False
     for key in ("last_attempt", "last_success", "folders_scanned", "operations"):
         value = payload[key]
-        if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 0):
+        if value is not None and (
+            not isinstance(value, int) or isinstance(value, bool) or value < 0
+        ):
             return False
-    if payload["complete"] not in {None, True, False}:
+    if payload["complete"] is not None and not isinstance(payload["complete"], bool):
         return False
     category = payload["last_error_category"]
     if category is not None and (
@@ -242,7 +249,57 @@ def _valid_health(payload: object) -> bool:
     message = payload["last_error_message"]
     if message is not None and message != SAFE_SYNC_ERROR_MESSAGE:
         return False
-    return True
+
+    last_attempt = payload["last_attempt"]
+    last_success = payload["last_success"]
+    last_result = payload["last_result"]
+    complete = payload["complete"]
+    folders_scanned = payload["folders_scanned"]
+    operations = payload["operations"]
+
+    if last_success is not None and (
+        last_attempt is None or last_success > last_attempt
+    ):
+        return False
+    if last_result is None:
+        return all(
+            value is None
+            for value in (
+                last_attempt,
+                last_success,
+                category,
+                message,
+                complete,
+                folders_scanned,
+                operations,
+            )
+        )
+    if last_attempt is None:
+        return False
+    if last_result == "success":
+        return (
+            last_success == last_attempt
+            and complete is True
+            and folders_scanned is not None
+            and operations is not None
+            and category is None
+            and message is None
+        )
+    if last_result == "incomplete":
+        return (
+            complete is False
+            and folders_scanned is not None
+            and operations is not None
+            and category is None
+            and message is None
+        )
+    return (
+        complete is None
+        and folders_scanned is None
+        and operations is None
+        and category is not None
+        and message == SAFE_SYNC_ERROR_MESSAGE
+    )
 
 
 def _safe_error_category(exc: Exception) -> str:

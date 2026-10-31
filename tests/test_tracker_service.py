@@ -1,5 +1,8 @@
+import json
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from ctxd.config import CtxfsEndpointResolution
 from ctxd.tracker_service import TrackerServicePaths, main, start, status, stop
@@ -138,6 +141,48 @@ def test_tracker_service_status_reads_health_and_handles_corruption(tmp_path: Pa
     with patch("ctxd.tracker_service.list_folders", return_value=[]):
         oversized = status(paths)
     assert oversized["diagnostic_state"] == "unavailable"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"version": True},
+        {"version": "1"},
+        {"last_result": "success", "last_success": 10, "complete": False},
+        {
+            "last_result": "failed",
+            "last_success": 10,
+            "complete": None,
+            "folders_scanned": None,
+            "operations": None,
+        },
+        {"last_success": 21},
+    ],
+)
+def test_tracker_service_status_rejects_invalid_health_schema(
+    tmp_path: Path, overrides: dict[str, object]
+) -> None:
+    paths = _paths(tmp_path)
+    paths.local_home.mkdir(parents=True)
+    health = {
+        "version": 1,
+        "last_attempt": 20,
+        "last_success": None,
+        "last_result": "incomplete",
+        "last_error_category": None,
+        "last_error_message": None,
+        "complete": False,
+        "folders_scanned": 2,
+        "operations": 1,
+    }
+    health.update(overrides)
+    (paths.local_home / "tracker-health.json").write_text(json.dumps(health))
+
+    with patch("ctxd.tracker_service.list_folders", return_value=[]):
+        result = status(paths)
+
+    assert result["diagnostic_state"] == "unavailable"
+    assert "last_result" not in result
 
 
 def test_tracker_service_status_handles_unavailable_health_file(tmp_path: Path) -> None:
