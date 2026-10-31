@@ -106,9 +106,6 @@ Status includes UTC epoch-second timestamps for the last attempt and last
 complete success, folder and operation counts where available, and a safe error
 category for failures.
 
-The tracker does not create a persistent text log. Use `ctxd tracker status`
-for synchronization health.
-
 ## Move a folder
 
 Remove the old registration and add the new path:

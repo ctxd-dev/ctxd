@@ -163,7 +163,6 @@ def test_tracker_docs_match_structured_diagnostics_and_navigation() -> None:
     assert "last sync result: success" in tracker
     assert "last sync result: failed" in tracker
     assert "last sync result: incomplete" in tracker
-    assert "does not create a persistent text log" in tracker
     assert "does not create a persistent text log" in security
     assert "configuration, state, and logs" not in security
 
