@@ -2,6 +2,7 @@ import argparse
 import ast
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -140,43 +141,45 @@ def test_public_surface_contract_matches_http_routes() -> None:
 
     _assert_inventory("HTTP route", runtime, set(contract))
     allowed_classes = {"public", "operational", "machine-lifecycle", "tracker-only"}
-    invalid = {route: value for route, value in contract.items() if value not in allowed_classes}
+    invalid = {
+        route: value
+        for route, value in contract.items()
+        if set(value) != {"classification", "purpose"}
+        or value["classification"] not in allowed_classes
+        or not value["purpose"].strip()
+    }
     assert not invalid, f"invalid HTTP route classifications: {invalid}"
 
 
 def test_public_surface_contract_matches_authorization_scopes() -> None:
     runtime = {scope.value for scope in Scope}
-    documented = set(_surface_contract()["scopes"]["entries"])
+    entries = _surface_contract()["scopes"]["entries"]
+    documented = set(entries)
     _assert_inventory("authorization scope", runtime, documented)
+    for scope, metadata in entries.items():
+        assert set(metadata) == {"purpose", "leastPrivilege", "affectedEndpoints"}, scope
+        assert metadata["purpose"].strip(), scope
+        assert metadata["leastPrivilege"].strip(), scope
+        assert metadata["affectedEndpoints"], scope
 
 
 def test_public_surface_contract_matches_environment_registry() -> None:
     runtime = {variable.value for variable in PublicEnvironmentVariable}
-    documented = set(_surface_contract()["environment"]["entries"])
+    entries = _surface_contract()["environment"]["entries"]
+    documented = set(entries)
     _assert_inventory("public environment variable", runtime, documented)
+    for variable, metadata in entries.items():
+        assert set(metadata) == {"purpose", "precedence"}, variable
+        assert metadata["purpose"].strip(), variable
+        assert metadata["precedence"].strip(), variable
 
-    bypasses: list[str] = []
+    source_variables: set[str] = set()
     for path in SOURCE.rglob("*.py"):
         tree = ast.parse(path.read_text(), filename=str(path))
         for node in ast.walk(tree):
-            if not isinstance(node, ast.Call) or not node.args:
-                continue
-            function = node.func
-            if not (
-                isinstance(function, ast.Attribute)
-                and isinstance(function.value, ast.Name)
-                and function.value.id == "os"
-                and function.attr == "getenv"
-            ):
-                continue
-            argument = node.args[0]
-            if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
-                if argument.value.startswith("CTXD_"):
-                    bypasses.append(f"{path.relative_to(SOURCE)}:{argument.value}")
-    assert not bypasses, (
-        "public CTXD_* lookups must use ctxd.public_environment so additions "
-        f"cannot bypass the registry: {bypasses}"
-    )
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                source_variables.update(re.findall(r"\bCTXD_[A-Z0-9_]+\b", node.value))
+    _assert_inventory("CTXD_* source literal", source_variables, runtime)
 
 
 def test_public_surface_contract_documentation_homes_exist() -> None:

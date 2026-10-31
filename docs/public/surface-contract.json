@@ -46,28 +46,42 @@
   "routes": {
     "document": "api.md#operations",
     "entries": {
-      "DELETE /api/ctxfs/machines/{machine_id}/credential": "machine-lifecycle",
-      "GET /api/ctxfs/glob": "public",
-      "GET /api/ctxfs/grep": "public",
-      "GET /api/ctxfs/ls": "public",
-      "GET /api/ctxfs/read": "public",
-      "GET /api/ctxfs/read-lines": "public",
-      "GET /api/ctxfs/stat": "public",
-      "GET /api/ctxfs/tree": "public",
-      "GET /health": "operational",
-      "POST /api/ctxfs/machines/register": "machine-lifecycle",
-      "POST /api/ctxfs/machines/{machine_id}/credentials/confirm": "machine-lifecycle",
-      "POST /api/ctxfs/machines/{machine_id}/credentials/prepare": "machine-lifecycle",
-      "POST /api/ctxfs/submissions": "tracker-only",
-      "POST /mcp": "public"
+      "DELETE /api/ctxfs/machines/{machine_id}/credential": {"classification": "machine-lifecycle", "purpose": "Revoke the current machine credential"},
+      "GET /api/ctxfs/glob": {"classification": "public", "purpose": "Match canonical paths by glob"},
+      "GET /api/ctxfs/grep": {"classification": "public", "purpose": "Search indexed file contents"},
+      "GET /api/ctxfs/ls": {"classification": "public", "purpose": "List a canonical directory"},
+      "GET /api/ctxfs/read": {"classification": "public", "purpose": "Read bounded file content"},
+      "GET /api/ctxfs/read-lines": {"classification": "public", "purpose": "Read a bounded line range"},
+      "GET /api/ctxfs/stat": {"classification": "public", "purpose": "Read canonical path metadata"},
+      "GET /api/ctxfs/tree": {"classification": "public", "purpose": "Walk a bounded canonical subtree"},
+      "GET /health": {"classification": "operational", "purpose": "Check authenticated server health"},
+      "POST /api/ctxfs/machines/register": {"classification": "machine-lifecycle", "purpose": "Exchange a one-use enrollment credential for machine credentials"},
+      "POST /api/ctxfs/machines/{machine_id}/credentials/confirm": {"classification": "machine-lifecycle", "purpose": "Confirm a prepared machine credential rotation"},
+      "POST /api/ctxfs/machines/{machine_id}/credentials/prepare": {"classification": "machine-lifecycle", "purpose": "Prepare a replacement machine credential"},
+      "POST /api/ctxfs/submissions": {"classification": "tracker-only", "purpose": "Submit tracker-owned indexed-content changes"},
+      "POST /mcp": {"classification": "public", "purpose": "Serve ctxfs MCP JSON-RPC"}
     }
   },
   "scopes": {
     "document": "security.md#authorization-scopes",
-    "entries": ["admin", "enroll", "read", "status", "status:write", "submit"]
+    "entries": {
+      "admin": {"purpose": "Perform every server operation", "leastPrivilege": "Reserve for server administration; it must stand alone", "affectedEndpoints": ["all"]},
+      "enroll": {"purpose": "Bootstrap one machine credential", "leastPrivilege": "Issue as a one-use standalone credential", "affectedEndpoints": ["POST /api/ctxfs/machines/register"]},
+      "read": {"purpose": "Read indexed paths and content", "leastPrivilege": "Grant to readers; combine with status for MCP", "affectedEndpoints": ["GET /api/ctxfs/*", "POST /mcp"]},
+      "status": {"purpose": "Read service health and initialize MCP", "leastPrivilege": "Grant with read for normal MCP clients", "affectedEndpoints": ["GET /health", "POST /mcp"]},
+      "status:write": {"purpose": "Publish machine synchronization status", "leastPrivilege": "Issue only with a registered machine submit grant", "affectedEndpoints": ["machine status publication"]},
+      "submit": {"purpose": "Submit tracker changes", "leastPrivilege": "Restrict with server-owned prefix grants", "affectedEndpoints": ["POST /api/ctxfs/submissions"]}
+    }
   },
   "environment": {
     "document": "cli.md#environment",
-    "entries": ["CTXD_CONFIG_PATH", "CTXD_CREDENTIALS_PATH", "CTXD_CTXFS_API_KEY", "CTXD_CTXFS_ENROLLMENT_TOKEN", "CTXD_CTXFS_SOCKET", "CTXD_CTXFS_URL"]
+    "entries": {
+      "CTXD_CONFIG_PATH": {"purpose": "Override the CLI configuration file", "precedence": "Overrides the default configuration path"},
+      "CTXD_CREDENTIALS_PATH": {"purpose": "Override the sensitive credential store", "precedence": "Overrides both CTXD_CONFIG_PATH-derived and default credential paths; no migration occurs"},
+      "CTXD_CTXFS_API_KEY": {"purpose": "Supply an HTTP bearer token without storing it", "precedence": "Overrides endpoint-scoped stored credentials"},
+      "CTXD_CTXFS_ENROLLMENT_TOKEN": {"purpose": "Supply a one-use machine enrollment token", "precedence": "Used before an interactive prompt"},
+      "CTXD_CTXFS_SOCKET": {"purpose": "Select a ctxfs Unix socket", "precedence": "Used after explicit arguments and CTXD_CTXFS_URL, before stored configuration"},
+      "CTXD_CTXFS_URL": {"purpose": "Select a ctxfs HTTP endpoint", "precedence": "Used after explicit arguments and before CTXD_CTXFS_SOCKET or stored configuration"}
+    }
   }
 }

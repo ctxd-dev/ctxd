@@ -78,9 +78,11 @@ ctxd machine configure --description "Build laptop"
 ```
 
 Registration exchanges the enrollment token for machine credentials stored in
-the credentials file. `machine configure` changes local metadata and synchronizes
-it when the registered endpoint is reachable. Do not put enrollment tokens in
-shell history; interactive registration prompts without echo.
+the credentials file. `machine configure` changes local metadata only. Until a
+future server metadata-update operation exists, `ctxd machine status` reports
+that changed registered metadata is pending a server update. Do not put
+enrollment tokens in shell history; interactive registration prompts without
+echo.
 
 ## Files
 
