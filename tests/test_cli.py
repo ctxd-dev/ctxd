@@ -58,11 +58,15 @@ def test_files_grep_help_teaches_scoped_search_methodology() -> None:
     with redirect_stdout(stdout), pytest.raises(SystemExit) as exc:
         main(["files", "grep", "--help"])
     assert exc.value.code == 0
-    output = stdout.getvalue()
-    assert "inspect top-level folders" in output
-    assert "--prefix" in output
-    assert "Broaden the" in output
-    assert "prefix only when" in output
+    output = " ".join(stdout.getvalue().replace("-\n", "-").lower().split())
+    steps = (
+        "inspect top-level folders with tree",
+        "choose the relevant source folder",
+        "grep within that folder with --prefix",
+        "broaden the prefix only when",
+    )
+    positions = [output.index(step) for step in steps]
+    assert positions == sorted(positions)
 
 
 @pytest.mark.parametrize("command", ["search", "fetch", "profile", "backend"])

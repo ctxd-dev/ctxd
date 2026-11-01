@@ -197,10 +197,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "grep",
         help="Search file contents.",
         description=(
-            "Search file contents with ripgrep syntax. First inspect top-level "
-            "folders with tree or glob, then search the relevant folder with "
-            "--prefix. Broaden the prefix only when the scoped search does not "
-            "find enough context."
+            "Search file contents with ripgrep syntax. Retrieval method: "
+            "(1) inspect top-level folders with tree, (2) choose the relevant "
+            "source folder, (3) grep within that folder with --prefix, and "
+            "(4) broaden the prefix only when the scoped search does not find "
+            "enough context."
         ),
     )
     files_grep_parser.add_argument("pattern")

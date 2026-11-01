@@ -34,9 +34,15 @@ def test_local_mcp_lists_all_ctxfs_tools_without_connection_arguments() -> None:
         "maximum": 60.0,
     }
     assert "cursor" not in grep["inputSchema"]["properties"]
-    description = grep["description"]
-    assert "inspect top-level folders" in description
-    assert "broaden the prefix only" in description
+    description = " ".join(grep["description"].lower().split())
+    steps = (
+        "inspect top-level folders with tree",
+        "choose the relevant source folder",
+        "grep within that folder with the prefix",
+        "broaden the prefix only when",
+    )
+    positions = [description.index(step) for step in steps]
+    assert positions == sorted(positions)
     assert "ripgrep" in description
     assert "handled automatically" in description
 

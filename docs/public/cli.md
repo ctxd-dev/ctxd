@@ -137,7 +137,7 @@ ctxd files grep "deployment" --prefix Documents --limit 20
 
 Use a scoped-search workflow:
 
-1. Inspect top-level folders with `ctxd files tree` or `ctxd files glob`.
+1. Inspect top-level folders with `ctxd files tree`.
 2. Choose the source most likely to contain the answer, such as `slack/`.
 3. Run grep with that folder as `--prefix`.
 4. Broaden the prefix only when the scoped search does not find enough context.
