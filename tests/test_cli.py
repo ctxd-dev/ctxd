@@ -61,14 +61,15 @@ def test_files_grep_help_teaches_scoped_search_methodology() -> None:
     output = " ".join(stdout.getvalue().replace("-\n", "-").lower().split())
     steps = (
         "inspect tracked roots with ctxd files tree local-files --depth 1",
-        "choose the relevant canonical root, such as local-files/slack",
-        "grep within that root with --prefix",
+        "select the relevant canonical local-files/<root_id> path returned by that command",
+        "reuse that exact path as --prefix",
         "broaden the prefix only when",
     )
     positions = [output.index(step) for step in steps]
     assert positions == sorted(positions)
     assert "ctxd files tree --depth 1" not in output
     assert "such as slack" not in output
+    assert "local-files/slack" not in output
 
 
 @pytest.mark.parametrize("command", ["search", "fetch", "profile", "backend"])
@@ -269,7 +270,11 @@ def test_files_grep_uses_ctxfs_without_backend_selection() -> None:
 
 
 def test_scoped_grep_workflow_accepts_canonical_discovery_and_search_prefixes() -> None:
-    tree_result = CtxfsBounded[CtxfsDirectoryEntry](items=[], complete=True)
+    canonical_root = "local-files/folder-1"
+    tree_result = CtxfsBounded[CtxfsDirectoryEntry](
+        items=[CtxfsDirectoryEntry(path=canonical_root, kind="directory")],
+        complete=True,
+    )
     grep_result = CtxfsBounded[CtxfsGrepMatch](items=[], complete=True)
     with patch("ctxd.cli.ensure_started"), patch("ctxd.cli.Client") as client:
         client.return_value.files.tree.return_value = tree_result
@@ -283,7 +288,7 @@ def test_scoped_grep_workflow_accepts_canonical_discovery_and_search_prefixes() 
                     "grep",
                     "needle",
                     "--prefix",
-                    "local-files/slack",
+                    canonical_root,
                 ]
             )
             == 0
@@ -294,7 +299,7 @@ def test_scoped_grep_workflow_accepts_canonical_discovery_and_search_prefixes() 
     )
     client.return_value.files.grep.assert_called_once_with(
         "needle",
-        prefix="local-files/slack",
+        prefix=canonical_root,
         limit=None,
         timeout_seconds=None,
     )

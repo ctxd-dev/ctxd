@@ -37,14 +37,15 @@ def test_local_mcp_lists_all_ctxfs_tools_without_connection_arguments() -> None:
     description = " ".join(grep["description"].lower().split())
     steps = (
         "inspect tracked roots with the tree tool using prefix=local-files and depth=1",
-        "choose the relevant canonical root, such as local-files/slack",
-        "grep within that root with the prefix",
+        "select the relevant canonical local-files/<root_id> path returned by the tree tool",
+        "reuse that exact path as the grep prefix",
         "broaden the prefix only when",
     )
     positions = [description.index(step) for step in steps]
     assert positions == sorted(positions)
     assert "tree tool using depth=1" not in description
     assert "such as slack" not in description
+    assert "local-files/slack" not in description
     assert "ripgrep" in description
     assert "handled automatically" in description
 

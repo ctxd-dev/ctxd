@@ -200,8 +200,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "Search file contents with ripgrep syntax. Retrieval method: "
             "(1) inspect tracked roots with "
             "ctxd files tree local-files --depth 1, "
-            "(2) choose the relevant canonical root, such as "
-            "local-files/slack, (3) grep within that root with --prefix, and "
+            "(2) select the relevant canonical local-files/<ROOT_ID> path "
+            "returned by that command, (3) reuse that exact path as --prefix, and "
             "(4) broaden the prefix only when the scoped search does not find "
             "enough context."
         ),
