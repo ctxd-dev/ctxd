@@ -60,13 +60,15 @@ def test_files_grep_help_teaches_scoped_search_methodology() -> None:
     assert exc.value.code == 0
     output = " ".join(stdout.getvalue().replace("-\n", "-").lower().split())
     steps = (
-        "inspect top-level folders with tree",
+        "inspect top-level folders with ctxd files tree --depth 1",
         "choose the relevant source folder",
         "grep within that folder with --prefix",
         "broaden the prefix only when",
     )
     positions = [output.index(step) for step in steps]
     assert positions == sorted(positions)
+    assert "such as slack" in output
+    assert "slack/" not in output
 
 
 @pytest.mark.parametrize("command", ["search", "fetch", "profile", "backend"])

@@ -504,6 +504,19 @@ def test_public_docs_use_the_supported_local_workflow() -> None:
     assert "ctxd folders remove <ROOT_ID>" not in public_text
 
 
+def test_public_docs_teach_bounded_scoped_grep_discovery() -> None:
+    cli_text = (PUBLIC_DOCS / "cli.md").read_text()
+    ctxfs_text = (PUBLIC_DOCS / "ctxfs.md").read_text()
+
+    assert "ctxd files tree --depth 1" in cli_text
+    assert "`ctxd files grep \"deployment\" --prefix slack`" in cli_text
+    assert "ctxd files tree --depth 1" in ctxfs_text
+    assert "MCP `tree` tool with `depth=1`" in ctxfs_text
+    assert "for example `slack`" in ctxfs_text
+    assert "`slack/`" not in cli_text
+    assert "`slack/`" not in ctxfs_text
+
+
 def test_overview_describes_optional_tracker_and_endpoint_ownership() -> None:
     text = (PUBLIC_DOCS / "overview.md").read_text()
 

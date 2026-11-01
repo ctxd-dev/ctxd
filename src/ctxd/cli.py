@@ -198,8 +198,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Search file contents.",
         description=(
             "Search file contents with ripgrep syntax. Retrieval method: "
-            "(1) inspect top-level folders with tree, (2) choose the relevant "
-            "source folder, (3) grep within that folder with --prefix, and "
+            "(1) inspect top-level folders with ctxd files tree --depth 1, "
+            "(2) choose the relevant source folder, such as slack, (3) grep "
+            "within that folder with --prefix, and "
             "(4) broaden the prefix only when the scoped search does not find "
             "enough context."
         ),
