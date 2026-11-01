@@ -36,15 +36,15 @@ def test_local_mcp_lists_all_ctxfs_tools_without_connection_arguments() -> None:
     assert "cursor" not in grep["inputSchema"]["properties"]
     description = " ".join(grep["description"].lower().split())
     steps = (
-        "inspect top-level folders with the tree tool using depth=1",
-        "choose the relevant source folder",
-        "grep within that folder with the prefix",
+        "inspect tracked roots with the tree tool using prefix=local-files and depth=1",
+        "choose the relevant canonical root, such as local-files/slack",
+        "grep within that root with the prefix",
         "broaden the prefix only when",
     )
     positions = [description.index(step) for step in steps]
     assert positions == sorted(positions)
-    assert "such as slack" in description
-    assert "slack/" not in description
+    assert "tree tool using depth=1" not in description
+    assert "such as slack" not in description
     assert "ripgrep" in description
     assert "handled automatically" in description
 
@@ -71,13 +71,13 @@ def test_local_mcp_initializes_and_calls_bounded_tree() -> None:
             "method": "tools/call",
             "params": {
                 "name": "tree",
-                "arguments": {"prefix": "local-files/root", "depth": 2, "limit": 10},
+                "arguments": {"prefix": "local-files", "depth": 1, "limit": 10},
             },
         },
         lambda name, arguments: execute_client_tool(client, name, arguments),
     )
 
-    tree.assert_called_once_with("local-files/root", depth=2, limit=10)
+    tree.assert_called_once_with("local-files", depth=1, limit=10)
     assert response["result"]["structuredContent"]["stopped_by"] == "limit"
 
 

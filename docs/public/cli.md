@@ -137,10 +137,11 @@ ctxd files grep "deployment" --prefix Documents --limit 20
 
 Use a scoped-search workflow:
 
-1. Inspect only top-level folders with `ctxd files tree --depth 1`.
-2. Choose the source most likely to contain the answer, such as `slack`.
-3. Run grep with that folder as `--prefix`, for example
-   `ctxd files grep "deployment" --prefix slack`.
+1. Inspect only tracked roots with `ctxd files tree local-files --depth 1`.
+2. Choose the canonical root most likely to contain the answer, such as
+   `local-files/slack`.
+3. Run grep with that root as `--prefix`, for example
+   `ctxd files grep "deployment" --prefix local-files/slack`.
 4. Broaden the prefix only when the scoped search does not find enough context.
 
 Every listing and matching command is bounded. Grep uses ripgrep regular-expression

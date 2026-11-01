@@ -507,14 +507,25 @@ def test_public_docs_use_the_supported_local_workflow() -> None:
 def test_public_docs_teach_bounded_scoped_grep_discovery() -> None:
     cli_text = (PUBLIC_DOCS / "cli.md").read_text()
     ctxfs_text = (PUBLIC_DOCS / "ctxfs.md").read_text()
+    api_text = (PUBLIC_DOCS / "api.md").read_text()
 
-    assert "ctxd files tree --depth 1" in cli_text
-    assert "`ctxd files grep \"deployment\" --prefix slack`" in cli_text
-    assert "ctxd files tree --depth 1" in ctxfs_text
-    assert "MCP `tree` tool with `depth=1`" in ctxfs_text
-    assert "for example `slack`" in ctxfs_text
-    assert "`slack/`" not in cli_text
-    assert "`slack/`" not in ctxfs_text
+    canonical_namespace = "local-files"
+    canonical_example_root = f"{canonical_namespace}/slack"
+    assert "REST and MCP paths use canonical ctxfs paths" in api_text
+    assert f"beneath `{canonical_namespace}/<ROOT_ID>/`" in api_text
+
+    assert f"ctxd files tree {canonical_namespace} --depth 1" in cli_text
+    assert (
+        f"`ctxd files grep \"deployment\" --prefix {canonical_example_root}`"
+        in cli_text
+    )
+    assert f"ctxd files tree {canonical_namespace} --depth 1" in ctxfs_text
+    assert f"`prefix={canonical_namespace}` and `depth=1`" in ctxfs_text
+    assert f"for example `{canonical_example_root}`" in ctxfs_text
+
+    for text in (cli_text, ctxfs_text):
+        assert "ctxd files tree --depth 1" not in text
+        assert "for example `slack`" not in text
 
 
 def test_overview_describes_optional_tracker_and_endpoint_ownership() -> None:

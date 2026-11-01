@@ -60,15 +60,15 @@ def test_files_grep_help_teaches_scoped_search_methodology() -> None:
     assert exc.value.code == 0
     output = " ".join(stdout.getvalue().replace("-\n", "-").lower().split())
     steps = (
-        "inspect top-level folders with ctxd files tree --depth 1",
-        "choose the relevant source folder",
-        "grep within that folder with --prefix",
+        "inspect tracked roots with ctxd files tree local-files --depth 1",
+        "choose the relevant canonical root, such as local-files/slack",
+        "grep within that root with --prefix",
         "broaden the prefix only when",
     )
     positions = [output.index(step) for step in steps]
     assert positions == sorted(positions)
-    assert "such as slack" in output
-    assert "slack/" not in output
+    assert "ctxd files tree --depth 1" not in output
+    assert "such as slack" not in output
 
 
 @pytest.mark.parametrize("command", ["search", "fetch", "profile", "backend"])
@@ -265,6 +265,38 @@ def test_files_grep_uses_ctxfs_without_backend_selection() -> None:
         prefix="",
         limit=None,
         timeout_seconds=7.5,
+    )
+
+
+def test_scoped_grep_workflow_accepts_canonical_discovery_and_search_prefixes() -> None:
+    tree_result = CtxfsBounded[CtxfsDirectoryEntry](items=[], complete=True)
+    grep_result = CtxfsBounded[CtxfsGrepMatch](items=[], complete=True)
+    with patch("ctxd.cli.ensure_started"), patch("ctxd.cli.Client") as client:
+        client.return_value.files.tree.return_value = tree_result
+        client.return_value.files.grep.return_value = grep_result
+
+        assert main(["files", "tree", "local-files", "--depth", "1"]) == 0
+        assert (
+            main(
+                [
+                    "files",
+                    "grep",
+                    "needle",
+                    "--prefix",
+                    "local-files/slack",
+                ]
+            )
+            == 0
+        )
+
+    client.return_value.files.tree.assert_called_once_with(
+        "local-files", depth=1, limit=None
+    )
+    client.return_value.files.grep.assert_called_once_with(
+        "needle",
+        prefix="local-files/slack",
+        limit=None,
+        timeout_seconds=None,
     )
 
 

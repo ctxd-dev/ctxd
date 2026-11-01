@@ -60,9 +60,9 @@ TOOLS = [
         (
             "Search ctxfs file contents using ripgrep regular-expression syntax. "
             "Results are ordered by path and line. Retrieval method: (1) inspect "
-            "top-level folders with the tree tool using depth=1, (2) choose the "
-            "relevant source folder, such as slack, (3) grep within that folder "
-            "with the prefix, and "
+            "tracked roots with the tree tool using prefix=local-files and "
+            "depth=1, (2) choose the relevant canonical root, such as "
+            "local-files/slack, (3) grep within that root with the prefix, and "
             "(4) broaden the prefix only when the scoped search does not find "
             "enough context. "
             "Transport continuations are handled automatically; a failure means "
