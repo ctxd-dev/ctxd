@@ -133,11 +133,9 @@ ripgrep's Rust regular-expression syntax, not semantic search. ripgrep is a
 required runtime dependency (version 13.0.0 or newer); ctxfs never substitutes
 a different regex engine.
 
-Plain patterns of at least three characters that contain no regular-expression
-metacharacters use a local trigram index to identify candidate catalog files.
-ctxfs still verifies every candidate with the regular-expression matcher, so
-case sensitivity, matching lines, and offsets are unchanged. General regular
-expressions and shorter literals use the scan path.
+Every pattern scans files beneath the selected prefix and uses ripgrep for final
+matching. Choose the narrowest relevant canonical root before searching; broad
+prefixes may require multiple internal continuation pages.
 
 Agents should scope retrieval before searching broadly:
 
@@ -153,12 +151,8 @@ Agents should scope retrieval before searching broadly:
 This keeps retrieval focused and makes search cost easier to understand without
 changing grep semantics.
 
-Indexed literal results are authoritative over cataloged ctxfs entries. They do
-not inventory private tree storage for files added outside ctxfs. Regex searches
-retain the scan path and its `catalog_mismatch` diagnostics for that kind of
-storage drift. The index is maintained with catalog writes; opening a catalog
-created by an older release performs a one-time synchronous backfill, which
-temporarily increases startup work and permanently increases local index storage.
+All patterns use the same scan behavior and report `catalog_mismatch` when
+private tree storage contains files that are not represented by the catalog.
 
 ## Verify a tracked file
 
