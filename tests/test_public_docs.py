@@ -504,6 +504,29 @@ def test_public_docs_use_the_supported_local_workflow() -> None:
     assert "ctxd folders remove <ROOT_ID>" not in public_text
 
 
+def test_public_docs_describe_scan_only_grep() -> None:
+    public_text = "\n".join(path.read_text() for path in PUBLIC_DOCS.rglob("*.md"))
+    normalized = public_text.lower()
+    stale_index_claims = (
+        "candidate-index",
+        "candidate index",
+        "indexed literal completeness",
+        "index backfill",
+        "use a regex scan",
+        "other regex patterns use the scan path",
+    )
+
+    for claim in stale_index_claims:
+        assert claim not in normalized, claim
+
+    assert "Every grep pattern scans files beneath the selected prefix" in public_text
+    assert (
+        "all patterns can return those matches and report `catalog_mismatch`"
+        in public_text
+    )
+    assert "ctxfs removes legacy derived grep tables" in public_text
+
+
 def test_public_docs_teach_bounded_scoped_grep_discovery() -> None:
     cli_text = (PUBLIC_DOCS / "cli.md").read_text()
     ctxfs_text = (PUBLIC_DOCS / "ctxfs.md").read_text()
