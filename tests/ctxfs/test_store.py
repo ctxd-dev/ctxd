@@ -781,289 +781,250 @@ def test_grep_skips_missing_tree_paths(tmp_path):
     assert matches.stopped_by == "catalog_mismatch"
 
 
-def test_indexed_literal_reads_only_candidate_files(tmp_path, monkeypatch):
+def test_literal_grep_scans_every_catalog_file_under_prefix(tmp_path, monkeypatch):
     store = CtxfsStore(tmp_path / "ctxfs")
     store.register_prefix("user-1", "writer-1", "local_files/root")
-    operations = [
-        _put(
-            f"local_files/root/{index:03}.md",
-            f"inode-{index}",
-            f"unrelated content {index}\n",
-        )
-        for index in range(200)
-    ]
-    operations.append(
-        _put("local_files/root/match.md", "inode-match", "MedThink recovery plan\n")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [
+            _put("local_files/root/a.md", "a", "unrelated"),
+            _put("local_files/root/b.md", "b", "literal needle"),
+            _put("local_files/root/c.md", "c", "unrelated"),
+        ],
     )
-    store.submit("user-1", "writer-1", operations)
-    visited = []
+    visited: list[str] = []
     original = store._grep_tree_path
 
-    def record_candidate(pattern, tree_path, logical_path, *args, **kwargs):
+    def record_scan(pattern, tree_path, logical_path, *args, **kwargs):
         visited.append(logical_path)
         return original(pattern, tree_path, logical_path, *args, **kwargs)
 
-    monkeypatch.setattr(store, "_grep_tree_path", record_candidate)
+    monkeypatch.setattr(store, "_grep_tree_path", record_scan)
 
-    page = store.grep("user-1", "MedThink", prefix="local_files/root")
+    page = store.grep("user-1", "literal needle", prefix="local_files/root")
 
-    assert [match.path for match in page.items] == ["local_files/root/match.md"]
+    assert [match.path for match in page.items] == ["local_files/root/b.md"]
     assert page.complete is True
-    assert visited == ["local_files/root/match.md"]
+    assert visited == [
+        "local_files/root/a.md",
+        "local_files/root/b.md",
+        "local_files/root/c.md",
+    ]
 
 
-def test_indexed_literal_verifies_case_and_non_regex_punctuation(tmp_path):
+def test_literal_grep_is_case_sensitive(tmp_path):
     store = CtxfsStore(tmp_path / "ctxfs")
     store.register_prefix("user-1", "writer-1", "local_files/root")
     store.submit(
         "user-1",
         "writer-1",
         [
-            _put("local_files/root/lower.md", "lower", "med-think\n"),
-            _put("local_files/root/exact.md", "exact", "Med-Think\n"),
+            _put("local_files/root/lower.md", "lower", "literal needle\n"),
+            _put("local_files/root/upper.md", "upper", "LITERAL NEEDLE\n"),
         ],
     )
 
-    page = store.grep("user-1", "Med-Think", prefix="local_files/root")
+    lowercase = store.grep("user-1", "literal needle", prefix="local_files/root")
+    uppercase = store.grep("user-1", "LITERAL NEEDLE", prefix="local_files/root")
 
-    assert [match.path for match in page.items] == ["local_files/root/exact.md"]
-
-
-def test_indexed_literal_isolated_by_user_and_prefix(tmp_path):
-    store = CtxfsStore(tmp_path / "ctxfs")
-    store.register_prefix("user-1", "writer-a", "root/a")
-    store.register_prefix("user-1", "writer-b", "root/b")
-    store.register_prefix("user-2", "writer-a", "root/a")
-    store.submit("user-1", "writer-a", [_put("root/a/one.md", "one", "MedThink")])
-    store.submit("user-1", "writer-b", [_put("root/b/two.md", "two", "MedThink")])
-    store.submit("user-2", "writer-a", [_put("root/a/three.md", "three", "MedThink")])
-
-    page = store.grep("user-1", "MedThink", prefix="root/a")
-
-    assert [match.path for match in page.items] == ["root/a/one.md"]
+    assert [match.path for match in lowercase.items] == ["local_files/root/lower.md"]
+    assert [match.path for match in uppercase.items] == ["local_files/root/upper.md"]
 
 
-def test_indexed_literal_tracks_update_move_and_delete(tmp_path):
-    store = CtxfsStore(tmp_path / "ctxfs")
-    store.register_prefix("user-1", "writer-1", "local_files/root")
-    source = "local_files/root/source.md"
-    destination = "local_files/root/destination.md"
-    store.submit("user-1", "writer-1", [_put(source, "inode-1", "old value")])
-
-    store.submit("user-1", "writer-1", [_put(source, "inode-1", "MedThink value")])
-    assert [item.path for item in store.grep("user-1", "MedThink").items] == [source]
-    assert store.grep("user-1", "old value").items == []
-
-    entry = store.stat("user-1", source)
-    assert entry is not None
-    store.submit(
-        "user-1",
-        "writer-1",
-        [
-            MoveOperation(
-                source_key="inode-1",
-                path=destination,
-                source_version="v2",
-                expected_content_hash=entry.content_hash,
-            )
-        ],
-    )
-    assert [item.path for item in store.grep("user-1", "MedThink").items] == [
-        destination
-    ]
-
-    store.submit(
-        "user-1",
-        "writer-1",
-        [DeleteOperation(source_key="inode-1", source_version="v3")],
-    )
-    assert store.grep("user-1", "MedThink").items == []
-
-
-def test_indexed_literal_backfills_existing_catalog(tmp_path, monkeypatch):
-    root = tmp_path / "ctxfs"
-    store = CtxfsStore(root)
-    store.register_prefix("user-1", "writer-1", "local_files/root")
-    store.submit(
-        "user-1",
-        "writer-1",
-        [_put("local_files/root/notes.md", "inode-1", "MedThink")],
-    )
-    with store.connection:
-        store.connection.execute("DROP TABLE grep_index")
-        store.connection.execute("DROP TABLE grep_index_entries")
-    store.close()
-
-    migrated = CtxfsStore(root)
-
-    assert [item.path for item in migrated.grep("user-1", "MedThink").items] == [
-        "local_files/root/notes.md"
-    ]
-    migrated.close()
-    reopened = CtxfsStore(root)
-    assert (
-        reopened.connection.execute(
-            "SELECT COUNT(*) FROM grep_index_entries"
-        ).fetchone()[0]
-        == 1
-    )
-    reopened.close()
-
-    def unexpected_backfill(self):
-        raise AssertionError("completed indexes must not be rescanned at startup")
-
-    monkeypatch.setattr(CtxfsStore, "_backfill_grep_index", unexpected_backfill)
-    cached = CtxfsStore(root)
-    assert [item.path for item in cached.grep("user-1", "MedThink").items] == [
-        "local_files/root/notes.md"
-    ]
-
-
-@pytest.mark.parametrize("corrupt_table", ["grep_index_entries", "grep_index"])
-def test_completed_index_repairs_missing_mapping_or_posting(tmp_path, corrupt_table):
-    root = tmp_path / "ctxfs"
-    store = CtxfsStore(root)
-    store.register_prefix("user-1", "writer-1", "local_files/root")
-    store.submit(
-        "user-1",
-        "writer-1",
-        [_put("local_files/root/notes.md", "inode-1", "MedThink")],
-    )
-    with store.connection:
-        store.connection.execute(f"DELETE FROM {corrupt_table}")
-    store.close()
-
-    repaired = CtxfsStore(root)
-
-    result = repaired.grep("user-1", "MedThink")
-    assert [item.path for item in result.items] == ["local_files/root/notes.md"]
-    assert result.complete is True
-    assert (
-        repaired.connection.execute(
-            "SELECT COUNT(*) FROM grep_index_entries"
-        ).fetchone()[0]
-        == repaired.connection.execute("SELECT COUNT(*) FROM grep_index").fetchone()[0]
-    )
-
-
-def test_incomplete_index_backfill_uses_scan_until_repaired(tmp_path, monkeypatch):
-    root = tmp_path / "ctxfs"
-    store = CtxfsStore(root)
-    store.register_prefix("user-1", "writer-1", "local_files/root")
-    store.submit(
-        "user-1",
-        "writer-1",
-        [_put("local_files/root/notes.md", "inode-1", "MedThink")],
-    )
-    entry = store.stat("user-1", "local_files/root/notes.md")
-    assert entry is not None
-    object_path = store._object_path("user-1", entry.object_id)
-    with store.connection:
-        store.connection.execute("DROP TABLE grep_index")
-        store.connection.execute("DROP TABLE grep_index_entries")
-    store.close()
-
-    original_read_bytes = store_module.Path.read_bytes
-
-    def fail_object_read(path):
-        if path == object_path:
-            raise OSError("object temporarily unavailable")
-        return original_read_bytes(path)
-
-    with monkeypatch.context() as context:
-        context.setattr(store_module.Path, "read_bytes", fail_object_read)
-        degraded = CtxfsStore(root)
-        assert degraded._grep_index_available is False
-        assert [item.path for item in degraded.grep("user-1", "MedThink").items] == [
-            "local_files/root/notes.md"
-        ]
-        degraded.close()
-
-    repaired = CtxfsStore(root)
-    assert repaired._grep_index_available is True
-    assert [item.path for item in repaired.grep("user-1", "MedThink").items] == [
-        "local_files/root/notes.md"
-    ]
-
-
-def test_index_update_rolls_back_with_failed_submission(tmp_path, monkeypatch):
-    store = CtxfsStore(tmp_path / "ctxfs")
-    store.register_prefix("user-1", "writer-1", "local_files/root")
-
-    def fail_index_update(*args, **kwargs):
-        raise RuntimeError("index update failed")
-
-    monkeypatch.setattr(store, "_upsert_grep_index", fail_index_update)
-    with pytest.raises(RuntimeError, match="index update failed"):
-        store.submit(
-            "user-1",
-            "writer-1",
-            [_put("local_files/root/notes.md", "inode-1", "MedThink")],
-        )
-
-    assert store.stat("user-1", "local_files/root/notes.md") is None
-    assert (
-        store.connection.execute("SELECT COUNT(*) FROM grep_index_entries").fetchone()[
-            0
-        ]
-        == 0
-    )
-
-
-def test_indexed_literal_is_catalog_authoritative_for_disk_only_paths(tmp_path):
+def test_all_patterns_report_matching_disk_only_paths(tmp_path):
     store = CtxfsStore(tmp_path / "ctxfs")
     disk_path = store._tree_path("user-1", "local_files/root/orphan.md")
     disk_path.parent.mkdir(parents=True)
-    disk_path.write_text("MedThink\n")
+    disk_path.write_text("literal needle\n")
 
-    literal = store.grep("user-1", "MedThink", prefix="local_files/root")
-    regex = store.grep("user-1", "MedThink.*", prefix="local_files/root")
+    literal = store.grep("user-1", "literal needle", prefix="local_files/root")
+    regex = store.grep("user-1", "literal.*", prefix="local_files/root")
 
-    assert literal.items == []
-    assert literal.complete is True
+    assert [item.path for item in literal.items] == ["local_files/root/orphan.md"]
+    assert literal.stopped_by == "catalog_mismatch"
     assert [item.path for item in regex.items] == ["local_files/root/orphan.md"]
     assert regex.stopped_by == "catalog_mismatch"
 
 
-def test_regex_and_short_literal_keep_scan_path(tmp_path, monkeypatch):
+def test_new_catalog_does_not_create_grep_index_tables(tmp_path):
     store = CtxfsStore(tmp_path / "ctxfs")
+
+    table_names = {
+        row["name"]
+        for row in store.connection.execute(
+            "SELECT name FROM sqlite_master WHERE name LIKE 'grep_index%'"
+        ).fetchall()
+    }
+
+    assert table_names == set()
+
+
+def test_upgrade_drops_legacy_index_tables_without_losing_content(tmp_path):
+    root = tmp_path / "ctxfs"
+    store = CtxfsStore(root)
     store.register_prefix("user-1", "writer-1", "local_files/root")
     store.submit(
         "user-1",
         "writer-1",
-        [_put("local_files/root/notes.md", "inode-1", "needle ab")],
+        [_put("local_files/root/notes.md", "inode-1", "literal needle")],
     )
-    original = store._iter_entries_under_prefix
-    calls = 0
+    with store.connection:
+        store.connection.execute(
+            """
+            CREATE VIRTUAL TABLE grep_index USING fts5(
+                content,
+                tokenize='trigram',
+                content='',
+                contentless_delete=1
+            )
+            """
+        )
+        store.connection.execute(
+            "CREATE TABLE grep_index_entries(rowid INTEGER PRIMARY KEY, path TEXT)"
+        )
+        store.connection.execute(
+            "CREATE TABLE grep_index_metadata(key TEXT PRIMARY KEY, value TEXT)"
+        )
+        store.connection.execute(
+            "INSERT INTO grep_index(rowid, content) VALUES (1, 'derived copy')"
+        )
+        store.connection.execute("INSERT INTO grep_index_entries VALUES (1, 'notes')")
+        store.connection.execute("INSERT INTO grep_index_metadata VALUES ('complete', '1')")
+    store.close()
 
-    def record_scan(*args):
-        nonlocal calls
-        calls += 1
-        yield from original(*args)
+    upgraded = CtxfsStore(root)
+    table_names = {
+        row["name"]
+        for row in upgraded.connection.execute(
+            "SELECT name FROM sqlite_master WHERE name LIKE 'grep_index%'"
+        ).fetchall()
+    }
 
-    monkeypatch.setattr(store, "_iter_entries_under_prefix", record_scan)
-
-    assert store.grep("user-1", "needl[e]").items
-    assert store.grep("user-1", "ab").items
-    assert calls == 2
-
-
-def test_grep_falls_back_when_index_capability_is_unavailable(tmp_path, monkeypatch):
-    def disable_index(self):
-        self._grep_index_available = False
-
-    monkeypatch.setattr(CtxfsStore, "_initialize_grep_index", disable_index)
-    store = CtxfsStore(tmp_path / "ctxfs")
-    store.register_prefix("user-1", "writer-1", "local_files/root")
-    store.submit(
-        "user-1",
-        "writer-1",
-        [_put("local_files/root/notes.md", "inode-1", "MedThink")],
-    )
-
-    assert [item.path for item in store.grep("user-1", "MedThink").items] == [
+    assert table_names == set()
+    assert [item.path for item in upgraded.grep("user-1", "literal needle").items] == [
         "local_files/root/notes.md"
     ]
+
+
+def test_upgrade_defers_legacy_index_cleanup_when_tokenizer_is_unavailable(tmp_path):
+    root = tmp_path / "ctxfs"
+    store = CtxfsStore(root)
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [_put("local_files/root/notes.md", "inode-1", "literal needle")],
+    )
+    with store.connection:
+        store.connection.execute(
+            """
+            CREATE VIRTUAL TABLE grep_index USING fts5(
+                content,
+                tokenize='trigram',
+                content='',
+                contentless_delete=1
+            )
+            """
+        )
+        store.connection.execute(
+            "CREATE TABLE grep_index_entries(rowid INTEGER PRIMARY KEY, path TEXT)"
+        )
+        store.connection.execute(
+            "CREATE TABLE grep_index_metadata(key TEXT PRIMARY KEY, value TEXT)"
+        )
+        store.connection.execute(
+            "INSERT INTO grep_index(rowid, content) VALUES (1, 'derived copy')"
+        )
+        store.connection.execute("INSERT INTO grep_index_entries VALUES (1, 'notes')")
+        store.connection.execute(
+            "INSERT INTO grep_index_metadata VALUES ('complete', '1')"
+        )
+
+        schema_version = store.connection.execute("PRAGMA schema_version").fetchone()[0]
+        store.connection.execute("PRAGMA writable_schema = ON")
+        store.connection.execute(
+            """
+            UPDATE sqlite_master
+            SET sql = replace(
+                sql,
+                'tokenize=''trigram''',
+                'tokenize=''unavailable_legacy_tokenizer'''
+            )
+            WHERE name = 'grep_index'
+            """
+        )
+        store.connection.execute("PRAGMA writable_schema = OFF")
+        store.connection.execute(f"PRAGMA schema_version = {schema_version + 1}")
+    store.close()
+
+    upgraded = CtxfsStore(root)
+
+    table_names = {
+        row["name"]
+        for row in upgraded.connection.execute(
+            "SELECT name FROM sqlite_master WHERE name LIKE 'grep_index%'"
+        ).fetchall()
+    }
+    assert {
+        "grep_index",
+        "grep_index_entries",
+        "grep_index_metadata",
+    } <= table_names
+    assert (
+        upgraded.connection.execute(
+            "SELECT path FROM grep_index_entries WHERE rowid = 1"
+        ).fetchone()["path"]
+        == "notes"
+    )
+    assert (
+        upgraded.connection.execute(
+            "SELECT value FROM grep_index_metadata WHERE key = 'complete'"
+        ).fetchone()["value"]
+        == "1"
+    )
+    assert [item.path for item in upgraded.grep("user-1", "literal needle").items] == [
+        "local_files/root/notes.md"
+    ]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "no such module: fts5",
+        "no such tokenizer: trigram",
+        'unrecognized option: "contentless_delete"',
+    ],
+)
+def test_legacy_index_cleanup_defers_known_fts_capability_errors(message):
+    class IncapableConnection:
+        def __init__(self):
+            self.statements = []
+
+        def execute(self, statement):
+            self.statements.append(statement)
+            raise store_module.sqlite3.OperationalError(message)
+
+    store = object.__new__(CtxfsStore)
+    store.connection = IncapableConnection()
+
+    store._drop_legacy_grep_index()
+
+    assert store.connection.statements == ["DROP TABLE IF EXISTS grep_index"]
+
+
+def test_legacy_index_cleanup_does_not_hide_unrelated_sqlite_errors():
+    class BrokenConnection:
+        def execute(self, statement):
+            raise store_module.sqlite3.OperationalError("database is locked")
+
+    store = object.__new__(CtxfsStore)
+    store.connection = BrokenConnection()
+
+    with pytest.raises(
+        store_module.sqlite3.OperationalError, match="database is locked"
+    ):
+        store._drop_legacy_grep_index()
 
 
 def test_grep_pathological_regex_does_not_backtrack_indefinitely(tmp_path, monkeypatch):

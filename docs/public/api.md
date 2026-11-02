@@ -70,12 +70,15 @@ authenticated on HTTP endpoints.
 
 Directory, tree, glob, and grep responses are bounded by `limit`. Grep uses ripgrep's Rust regex syntax and a 2-second timeout by default; `timeout_seconds` accepts 0.1 through 60 seconds. The raw HTTP response exposes opaque continuation cursors for transport clients, and cursors become stale if the resumed file changes. The public SDK, CLI, and MCP tool consume those pages automatically and fail explicitly when a safety bound prevents an exhaustive result. File reads include content identity metadata so a caller can detect changed content.
 
-Grep transparently candidate-indexes plain, metacharacter-free patterns of at
-least three characters, then verifies candidates with the normal regex matcher.
-Other regex patterns use the scan path. Indexed literal completeness covers the
-ctxfs catalog and intentionally excludes files placed directly in private tree
-storage; use a regex scan when diagnosing such catalog/storage drift. Older
-catalogs receive a one-time synchronous index backfill when first opened.
+Every grep pattern scans files beneath the selected prefix and uses ripgrep for
+matching. Continuation works the same way for literal and other regular-expression
+patterns. If private tree storage contains files that are absent from the catalog,
+all patterns can return those matches and report `catalog_mismatch`. When an older
+catalog is opened, ctxfs attempts to remove legacy derived grep tables. If the
+SQLite build can no longer load the legacy FTS5 module, tokenizer, or
+`contentless_delete` table option, cleanup is deferred and the inert tables are
+left in place; scan-only ripgrep search remains available and no search data
+needs to be backfilled.
 
 `read` accepts at most 5,000,000 bytes. The default is 1,000,000 bytes. Use `read-lines` when an agent needs only a section of a large file.
 
