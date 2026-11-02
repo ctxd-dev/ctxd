@@ -2728,24 +2728,25 @@ def _grep_target_batches(
     pattern: str,
     targets: list[_GrepTarget],
 ):
-    base_chars = len(subprocess.list2cmdline(_rg_command(pattern, [])))
     batch: list[_GrepTarget] = []
-    command_chars = base_chars
     previous_path = ""
     for target in targets:
         physical_path = _normalized_physical_path(target.tree_path)
-        path_chars = len(subprocess.list2cmdline([str(target.tree_path)])) + 1
+        candidate = [*batch, target]
+        command_chars = len(
+            subprocess.list2cmdline(
+                _rg_command(pattern, [item.tree_path for item in candidate])
+            ).encode("utf-16-le")
+        ) // 2
         requires_new_batch = bool(batch) and (
             len(batch) >= GREP_MAX_BATCH_PATHS
-            or command_chars + path_chars > GREP_MAX_COMMAND_CHARS
+            or command_chars > GREP_MAX_COMMAND_CHARS
             or physical_path <= previous_path
         )
         if requires_new_batch:
             yield batch
             batch = []
-            command_chars = base_chars
         batch.append(target)
-        command_chars += path_chars
         previous_path = physical_path
     if batch:
         yield batch

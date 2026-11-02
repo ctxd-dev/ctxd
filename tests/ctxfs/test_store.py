@@ -852,6 +852,36 @@ def test_grep_batches_respect_path_count_and_command_budget(tmp_path, monkeypatc
     assert [len(batch) for batch in budget_batches] == [1, 1]
 
 
+def test_grep_batches_respect_utf16_command_budget(tmp_path):
+    pattern = "\U0001f642" * 10_000
+    targets = [
+        store_module._GrepTarget(
+            logical_path=f"local_files/root/{index:02}.md",
+            tree_path=tmp_path / f"{index:02}-{'a' * 180}.md",
+            content_hash=f"sha256:{index:064x}",
+        )
+        for index in range(40)
+    ]
+
+    batches = list(store_module._grep_target_batches(pattern, targets))
+
+    assert len(batches) > 1
+    assert any(len(batch) > 1 for batch in batches)
+    assert all(
+        len(
+            subprocess.list2cmdline(
+                store_module._rg_command(
+                    pattern, [target.tree_path for target in batch]
+                )
+            ).encode("utf-16-le")
+        )
+        // 2
+        <= store_module.GREP_MAX_COMMAND_CHARS
+        for batch in batches
+        if len(batch) > 1
+    )
+
+
 def test_grep_starts_new_batch_when_physical_order_reverses(tmp_path):
     targets = [
         store_module._GrepTarget(
