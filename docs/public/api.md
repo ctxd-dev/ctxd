@@ -74,8 +74,11 @@ Every grep pattern scans files beneath the selected prefix and uses ripgrep for
 matching. Continuation works the same way for literal and other regular-expression
 patterns. If private tree storage contains files that are absent from the catalog,
 all patterns can return those matches and report `catalog_mismatch`. When an older
-catalog is opened, ctxfs removes legacy derived grep tables; no search data needs
-to be backfilled.
+catalog is opened, ctxfs attempts to remove legacy derived grep tables. If the
+SQLite build can no longer load the legacy FTS5 module, tokenizer, or
+`contentless_delete` table option, cleanup is deferred and the inert tables are
+left in place; scan-only ripgrep search remains available and no search data
+needs to be backfilled.
 
 `read` accepts at most 5,000,000 bytes. The default is 1,000,000 bytes. Use `read-lines` when an agent needs only a section of a large file.
 

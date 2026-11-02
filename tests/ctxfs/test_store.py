@@ -907,6 +907,126 @@ def test_upgrade_drops_legacy_index_tables_without_losing_content(tmp_path):
     ]
 
 
+def test_upgrade_defers_legacy_index_cleanup_when_tokenizer_is_unavailable(tmp_path):
+    root = tmp_path / "ctxfs"
+    store = CtxfsStore(root)
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [_put("local_files/root/notes.md", "inode-1", "literal needle")],
+    )
+    with store.connection:
+        store.connection.execute(
+            """
+            CREATE VIRTUAL TABLE grep_index USING fts5(
+                content,
+                tokenize='trigram',
+                content='',
+                contentless_delete=1
+            )
+            """
+        )
+        store.connection.execute(
+            "CREATE TABLE grep_index_entries(rowid INTEGER PRIMARY KEY, path TEXT)"
+        )
+        store.connection.execute(
+            "CREATE TABLE grep_index_metadata(key TEXT PRIMARY KEY, value TEXT)"
+        )
+        store.connection.execute(
+            "INSERT INTO grep_index(rowid, content) VALUES (1, 'derived copy')"
+        )
+        store.connection.execute("INSERT INTO grep_index_entries VALUES (1, 'notes')")
+        store.connection.execute(
+            "INSERT INTO grep_index_metadata VALUES ('complete', '1')"
+        )
+
+        schema_version = store.connection.execute("PRAGMA schema_version").fetchone()[0]
+        store.connection.execute("PRAGMA writable_schema = ON")
+        store.connection.execute(
+            """
+            UPDATE sqlite_master
+            SET sql = replace(
+                sql,
+                'tokenize=''trigram''',
+                'tokenize=''unavailable_legacy_tokenizer'''
+            )
+            WHERE name = 'grep_index'
+            """
+        )
+        store.connection.execute("PRAGMA writable_schema = OFF")
+        store.connection.execute(f"PRAGMA schema_version = {schema_version + 1}")
+    store.close()
+
+    upgraded = CtxfsStore(root)
+
+    table_names = {
+        row["name"]
+        for row in upgraded.connection.execute(
+            "SELECT name FROM sqlite_master WHERE name LIKE 'grep_index%'"
+        ).fetchall()
+    }
+    assert {
+        "grep_index",
+        "grep_index_entries",
+        "grep_index_metadata",
+    } <= table_names
+    assert (
+        upgraded.connection.execute(
+            "SELECT path FROM grep_index_entries WHERE rowid = 1"
+        ).fetchone()["path"]
+        == "notes"
+    )
+    assert (
+        upgraded.connection.execute(
+            "SELECT value FROM grep_index_metadata WHERE key = 'complete'"
+        ).fetchone()["value"]
+        == "1"
+    )
+    assert [item.path for item in upgraded.grep("user-1", "literal needle").items] == [
+        "local_files/root/notes.md"
+    ]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "no such module: fts5",
+        "no such tokenizer: trigram",
+        'unrecognized option: "contentless_delete"',
+    ],
+)
+def test_legacy_index_cleanup_defers_known_fts_capability_errors(message):
+    class IncapableConnection:
+        def __init__(self):
+            self.statements = []
+
+        def execute(self, statement):
+            self.statements.append(statement)
+            raise store_module.sqlite3.OperationalError(message)
+
+    store = object.__new__(CtxfsStore)
+    store.connection = IncapableConnection()
+
+    store._drop_legacy_grep_index()
+
+    assert store.connection.statements == ["DROP TABLE IF EXISTS grep_index"]
+
+
+def test_legacy_index_cleanup_does_not_hide_unrelated_sqlite_errors():
+    class BrokenConnection:
+        def execute(self, statement):
+            raise store_module.sqlite3.OperationalError("database is locked")
+
+    store = object.__new__(CtxfsStore)
+    store.connection = BrokenConnection()
+
+    with pytest.raises(
+        store_module.sqlite3.OperationalError, match="database is locked"
+    ):
+        store._drop_legacy_grep_index()
+
+
 def test_grep_pathological_regex_does_not_backtrack_indefinitely(tmp_path, monkeypatch):
     store = CtxfsStore(tmp_path / "ctxfs")
     store.register_prefix("user-1", "writer-1", "local_files/root")

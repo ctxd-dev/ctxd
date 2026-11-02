@@ -137,6 +137,12 @@ Every pattern scans files beneath the selected prefix and uses ripgrep for final
 matching. Choose the narrowest relevant canonical root before searching; broad
 prefixes may require multiple internal continuation pages.
 
+When an older catalog is opened, ctxfs attempts to remove its legacy derived
+grep tables. Cleanup is deferred if the current SQLite build cannot load the
+legacy FTS5 module, tokenizer, or `contentless_delete` table option. Those inert
+tables do not affect scan-only ripgrep search and can be removed later on a
+capable SQLite build.
+
 Agents should scope retrieval before searching broadly:
 
 1. Inspect only tracked roots. Use

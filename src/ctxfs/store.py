@@ -337,8 +337,18 @@ class CtxfsStore:
             )
 
     def _drop_legacy_grep_index(self) -> None:
-        """Remove derived literal-search state created by older releases."""
-        self.connection.execute("DROP TABLE IF EXISTS grep_index")
+        """Remove legacy derived search state when its FTS module can load."""
+        try:
+            self.connection.execute("DROP TABLE IF EXISTS grep_index")
+        except sqlite3.OperationalError as error:
+            if not _is_legacy_fts_capability_error(error):
+                raise
+            logger.info(
+                "Legacy SQLite FTS grep tables could not be loaded; "
+                "deferring their cleanup",
+                exc_info=True,
+            )
+            return
         self.connection.execute("DROP TABLE IF EXISTS grep_index_entries")
         self.connection.execute("DROP TABLE IF EXISTS grep_index_metadata")
 
@@ -3014,6 +3024,17 @@ def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
         (table_name,),
     ).fetchone()
     return row is not None
+
+
+def _is_legacy_fts_capability_error(error: sqlite3.OperationalError) -> bool:
+    message = str(error).lower()
+    return (
+        "no such module: fts5" in message
+        or "no such tokenizer:" in message
+        or (
+            "unrecognized option:" in message and "contentless_delete" in message
+        )
+    )
 
 
 def _table_columns(connection: sqlite3.Connection, table_name: str) -> set[str]:

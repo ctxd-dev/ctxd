@@ -524,7 +524,10 @@ def test_public_docs_describe_scan_only_grep() -> None:
         "all patterns can return those matches and report `catalog_mismatch`"
         in public_text
     )
-    assert "ctxfs removes legacy derived grep tables" in public_text
+    assert "ctxfs attempts to remove legacy derived grep tables" in public_text
+    assert "cleanup is deferred" in public_text
+    assert "inert tables are" in public_text
+    assert "ripgrep search remains available" in public_text
 
 
 def test_public_docs_teach_bounded_scoped_grep_discovery() -> None:
