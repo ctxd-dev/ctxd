@@ -135,6 +135,16 @@ ctxd files read-lines Documents/notes.md --start 20 --end 40
 ctxd files grep "deployment" --prefix Documents --limit 20
 ```
 
+Use a scoped-search workflow:
+
+1. Inspect only tracked roots with `ctxd files tree local-files --depth 1`.
+2. Select the canonical `local-files/<ROOT_ID>` path most likely to contain the
+   answer from that command's output.
+3. Reuse that exact path as `--prefix`. For example, after replacing `ROOT_ID`
+   with the ID from the tree output, run
+   `ctxd files grep "deployment" --prefix local-files/ROOT_ID`.
+4. Broaden the prefix only when the scoped search does not find enough context.
+
 Every listing and matching command is bounded. Grep uses ripgrep regular-expression
 syntax and automatically resumes internal transport pages. An explicit `--limit`
 is an intentional result bound; other incomplete searches fail with guidance to

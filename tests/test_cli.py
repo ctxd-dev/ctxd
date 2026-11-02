@@ -53,6 +53,25 @@ def test_status_help_describes_endpoint_health_not_authentication() -> None:
     assert "API key" not in output
 
 
+def test_files_grep_help_teaches_scoped_search_methodology() -> None:
+    stdout = StringIO()
+    with redirect_stdout(stdout), pytest.raises(SystemExit) as exc:
+        main(["files", "grep", "--help"])
+    assert exc.value.code == 0
+    output = " ".join(stdout.getvalue().replace("-\n", "-").lower().split())
+    steps = (
+        "inspect tracked roots with ctxd files tree local-files --depth 1",
+        "select the relevant canonical local-files/<root_id> path returned by that command",
+        "reuse that exact path as --prefix",
+        "broaden the prefix only when",
+    )
+    positions = [output.index(step) for step in steps]
+    assert positions == sorted(positions)
+    assert "ctxd files tree --depth 1" not in output
+    assert "such as slack" not in output
+    assert "local-files/slack" not in output
+
+
 @pytest.mark.parametrize("command", ["search", "fetch", "profile", "backend"])
 def test_removed_commands_are_unknown(command: str) -> None:
     with pytest.raises(SystemExit) as exc:
@@ -247,6 +266,42 @@ def test_files_grep_uses_ctxfs_without_backend_selection() -> None:
         prefix="",
         limit=None,
         timeout_seconds=7.5,
+    )
+
+
+def test_scoped_grep_workflow_accepts_canonical_discovery_and_search_prefixes() -> None:
+    canonical_root = "local-files/folder-1"
+    tree_result = CtxfsBounded[CtxfsDirectoryEntry](
+        items=[CtxfsDirectoryEntry(path=canonical_root, kind="directory")],
+        complete=True,
+    )
+    grep_result = CtxfsBounded[CtxfsGrepMatch](items=[], complete=True)
+    with patch("ctxd.cli.ensure_started"), patch("ctxd.cli.Client") as client:
+        client.return_value.files.tree.return_value = tree_result
+        client.return_value.files.grep.return_value = grep_result
+
+        assert main(["files", "tree", "local-files", "--depth", "1"]) == 0
+        assert (
+            main(
+                [
+                    "files",
+                    "grep",
+                    "needle",
+                    "--prefix",
+                    canonical_root,
+                ]
+            )
+            == 0
+        )
+
+    client.return_value.files.tree.assert_called_once_with(
+        "local-files", depth=1, limit=None
+    )
+    client.return_value.files.grep.assert_called_once_with(
+        "needle",
+        prefix=canonical_root,
+        limit=None,
+        timeout_seconds=None,
     )
 
 

@@ -139,6 +139,20 @@ ctxfs still verifies every candidate with the regular-expression matcher, so
 case sensitivity, matching lines, and offsets are unchanged. General regular
 expressions and shorter literals use the scan path.
 
+Agents should scope retrieval before searching broadly:
+
+1. Inspect only tracked roots. Use
+   `ctxd files tree local-files --depth 1` from the CLI, or call the MCP `tree`
+   tool with `prefix=local-files` and `depth=1`.
+2. Select the relevant canonical `local-files/<ROOT_ID>` path returned by that
+   tree operation.
+3. Reuse that exact path as the `grep` prefix (for example,
+   `prefix=local-files/ROOT_ID` after substituting the returned ID).
+4. Broaden the prefix only if the scoped search does not find enough context.
+
+This keeps retrieval focused and makes search cost easier to understand without
+changing grep semantics.
+
 Indexed literal results are authoritative over cataloged ctxfs entries. They do
 not inventory private tree storage for files added outside ctxfs. Regex searches
 retain the scan path and its `catalog_mismatch` diagnostics for that kind of

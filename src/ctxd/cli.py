@@ -194,10 +194,24 @@ def _build_parser() -> argparse.ArgumentParser:
     files_glob_parser.add_argument("--limit", type=int)
 
     files_grep_parser = files_subparsers.add_parser(
-        "grep", help="Search file contents."
+        "grep",
+        help="Search file contents.",
+        description=(
+            "Search file contents with ripgrep syntax. Retrieval method: "
+            "(1) inspect tracked roots with "
+            "ctxd files tree local-files --depth 1, "
+            "(2) select the relevant canonical local-files/<ROOT_ID> path "
+            "returned by that command, (3) reuse that exact path as --prefix, and "
+            "(4) broaden the prefix only when the scoped search does not find "
+            "enough context."
+        ),
     )
     files_grep_parser.add_argument("pattern")
-    files_grep_parser.add_argument("--prefix", default="")
+    files_grep_parser.add_argument(
+        "--prefix",
+        default="",
+        help="Limit search to the relevant folder or subtree (recommended).",
+    )
     files_grep_parser.add_argument("--limit", type=int)
     files_grep_parser.add_argument("--timeout-seconds", type=float)
 

@@ -59,9 +59,15 @@ TOOLS = [
         "grep",
         (
             "Search ctxfs file contents using ripgrep regular-expression syntax. "
-            "Results are ordered by path and line. Use tree or glob to identify a "
-            "narrow prefix before broad searches. Transport continuations are handled "
-            "automatically; a failure means the result was not exhaustive."
+            "Results are ordered by path and line. Retrieval method: (1) inspect "
+            "tracked roots with the tree tool using prefix=local-files and "
+            "depth=1, (2) select the relevant canonical local-files/<ROOT_ID> "
+            "path returned by the tree tool, (3) reuse that exact path as the "
+            "grep prefix, and "
+            "(4) broaden the prefix only when the scoped search does not find "
+            "enough context. "
+            "Transport continuations are handled automatically; a failure means "
+            "the result was not exhaustive."
         ),
         {
             "pattern": {"type": "string"},
