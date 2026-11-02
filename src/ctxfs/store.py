@@ -1322,7 +1322,10 @@ class CtxfsStore:
                     limit - len(matches),
                     skip_through=resume_anchor,
                 )
-                if not batch_result.anchor_found:
+                if (
+                    not batch_result.anchor_found
+                    and batch_result.stopped_by != "timeout"
+                ):
                     raise ValueError("ctxfs grep cursor is stale")
                 matches.extend(batch_result.matches)
                 resume_anchor = None
