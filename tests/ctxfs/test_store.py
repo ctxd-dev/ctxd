@@ -815,6 +815,41 @@ def test_literal_grep_scans_every_catalog_file_under_prefix(tmp_path, monkeypatc
     ]
 
 
+def test_grep_no_match_batches_multiple_files_with_ordinary_limit(
+    tmp_path, monkeypatch
+):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [
+            _put(f"local_files/root/{name}.md", name, "haystack\n")
+            for name in ("a", "b", "c")
+        ],
+    )
+    visited_batches: list[list[str]] = []
+    original = store._grep_tree_paths
+
+    def record_scan(pattern, targets, *args, **kwargs):
+        visited_batches.append([target.logical_path for target in targets])
+        return original(pattern, targets, *args, **kwargs)
+
+    monkeypatch.setattr(store, "_grep_tree_paths", record_scan)
+
+    page = store.grep("user-1", "needle", prefix="local_files/root", limit=10)
+
+    assert page.items == []
+    assert page.complete is True
+    assert visited_batches == [
+        [
+            "local_files/root/a.md",
+            "local_files/root/b.md",
+            "local_files/root/c.md",
+        ]
+    ]
+
+
 def test_grep_batches_respect_path_count_and_command_budget(tmp_path, monkeypatch):
     targets = [
         store_module._GrepTarget(
@@ -1376,21 +1411,29 @@ with open(marker, "w", encoding="utf-8") as handle:
     assert termination_marker.read_text(encoding="utf-8") == "terminated:3"
 
 
-def test_grep_limit_does_not_read_later_files(tmp_path, monkeypatch):
+@pytest.mark.parametrize("disk_only", [False, True])
+def test_grep_limit_does_not_read_later_files(tmp_path, monkeypatch, disk_only):
     store = CtxfsStore(tmp_path / "ctxfs")
-    store.register_prefix("user-1", "writer-1", "local_files/root")
-    store.submit(
-        "user-1",
-        "writer-1",
-        [
-            _put("local_files/root/a.md", "inode-a", "needle\n"),
-            _put("local_files/root/b.md", "inode-b", "needle\n"),
-        ],
-    )
+    logical_paths = [f"local_files/root/{name}.md" for name in ("a", "b")]
+    if disk_only:
+        for logical_path in logical_paths:
+            tree_path = store._tree_path("user-1", logical_path)
+            tree_path.parent.mkdir(parents=True, exist_ok=True)
+            tree_path.write_text("needle\n")
+    else:
+        store.register_prefix("user-1", "writer-1", "local_files/root")
+        store.submit(
+            "user-1",
+            "writer-1",
+            [
+                _put(logical_path, f"inode-{index}", "needle\n")
+                for index, logical_path in enumerate(logical_paths)
+            ],
+        )
     original_hash_path = store_module._hash_path
     hashed = []
-    first_path = store._tree_path("user-1", "local_files/root/a.md")
-    later_path = store._tree_path("user-1", "local_files/root/b.md")
+    first_path = store._tree_path("user-1", logical_paths[0])
+    later_path = store._tree_path("user-1", logical_paths[1])
 
     def record_hash(path, deadline):
         hashed.append(path)
@@ -1399,7 +1442,6 @@ def test_grep_limit_does_not_read_later_files(tmp_path, monkeypatch):
         return original_hash_path(path, deadline)
 
     monkeypatch.setattr(store_module, "_hash_path", record_hash)
-    monkeypatch.setattr(store_module, "GREP_MAX_BATCH_PATHS", 1)
 
     page = store.grep("user-1", "needle", prefix="local_files/root", limit=1)
 

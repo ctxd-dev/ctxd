@@ -1344,6 +1344,11 @@ class CtxfsStore:
             pending_targets = []
             return None
 
+        def pending_target_capacity_reached() -> bool:
+            return len(pending_targets) >= min(
+                GREP_MAX_BATCH_PATHS, limit - len(matches)
+            )
+
         for entry in self._iter_entries_under_prefix(user_id, normalized_prefix):
             if time.monotonic() >= deadline:
                 return timeout_page_before(entry.path, entry.content_hash)
@@ -1374,7 +1379,7 @@ class CtxfsStore:
                     content_hash=content_hash,
                 )
             )
-            if len(pending_targets) >= GREP_MAX_BATCH_PATHS:
+            if pending_target_capacity_reached():
                 page = search_pending_targets()
                 if page is not None:
                     return page
@@ -1425,7 +1430,7 @@ class CtxfsStore:
                     content_hash=content_hash,
                 )
             )
-            if len(pending_targets) >= GREP_MAX_BATCH_PATHS:
+            if pending_target_capacity_reached():
                 page = search_pending_targets()
                 if page is not None:
                     return page
