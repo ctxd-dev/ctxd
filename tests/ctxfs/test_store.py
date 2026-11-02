@@ -793,24 +793,82 @@ def test_literal_grep_scans_every_catalog_file_under_prefix(tmp_path, monkeypatc
             _put("local_files/root/c.md", "c", "unrelated"),
         ],
     )
-    visited: list[str] = []
-    original = store._grep_tree_path
+    visited_batches: list[list[str]] = []
+    original = store._grep_tree_paths
 
-    def record_scan(pattern, tree_path, logical_path, *args, **kwargs):
-        visited.append(logical_path)
-        return original(pattern, tree_path, logical_path, *args, **kwargs)
+    def record_scan(pattern, targets, *args, **kwargs):
+        visited_batches.append([target.logical_path for target in targets])
+        return original(pattern, targets, *args, **kwargs)
 
-    monkeypatch.setattr(store, "_grep_tree_path", record_scan)
+    monkeypatch.setattr(store, "_grep_tree_paths", record_scan)
 
     page = store.grep("user-1", "literal needle", prefix="local_files/root")
 
     assert [match.path for match in page.items] == ["local_files/root/b.md"]
     assert page.complete is True
-    assert visited == [
-        "local_files/root/a.md",
-        "local_files/root/b.md",
-        "local_files/root/c.md",
+    assert visited_batches == [
+        [
+            "local_files/root/a.md",
+            "local_files/root/b.md",
+            "local_files/root/c.md",
+        ]
     ]
+
+
+def test_grep_batches_respect_path_count_and_command_budget(tmp_path, monkeypatch):
+    targets = [
+        store_module._GrepTarget(
+            logical_path=f"local_files/root/{index}.md",
+            tree_path=tmp_path / f"{index}.md",
+            content_hash=f"sha256:{index:064x}",
+        )
+        for index in range(5)
+    ]
+    monkeypatch.setattr(store_module, "GREP_MAX_BATCH_PATHS", 2)
+
+    batches = list(store_module._grep_target_batches("needle", targets))
+
+    assert [[target.logical_path for target in batch] for batch in batches] == [
+        ["local_files/root/0.md", "local_files/root/1.md"],
+        ["local_files/root/2.md", "local_files/root/3.md"],
+        ["local_files/root/4.md"],
+    ]
+
+    monkeypatch.setattr(store_module, "GREP_MAX_BATCH_PATHS", 256)
+    base_chars = len(
+        subprocess.list2cmdline(store_module._rg_command("needle", []))
+    )
+    first_path_chars = len(
+        subprocess.list2cmdline([str(targets[0].tree_path)])
+    ) + 1
+    monkeypatch.setattr(
+        store_module,
+        "GREP_MAX_COMMAND_CHARS",
+        base_chars + first_path_chars,
+    )
+
+    budget_batches = list(store_module._grep_target_batches("needle", targets[:2]))
+
+    assert [len(batch) for batch in budget_batches] == [1, 1]
+
+
+def test_grep_starts_new_batch_when_physical_order_reverses(tmp_path):
+    targets = [
+        store_module._GrepTarget(
+            logical_path="local_files/root/a.md",
+            tree_path=tmp_path / "z.md",
+            content_hash=f"sha256:{1:064x}",
+        ),
+        store_module._GrepTarget(
+            logical_path="local_files/root/b.md",
+            tree_path=tmp_path / "a.md",
+            content_hash=f"sha256:{2:064x}",
+        ),
+    ]
+
+    batches = list(store_module._grep_target_batches("needle", targets))
+
+    assert [len(batch) for batch in batches] == [1, 1]
 
 
 def test_literal_grep_is_case_sensitive(tmp_path):
@@ -845,6 +903,32 @@ def test_all_patterns_report_matching_disk_only_paths(tmp_path):
     assert literal.stopped_by == "catalog_mismatch"
     assert [item.path for item in regex.items] == ["local_files/root/orphan.md"]
     assert regex.stopped_by == "catalog_mismatch"
+
+
+def test_grep_batches_disk_only_paths(tmp_path, monkeypatch):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    logical_paths = [
+        "local_files/root/a.md",
+        "local_files/root/b.md",
+    ]
+    for path in logical_paths:
+        disk_path = store._tree_path("user-1", path)
+        disk_path.parent.mkdir(parents=True, exist_ok=True)
+        disk_path.write_text("needle\n")
+    visited_batches: list[list[str]] = []
+    original = store._grep_tree_paths
+
+    def record_scan(pattern, targets, *args, **kwargs):
+        visited_batches.append([target.logical_path for target in targets])
+        return original(pattern, targets, *args, **kwargs)
+
+    monkeypatch.setattr(store, "_grep_tree_paths", record_scan)
+
+    page = store.grep("user-1", "needle", prefix="local_files/root")
+
+    assert [match.path for match in page.items] == logical_paths
+    assert page.stopped_by == "catalog_mismatch"
+    assert visited_batches == [logical_paths]
 
 
 def test_new_catalog_does_not_create_grep_index_tables(tmp_path):
@@ -1218,6 +1302,7 @@ with open(path, encoding="utf-8") as handle:
         payload = {
             "type": "match",
             "data": {
+                "path": {"text": path},
                 "line_number": line_number,
                 "lines": {"text": line},
                 "submatches": [{"start": 0, "end": 6}],
@@ -1284,6 +1369,7 @@ def test_grep_limit_does_not_read_later_files(tmp_path, monkeypatch):
         return original_hash_path(path, deadline)
 
     monkeypatch.setattr(store_module, "_hash_path", record_hash)
+    monkeypatch.setattr(store_module, "GREP_MAX_BATCH_PATHS", 1)
 
     page = store.grep("user-1", "needle", prefix="local_files/root", limit=1)
 
@@ -1694,17 +1780,35 @@ def test_grep_timeout_cursor_retries_interrupted_file(tmp_path, monkeypatch):
         "writer-1",
         [_put("local_files/root/a.md", "inode-a", "needle\n")],
     )
-    original = store._grep_tree_path
+    original = store._grep_tree_paths
     timed_out = True
 
-    def grep_once_then_succeed(*args, **kwargs):
+    def grep_once_then_succeed(
+        pattern,
+        targets,
+        prefix,
+        prefix_hash,
+        pattern_hash,
+        deadline,
+        match_limit,
+        **kwargs,
+    ):
         nonlocal timed_out
         if timed_out:
             timed_out = False
-            raise TimeoutError
-        return original(*args, **kwargs)
+            deadline = time.monotonic() - 1
+        return original(
+            pattern,
+            targets,
+            prefix,
+            prefix_hash,
+            pattern_hash,
+            deadline,
+            match_limit,
+            **kwargs,
+        )
 
-    monkeypatch.setattr(store, "_grep_tree_path", grep_once_then_succeed)
+    monkeypatch.setattr(store, "_grep_tree_paths", grep_once_then_succeed)
     first = store.grep("user-1", "needle", prefix="local_files/root")
     assert first.stopped_by == "timeout"
     assert first.next_cursor is not None
@@ -1718,6 +1822,90 @@ def test_grep_timeout_cursor_retries_interrupted_file(tmp_path, monkeypatch):
     assert [match.line for match in second.items] == ["needle"]
     assert second.complete is True
     assert second.next_cursor is None
+
+
+def test_grep_timeout_after_match_resumes_mid_batch_without_duplicates(
+    tmp_path, monkeypatch
+):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [
+            _put("local_files/root/a.md", "inode-a", "needle one\nneedle two\n"),
+            _put("local_files/root/b.md", "inode-b", "needle three\n"),
+        ],
+    )
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_rg = fake_bin / "rg"
+    fake_rg.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+import sys
+import time
+
+if "--version" in sys.argv:
+    print("ripgrep 13.0.0")
+    raise SystemExit(0)
+
+paths = sys.argv[sys.argv.index("--") + 1:]
+if len(paths) == 1 and os.path.basename(paths[0]) == "null":
+    raise SystemExit(1)
+
+path = paths[0]
+events = [
+    {"type": "begin", "data": {"path": {"text": path}}},
+    {
+        "type": "match",
+        "data": {
+            "path": {"text": path},
+            "line_number": 1,
+            "lines": {"text": "needle one\\n"},
+            "submatches": [{"start": 0, "end": 6}],
+        },
+    },
+]
+for event in events:
+    print(json.dumps(event), flush=True)
+time.sleep(5)
+""",
+        encoding="utf-8",
+    )
+    fake_rg.chmod(0o755)
+    original_path = os.environ.get("PATH", "")
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{original_path}")
+
+    first = store.grep(
+        "user-1",
+        "needle",
+        prefix="local_files/root",
+        timeout_seconds=0.5,
+    )
+
+    assert [(match.path, match.line_number) for match in first.items] == [
+        ("local_files/root/a.md", 1)
+    ]
+    assert first.stopped_by == "timeout"
+    assert first.next_cursor is not None
+
+    monkeypatch.setenv("PATH", original_path)
+    second = store.grep(
+        "user-1",
+        "needle",
+        prefix="local_files/root",
+        cursor=first.next_cursor,
+    )
+
+    found = [*first.items, *second.items]
+    assert [(match.path, match.line_number) for match in found] == [
+        ("local_files/root/a.md", 1),
+        ("local_files/root/a.md", 2),
+        ("local_files/root/b.md", 1),
+    ]
+    assert second.complete is True
 
 
 def test_grep_stops_on_oversized_rg_json_record(tmp_path, monkeypatch):
