@@ -813,6 +813,25 @@ def test_literal_grep_scans_every_catalog_file_under_prefix(tmp_path, monkeypatc
     ]
 
 
+def test_literal_grep_is_case_sensitive(tmp_path):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [
+            _put("local_files/root/lower.md", "lower", "literal needle\n"),
+            _put("local_files/root/upper.md", "upper", "LITERAL NEEDLE\n"),
+        ],
+    )
+
+    lowercase = store.grep("user-1", "literal needle", prefix="local_files/root")
+    uppercase = store.grep("user-1", "LITERAL NEEDLE", prefix="local_files/root")
+
+    assert [match.path for match in lowercase.items] == ["local_files/root/lower.md"]
+    assert [match.path for match in uppercase.items] == ["local_files/root/upper.md"]
+
+
 def test_all_patterns_report_matching_disk_only_paths(tmp_path):
     store = CtxfsStore(tmp_path / "ctxfs")
     disk_path = store._tree_path("user-1", "local_files/root/orphan.md")
