@@ -1,0 +1,85 @@
+{
+  "tested_at": "2026-11-03T04:37:38.069063+00:00",
+  "passed": true,
+  "result": {
+    "versions": {
+      "dlt": "1.32.0",
+      "duckdb": "1.5.6",
+      "ctxd": "0.1.16"
+    },
+    "checkpoints": [
+      {
+        "stage": "initial",
+        "dlt_load_count": 1,
+        "dlt_failed_jobs": false,
+        "loaded_rows": [
+          {
+            "id": 1,
+            "name": "scheduler",
+            "status": "ready"
+          },
+          {
+            "id": 2,
+            "name": "worker",
+            "status": "ready"
+          }
+        ],
+        "snapshot_sha256": "bfa9907218e2da8015c44ca183e6071ce2f6c7148271587078114829a8cf7a0e",
+        "ctxd_read": "# Service status\n\n- 1: scheduler = ready\n- 2: worker = ready\n",
+        "passed": true
+      },
+      {
+        "stage": "changed",
+        "dlt_load_count": 1,
+        "dlt_failed_jobs": false,
+        "loaded_rows": [
+          {
+            "id": 1,
+            "name": "scheduler",
+            "status": "ready"
+          },
+          {
+            "id": 2,
+            "name": "worker",
+            "status": "maintenance"
+          }
+        ],
+        "snapshot_sha256": "302b1a558e86b5cbbc6b5c76154f8302cc390be31aaed51e5df79ca9c9e958ed",
+        "ctxd_read": "# Service status\n\n- 1: scheduler = ready\n- 2: worker = maintenance\n",
+        "passed": true
+      },
+      {
+        "stage": "retired_snapshot",
+        "ctxd_exit_code": 1,
+        "ctxd_error": "ctxfs path was not found",
+        "duckdb_rows_retained": 2,
+        "passed": true
+      }
+    ],
+    "source_format": "UTF-8 Markdown exported from loaded DuckDB rows",
+    "model_calls": 0,
+    "passed": true
+  },
+  "runtime": {
+    "network_mode": "none",
+    "host_mounts": [],
+    "exit_code": 0
+  },
+  "limits": [
+    "Two synthetic rows, local DuckDB destination and explicit Markdown export only.",
+    "Snapshot retirement removes the exported source, not the DuckDB rows; both loaded rows remain.",
+    "No cloud connector, direct ctxd DuckDB reader, maintained integration, model turn, latency target or scale result is claimed."
+  ],
+  "source_files": [
+    {
+      "name": "source_snapshot.py",
+      "sha256": "fea48ab4cd40c1e42733432ed365b527f656d1b72f460e7f8fc7a12dccda395c",
+      "bytes": 4242
+    },
+    {
+      "name": "Dockerfile",
+      "sha256": "39f5de6fb704d8b04788f72fce737dc7d5176898930bf9ef1935295ac77e9c46",
+      "bytes": 351
+    }
+  ]
+}

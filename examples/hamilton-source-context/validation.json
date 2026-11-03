@@ -1,0 +1,81 @@
+{
+  "passed": true,
+  "completed_at": "2026-11-03T04:38:18.755079964Z",
+  "image_id": "sha256:ca299a6f7d89e5f92e87a70527dc1e679c45a3c9ba816f74502403114f0d0231",
+  "base_image": "ghcr.io/ctxddev/ctxd-mcp@sha256:44323c50f410893e4d2e7f778e9d1a4da36e4a44a46abeaed25de5c91ff0eb11",
+  "network_mode": "none",
+  "host_mounts": [],
+  "run_count": 6,
+  "graph_dependencies": {
+    "source_artifact": [
+      "source_dir",
+      "desired_text",
+      "should_exist"
+    ],
+    "synchronized_artifact": [
+      "source_artifact"
+    ],
+    "context_read": [
+      "synchronized_artifact",
+      "known_path"
+    ]
+  },
+  "versions": {
+    "apache-hamilton": "1.90.0",
+    "ctxd": "0.1.16",
+    "python": "3.12.16"
+  },
+  "cache_adapter": false,
+  "background_tracker": false,
+  "files": {
+    "run.py": "428e5d3a07c7c65b1b621b946534b15133388fdfca9cf4a14a6b2201afdc1b7b",
+    "Dockerfile": "5a97f66ee4aa5c888ded332e50f40f5091d213636a5ae50e86dc4377e1b9dd16",
+    ".dockerignore": "30c2f47af61046daa8579918b80fecd8683777650b62c0a992c63ac2ec6078e6",
+    "README.md": "5a911b4d78304b73ed84988a18999f84dd0a28a36403652ab80936c5348a87d4"
+  },
+  "cases": [
+    {
+      "case": "initial",
+      "exists": true,
+      "content_hash": "sha256:514f05f415ed83c531c01d77f8da9a5fef81410c72ed02882e446867de6a0911",
+      "source_changed": true,
+      "read_attempts": 1
+    },
+    {
+      "case": "repeat_initial",
+      "exists": true,
+      "content_hash": "sha256:514f05f415ed83c531c01d77f8da9a5fef81410c72ed02882e446867de6a0911",
+      "source_changed": false,
+      "read_attempts": 1
+    },
+    {
+      "case": "edit",
+      "exists": true,
+      "content_hash": "sha256:6ec160f912397db99da4a8e175ba4998492793828d75e9d31ce77ba679ec8c5b",
+      "source_changed": true,
+      "read_attempts": 1
+    },
+    {
+      "case": "repeat_edit",
+      "exists": true,
+      "content_hash": "sha256:6ec160f912397db99da4a8e175ba4998492793828d75e9d31ce77ba679ec8c5b",
+      "source_changed": false,
+      "read_attempts": 1
+    },
+    {
+      "case": "remove",
+      "exists": false,
+      "status_code": 404,
+      "source_changed": true,
+      "read_attempts": 1
+    },
+    {
+      "case": "repeat_remove",
+      "exists": false,
+      "status_code": 404,
+      "source_changed": false,
+      "read_attempts": 1
+    }
+  ],
+  "scope": "Real local Hamilton DAG with synthetic artifact creation, initial and edited content/hash reads, deletion to HTTP 404, and repeated desired states. No distributed execution or maintained integration claim."
+}
