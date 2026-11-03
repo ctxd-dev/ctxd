@@ -1,0 +1,71 @@
+{
+  "dagster": "1.13.28",
+  "ctxd": "0.1.16",
+  "runs": [
+    {
+      "operation": "upsert",
+      "materialized": [
+        "source_snapshot",
+        "source_context"
+      ],
+      "check": {
+        "name": "matches_snapshot",
+        "passed": true
+      }
+    },
+    {
+      "operation": "upsert",
+      "materialized": [
+        "source_snapshot",
+        "source_context"
+      ],
+      "check": {
+        "name": "matches_snapshot",
+        "passed": true
+      }
+    },
+    {
+      "operation": "upsert",
+      "materialized": [
+        "source_snapshot",
+        "source_context"
+      ],
+      "check": {
+        "name": "matches_snapshot",
+        "passed": true
+      }
+    },
+    {
+      "operation": "remove",
+      "materialized": [
+        "source_snapshot",
+        "source_context"
+      ],
+      "check": {
+        "name": "matches_snapshot",
+        "passed": true
+      }
+    },
+    {
+      "operation": "remove",
+      "materialized": [
+        "source_snapshot",
+        "source_context"
+      ],
+      "check": {
+        "name": "matches_snapshot",
+        "passed": true
+      }
+    }
+  ],
+  "passed": true,
+  "model_calls": 0,
+  "seconds": 9.32,
+  "base_image": "python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159",
+  "checked_at": "2026-11-03T04:34:33+00:00",
+  "runtime_network": "none",
+  "runtime_host_mounts": [],
+  "execution": "Real Dagster materialize_to_memory runs with two native assets and one native asset check per run",
+  "retry_recovery_tested": false,
+  "scheduler_tested": false
+}

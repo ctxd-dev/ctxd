@@ -1,0 +1,73 @@
+{
+  "zenml": "0.98.0",
+  "ctxd": "0.1.16",
+  "runs": [
+    {
+      "operation": "upsert",
+      "steps": {
+        "source_snapshot": "completed",
+        "synchronize_and_read": "completed"
+      },
+      "output": {
+        "state": "readable",
+        "sha256": "abd9c3d3fc40c967a80d6c960a160be300901827472049ec05c13df4f9f6fbb9"
+      }
+    },
+    {
+      "operation": "upsert",
+      "steps": {
+        "source_snapshot": "cached",
+        "synchronize_and_read": "completed"
+      },
+      "output": {
+        "state": "readable",
+        "sha256": "abd9c3d3fc40c967a80d6c960a160be300901827472049ec05c13df4f9f6fbb9"
+      }
+    },
+    {
+      "operation": "upsert",
+      "steps": {
+        "source_snapshot": "completed",
+        "synchronize_and_read": "completed"
+      },
+      "output": {
+        "state": "readable",
+        "sha256": "13604adb7fe7b382c832d28c36666de3d8a6f7679fc1af563e9d6e449a266ba5"
+      }
+    },
+    {
+      "operation": "remove",
+      "steps": {
+        "source_snapshot": "completed",
+        "synchronize_and_read": "completed"
+      },
+      "output": {
+        "state": "removed"
+      }
+    },
+    {
+      "operation": "remove",
+      "steps": {
+        "source_snapshot": "cached",
+        "synchronize_and_read": "completed"
+      },
+      "output": {
+        "state": "removed"
+      }
+    }
+  ],
+  "passed": true,
+  "model_calls": 0,
+  "seconds": 18.22,
+  "base_image": "python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159",
+  "checked_at": "2026-11-03T04:40:11+00:00",
+  "runtime_network": "none",
+  "runtime_host_mounts": [],
+  "execution": "Five real ZenML local pipeline runs with persisted artifacts and recorded step states",
+  "executed_steps": 8,
+  "cached_steps": 2,
+  "synchronization_executions": 5,
+  "result_artifacts_loaded": 5,
+  "failure_recovery_tested": false,
+  "scheduler_tested": false
+}

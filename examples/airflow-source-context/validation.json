@@ -1,0 +1,52 @@
+{
+  "airflow": "3.3.2",
+  "ctxd": "0.1.16",
+  "runs": [
+    {
+      "operation": "upsert",
+      "tasks": {
+        "source_snapshot": "success",
+        "synchronize_and_read": "success"
+      }
+    },
+    {
+      "operation": "upsert",
+      "tasks": {
+        "source_snapshot": "success",
+        "synchronize_and_read": "success"
+      }
+    },
+    {
+      "operation": "upsert",
+      "tasks": {
+        "source_snapshot": "success",
+        "synchronize_and_read": "success"
+      }
+    },
+    {
+      "operation": "remove",
+      "tasks": {
+        "source_snapshot": "success",
+        "synchronize_and_read": "success"
+      }
+    },
+    {
+      "operation": "remove",
+      "tasks": {
+        "source_snapshot": "success",
+        "synchronize_and_read": "success"
+      }
+    }
+  ],
+  "passed": true,
+  "model_calls": 0,
+  "seconds": 25.55,
+  "base_image": "apache/airflow:3.3.2-python3.12@sha256:9df9c8be4096b9cc626bd7cb1f2b8c712eef66c59c615f8c7e6200871ca10bd1",
+  "checked_at": "2026-11-03T04:36:46.239565+00:00",
+  "runtime_network": "none",
+  "runtime_host_mounts": [],
+  "execution": "Real Airflow dag.test runs, initialized SQLite metadata database, native TaskFlow tasks",
+  "automatic_failure_retry_tested": false,
+  "removal_error": "ctxfs path was not found",
+  "removal_error_match": "exact stripped stderr"
+}
