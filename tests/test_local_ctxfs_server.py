@@ -11,6 +11,7 @@ from ctxfs import (
     MachineCredentialCoordinator,
     MachineCredentialNotCurrentError,
 )
+from ctxfs import store as store_module
 from ctxfs.credentials import CredentialStore
 
 
@@ -95,6 +96,69 @@ def test_local_ctxfs_server_accepts_submission_and_reads_content(tmp_path) -> No
 
     assert read_response.status_code == 200
     assert read_response.json()["text"] == "hello ctxfs\n"
+
+
+def test_local_ctxfs_http_grep_limit_returns_earlier_match_before_later_hash_timeout(
+    tmp_path, monkeypatch
+) -> None:
+    root = tmp_path / "ctxfs"
+    client = TestClient(create_ctxfs_app(root, auth_mode=CtxfsAuthMode.TRUSTED_LOCAL))
+    response = client.post(
+        "/api/ctxfs/submissions",
+        json={
+            "writer_id": "writer-1",
+            "writer_prefix": "local-files/root",
+            "submission": {
+                "run_id": "run-1",
+                "sequence": 1,
+                "is_full_scan": True,
+                "operations": [
+                    {
+                        "kind": "put",
+                        "path": f"local-files/root/{name}.md",
+                        "source_key": f"file-{name}",
+                        "source_version": "v1",
+                        "doc_class": "editable",
+                        "file_format": "text/markdown",
+                        "text": text,
+                        "provenance": {
+                            "producer": "test",
+                            "producer_version": "1",
+                        },
+                    }
+                    for name, text in (("a", "needle\n"), ("b", "haystack\n"))
+                ],
+            },
+        },
+    )
+    assert response.status_code == 200
+    store = CtxfsStore(root)
+    later_path = store._tree_path("local", "local-files/root/b.md")
+    store.close()
+    original_hash_path = store_module._hash_path
+
+    def timeout_on_later_path(path, deadline):
+        if path == later_path:
+            raise TimeoutError
+        return original_hash_path(path, deadline)
+
+    monkeypatch.setattr(store_module, "_hash_path", timeout_on_later_path)
+
+    response = client.get(
+        "/api/ctxfs/grep",
+        params={"pattern": "needle", "prefix": "local-files/root", "limit": 1},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    [item] = payload["items"]
+    assert item["path"] == "local-files/root/a.md"
+    assert item["line_number"] == 1
+    assert item["line"] == "needle"
+    assert item["match_start"] == 0
+    assert item["match_end"] == 6
+    assert item["content_hash"].startswith("sha256:")
+    assert payload["stopped_by"] == "limit"
 
 
 def test_local_ctxfs_server_rejects_user_id_query(tmp_path) -> None:
