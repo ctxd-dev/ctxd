@@ -1,0 +1,706 @@
+{
+  "image": "ghcr.io/ctxddev/ctxd-mcp@sha256:44323c50f410893e4d2e7f778e9d1a4da36e4a44a46abeaed25de5c91ff0eb11",
+  "project": "ctxd-source-lifecycle",
+  "trace_id": "6a7db43a3b135880945000dbd0b5f328",
+  "checkpoints": [
+    {
+      "span_id": "f6ae10886964666e",
+      "stage": "initial_read",
+      "observation": {
+        "path": "local-files/source/guide.md",
+        "text": "Read the deployment guide before changing configuration.\n",
+        "content_hash": "sha256:1a52cbb4f8bba0c261e8eed7b3a98e3d9b5d3e04f733884ba3f152a3b59299b9",
+        "complete": true,
+        "stopped_by": null
+      }
+    },
+    {
+      "span_id": "7d627e770a740686",
+      "stage": "after_edit_sync",
+      "observation": {
+        "path": "local-files/source/guide.md",
+        "text": "Read the deployment guide and check readiness before changing configuration.\n",
+        "content_hash": "sha256:a040c4a238e115b7ab0b8bdb1f35286065b039277ffe7b74807d77c0997b4f85",
+        "complete": true,
+        "stopped_by": null
+      }
+    },
+    {
+      "span_id": "ba439a2bfa9b1cb5",
+      "stage": "after_removal_sync",
+      "observation": {
+        "items": [],
+        "complete": true,
+        "stopped_by": null
+      }
+    }
+  ],
+  "spans": [
+    {
+      "id": "U3Bhbjo4Mg==",
+      "name": "source.lifecycle",
+      "context": {
+        "trace_id": "6a7db43a3b135880945000dbd0b5f328",
+        "span_id": "99b358f2b1c19ffc"
+      },
+      "span_kind": "CHAIN",
+      "parent_id": null,
+      "start_time": "2026-11-03T04:22:12.990088+00:00",
+      "end_time": "2026-11-03T04:22:33.644644+00:00",
+      "status_code": "UNSET",
+      "status_message": "",
+      "attributes": {
+        "input.mime_type": "application/json",
+        "input.value": "{\"fixture\": \"synthetic deployment guide\"}",
+        "output.mime_type": "application/json",
+        "output.value": "{\"checkpoints_passed\": 3}"
+      },
+      "events": []
+    },
+    {
+      "id": "U3Bhbjo4MQ==",
+      "name": "after_removal_sync",
+      "context": {
+        "trace_id": "6a7db43a3b135880945000dbd0b5f328",
+        "span_id": "ba439a2bfa9b1cb5"
+      },
+      "span_kind": "CHAIN",
+      "parent_id": "99b358f2b1c19ffc",
+      "start_time": "2026-11-03T04:22:23.345365+00:00",
+      "end_time": "2026-11-03T04:22:33.640299+00:00",
+      "status_code": "UNSET",
+      "status_message": "",
+      "attributes": {
+        "input.mime_type": "application/json",
+        "input.value": "{\"expected_matching_paths\": []}",
+        "output.mime_type": "application/json",
+        "output.value": "{\"items\": [], \"complete\": true, \"stopped_by\": null}"
+      },
+      "events": []
+    },
+    {
+      "id": "U3Bhbjo4MA==",
+      "name": "ctxd.glob",
+      "context": {
+        "trace_id": "6a7db43a3b135880945000dbd0b5f328",
+        "span_id": "d81e1fcd75916998"
+      },
+      "span_kind": "TOOL",
+      "parent_id": "ba439a2bfa9b1cb5",
+      "start_time": "2026-11-03T04:22:33.618008+00:00",
+      "end_time": "2026-11-03T04:22:33.634877+00:00",
+      "status_code": "UNSET",
+      "status_message": "",
+      "attributes": {
+        "tool.name": "glob",
+        "input.mime_type": "application/json",
+        "input.value": "{\"pattern\": \"**/guide.md\", \"limit\": 10}",
+        "output.mime_type": "application/json",
+        "output.value": "{\"items\": [], \"complete\": true, \"stopped_by\": null}"
+      },
+      "events": []
+    },
+    {
+      "id": "U3Bhbjo3OQ==",
+      "name": "ctxd.glob",
+      "context": {
+        "trace_id": "6a7db43a3b135880945000dbd0b5f328",
+        "span_id": "de36759af6093487"
+      },
+      "span_kind": "TOOL",
+      "parent_id": "ba439a2bfa9b1cb5",
+      "start_time": "2026-11-03T04:22:32.591930+00:00",
+      "end_time": "2026-11-03T04:22:32.610489+00:00",
+      "status_code": "UNSET",
+      "status_message": "",
+      "attributes": {
+        "tool.name": "glob",
+        "input.mime_type": "application/json",
+        "input.value": "{\"pattern\": \"**/guide.md\", \"limit\": 10}",
+        "output.mime_type": "application/json",
+        "output.value": "{\"items\": [{\"path\": \"local-files/source/guide.md\", \"kind\": \"file\", \"size_bytes\": 77, \"line_count\": 1, \"content_hash\": \"sha256:a040c4a238e115b7ab0b8bdb1f35286065b039277ffe7b74807d77c0997b4f85\"}], \"complete\": true, \"stopped_by\": null}"
+      },
+      "events": []
+    },
+    {
+      "id": "U3Bhbjo3OA==",
+      "name": "ctxd.glob",
+      "context": {
+        "trace_id": "6a7db43a3b135880945000dbd0b5f328",
+        "span_id": "b44c40ff10241853"
+      },
+      "span_kind": "TOOL",
+      "parent_id": "ba439a2bfa9b1cb5",
+      "start_time": "2026-11-03T04:22:31.561830+00:00",
+      "end_time": "2026-11-03T04:22:31.584165+00:00",
+      "status_code": "UNSET",
+      "status_message": "",
+      "attributes": {
+        "tool.name": "glob",
+        "input.mime_type": "application/json",
+        "input.value": "{\"pattern\": \"**/guide.md\", \"limit\": 10}",
+        "output.mime_type": "application/json",
+        "output.value": "{\"items\": [{\"path\": \"local-files/source/guide.md\", \"kind\": \"file\", \"size_bytes\": 77, \"line_count\": 1, \"content_hash\": \"sha256:a040c4a238e115b7ab0b8bdb1f35286065b039277ffe7b74807d77c0997b4f85\"}], \"complete\": true, \"stopped_by\": null}"
+      },
+      "events": []
+    },
+    {
+      "id": "U3Bhbjo3Nw==",
+      "name": "ctxd.glob",
+      "context": {
+        "trace_id": "6a7db43a3b135880945000dbd0b5f328",
+        "span_id": "8f9b3796aefbb895"
+      },
+      "span_kind": "TOOL",
+      "parent_id": "ba439a2bfa9b1cb5",
+      "start_time": "2026-11-03T04:22:30.534207+00:00",
+      "end_time": "2026-11-03T04:22:30.554449+00:00",
+      "status_code": "UNSET",
+      "status_message": "",
+      "attributes": {
+        "tool.name": "glob",
+        "input.mime_type": "application/json",
+        "input.value": "{\"pattern\": \"**/guide.md\", \"limit\": 10}",
+        "output.mime_type": "application/json",
+        "output.value": "{\"items\": [{\"path\": \"local-files/source/guide.md\", \"kind\": \"file\", \"size_bytes\": 77, \"line_count\": 1, \"content_hash\": \"sha256:a040c4a238e115b7ab0b8bdb1f35286065b039277ffe7b74807d77c0997b4f85\"}], \"complete\": true, \"stopped_by\": null}"
+      },
+      "events": []
+    },
+    {
+      "id": "U3Bhbjo3Ng==",
+      "name": "ctxd.glob",
+      "context": {
+        "trace_id": "6a7db43a3b135880945000dbd0b5f328",
+        "span_id": "67de9f8ad37a4594"
+      },
+      "span_kind": "TOOL",
+      "parent_id": "ba439a2bfa9b1cb5",
+      "start_time": "2026-11-03T04:22:29.496517+00:00",
+      "end_time": "2026-11-03T04:22:29.526808+00:00",
+      "status_code": "UNSET",
+      "status_message": "",
+      "attributes": {
+        "tool.name": "glob",
+        "input.mime_type": "application/json",
+        "input.value": "{\"pattern\": \"**/guide.md\", \"limit\": 10}",
+        "output.mime_type": "application/json",
+        "output.value": "{\"items\": [{\"path\": \"local-files/source/guide.md\", \"kind\": \"file\", \"size_bytes\": 77, \"line_count\": 1, \"content_hash\": \"sha256:a040c4a238e115b7ab0b8bdb1f35286065b039277ffe7b74807d77c0997b4f85\"}], \"complete\": true, \"stopped_by\": null}"
+      },
+      "events": []
+    },
+    {
+      "id": "U3Bhbjo3NQ==",
+      "name": "ctxd.glob",
+      "context": {
+        "trace_id": "6a7db43a3b135880945000dbd0b5f328",
+        "span_id": "69bf7885aa9527b8"
+      },
+      "span_kind": "TOOL",
+      "parent_id": "ba439a2bfa9b1cb5",
+      "start_time": "2026-11-03T04:22:28.468697+00:00",
+      "end_time": "2026-11-03T04:22:28.488728+00:00",
+      "status_code": "UNSET",
+      "status_message": "",
+      "attributes": {
+        "tool.name": "glob",
+        "input.mime_type": "application/json",
+        "input.value": "{\"pattern\": \"**/guide.md\", \"limit\": 10}",
+        "output.mime_type": "application/json",
+        "output.value": "{\"items\": [{\"path\": \"local-files/source/guide.md\", \"kind\": \"file\", \"size_bytes\": 77, \"line_count\": 1, \"content_hash\": \"sha256:a040c4a238e115b7ab0b8bdb1f35286065b039277ffe7b74807d77c0997b4f85\"}], \"complete\": true, \"stopped_by\": null}"
+      },
+      "events": []
+    },
+    {
+      "id": "U3Bhbjo3NA==",
+      "name": "ctxd.glob",
+      "context": {
+        "trace_id": "6a7db43a3b135880945000dbd0b5f328",
+        "span_id": "3506540efe90b4ab"
+      },
+      "span_kind": "TOOL",
+      "parent_id": "ba439a2bfa9b1cb5",
+      "start_time": "2026-11-03T04:22:27.442823+00:00",
+      "end_time": "2026-11-03T04:22:27.461596+00:00",
+      "status_code": "UNSET",
+      "status_message": "",
+      "attributes": {
+        "tool.name": "glob",
+        "input.mime_type": "application/json",
+        "input.value": "{\"pattern\": \"**/guide.md\", \"limit\": 10}",
+        "output.mime_type": "application/json",
+        "output.value": "{\"items\": [{\"path\": \"local-files/source/guide.md\", \"kind\": \"file\", \"size_bytes\": 77, \"line_count\": 1, \"content_hash\": \"sha256:a040c4a238e115b7ab0b8bdb1f35286065b039277ffe7b74807d77c0997b4f85\"}], \"complete\": true, \"stopped_by\": null}"
+      },
+      "events": []
+    },
+    {
+      "id": "U3Bhbjo3Mw==",
+      "name": "ctxd.glob",
+      "context": {
+        "trace_id": "6a7db43a3b135880945000dbd0b5f328",
+        "span_id": "78e42664c71d59de"
+      },
+      "span_kind": "TOOL",
+      "parent_id": "ba439a2bfa9b1cb5",
+      "start_time": "2026-11-03T04:22:26.417622+00:00",
+      "end_time": "2026-11-03T04:22:26.435392+00:00",
+      "status_code": "UNSET",
+      "status_message": "",
+      "attributes": {
+        "tool.name": "glob",
+        "input.mime_type": "application/json",
+        "input.value": "{\"pattern\": \"**/guide.md\", \"limit\": 10}",
+        "output.mime_type": "application/json",
+        "output.value": "{\"items\": [{\"path\": \"local-files/source/guide.md\", \"kind\": \"file\", \"size_bytes\": 77, \"line_count\": 1, \"content_hash\": \"sha256:a040c4a238e115b7ab0b8bdb1f35286065b039277ffe7b74807d77c0997b4f85\"}], \"complete\": true, \"stopped_by\": null}"
+      },
+      "events": []
+    },
+    {
+      "id": "U3Bhbjo3Mg==",
+      "name": "ctxd.glob",
+      "context": {
+        "trace_id": "6a7db43a3b135880945000dbd0b5f328",
+        "span_id": "994959e51538ed20"
+      },
+      "span_kind": "TOOL",
+      "parent_id": "ba439a2bfa9b1cb5",
+      "start_time": "2026-11-03T04:22:25.393290+00:00",
+      "end_time": "2026-11-03T04:22:25.410822+00:00",
+      "status_code": "UNSET",
+      "status_message": "",
+      "attributes": {
+        "tool.name": "glob",
+        "input.mime_type": "application/json",
+        "input.value": "{\"pattern\": \"**/guide.md\", \"limit\": 10}",
+        "output.mime_type": "application/json",
+        "output.value": "{\"items\": [{\"path\": \"local-files/source/guide.md\", \"kind\": \"file\", \"size_bytes\": 77, \"line_count\": 1, \"content_hash\": \"sha256:a040c4a238e115b7ab0b8bdb1f35286065b039277ffe7b74807d77c0997b4f85\"}], \"complete\": true, \"stopped_by\": null}"
+      },
+      "events": []
+    },
+    {
+      "id": "U3Bhbjo3MQ==",
+      "name": "ctxd.glob",
+      "context": {
+        "trace_id": "6a7db43a3b135880945000dbd0b5f328",
+        "span_id": "e6655d8fcb3b4593"
+      },
+      "span_kind": "TOOL",
+      "parent_id": "ba439a2bfa9b1cb5",
+      "start_time": "2026-11-03T04:22:24.369254+00:00",
+      "end_time": "2026-11-03T04:22:24.387000+00:00",
+      "status_code": "UNSET",
+      "status_message": "",
+      "attributes": {
+        "tool.name": "glob",
+        "input.mime_type": "application/json",
+        "input.value": "{\"pattern\": \"**/guide.md\", \"limit\": 10}",
+        "output.mime_type": "application/json",
+        "output.value": "{\"items\": [{\"path\": \"local-files/source/guide.md\", \"kind\": \"file\", \"size_bytes\": 77, \"line_count\": 1, \"content_hash\": \"sha256:a040c4a238e115b7ab0b8bdb1f35286065b039277ffe7b74807d77c0997b4f85\"}], \"complete\": true, \"stopped_by\": null}"
+      },
+      "events": []
+    },
+    {
+      "id": "U3Bhbjo3MA==",
+      "name": "ctxd.glob",
+      "context": {
+        "trace_id": "6a7db43a3b135880945000dbd0b5f328",
+        "span_id": "85335a944f003aeb"
+      },
+      "span_kind": "TOOL",
+      "parent_id": "ba439a2bfa9b1cb5",
+      "start_time": "2026-11-03T04:22:23.345531+00:00",
+      "end_time": "2026-11-03T04:22:23.363359+00:00",
+      "status_code": "UNSET",
+      "status_message": "",
+      "attributes": {
+        "tool.name": "glob",
+        "input.mime_type": "application/json",
+        "input.value": "{\"pattern\": \"**/guide.md\", \"limit\": 10}",
+        "output.mime_type": "application/json",
+        "output.value": "{\"items\": [{\"path\": \"local-files/source/guide.md\", \"kind\": \"file\", \"size_bytes\": 77, \"line_count\": 1, \"content_hash\": \"sha256:a040c4a238e115b7ab0b8bdb1f35286065b039277ffe7b74807d77c0997b4f85\"}], \"complete\": true, \"stopped_by\": null}"
+      },
+      "events": []
+    },
+    {
+      "id": "U3Bhbjo2OQ==",
+      "name": "after_edit_sync",
+      "context": {
+        "trace_id": "6a7db43a3b135880945000dbd0b5f328",
+        "span_id": "7d627e770a740686"
+      },
+      "span_kind": "CHAIN",
+      "parent_id": "99b358f2b1c19ffc",
+      "start_time": "2026-11-03T04:22:13.061258+00:00",
+      "end_time": "2026-11-03T04:22:23.340530+00:00",
+      "status_code": "UNSET",
+      "status_message": "",
+      "attributes": {
+        "input.mime_type": "application/json",
+        "input.value": "{\"expected_text\": \"Read the deployment guide and check readiness before changing configuration.\\n\"}",
+        "output.mime_type": "application/json",
+        "output.value": "{\"path\": \"local-files/source/guide.md\", \"text\": \"Read the deployment guide and check readiness before changing configuration.\\n\", \"content_hash\": \"sha256:a040c4a238e115b7ab0b8bdb1f35286065b039277ffe7b74807d77c0997b4f85\", \"complete\": true, \"stopped_by\": null}"
+      },
+      "events": []
+    },
+    {
+      "id": "U3Bhbjo2OA==",
+      "name": "ctxd.read",
+      "context": {
+        "trace_id": "6a7db43a3b135880945000dbd0b5f328",
+        "span_id": "7a2ffedb1c1247a3"
+      },
+      "span_kind": "TOOL",
+      "parent_id": "7d627e770a740686",
+      "start_time": "2026-11-03T04:22:23.317447+00:00",
+      "end_time": "2026-11-03T04:22:23.334516+00:00",
+      "status_code": "UNSET",
+      "status_message": "",
+      "attributes": {
+        "tool.name": "read",
+        "input.mime_type": "application/json",
+        "input.value": "{\"path\": \"local-files/source/guide.md\", \"max_bytes\": 1000}",
+        "output.mime_type": "application/json",
+        "output.value": "{\"path\": \"local-files/source/guide.md\", \"text\": \"Read the deployment guide and check readiness before changing configuration.\\n\", \"content_hash\": \"sha256:a040c4a238e115b7ab0b8bdb1f35286065b039277ffe7b74807d77c0997b4f85\", \"complete\": true, \"stopped_by\": null}"
+      },
+      "events": []
+    },
+    {
+      "id": "U3Bhbjo2Nw==",
+      "name": "ctxd.read",
+      "context": {
+        "trace_id": "6a7db43a3b135880945000dbd0b5f328",
+        "span_id": "72a583c0cb3cbbde"
+      },
+      "span_kind": "TOOL",
+      "parent_id": "7d627e770a740686",
+      "start_time": "2026-11-03T04:22:22.291499+00:00",
+      "end_time": "2026-11-03T04:22:22.308666+00:00",
+      "status_code": "UNSET",
+      "status_message": "",
+      "attributes": {
+        "tool.name": "read",
+        "input.mime_type": "application/json",
+        "input.value": "{\"path\": \"local-files/source/guide.md\", \"max_bytes\": 1000}",
+        "output.mime_type": "application/json",
+        "output.value": "{\"path\": \"local-files/source/guide.md\", \"text\": \"Read the deployment guide before changing configuration.\\n\", \"content_hash\": \"sha256:1a52cbb4f8bba0c261e8eed7b3a98e3d9b5d3e04f733884ba3f152a3b59299b9\", \"complete\": true, \"stopped_by\": null}"
+      },
+      "events": []
+    },
+    {
+      "id": "U3Bhbjo2Ng==",
+      "name": "ctxd.read",
+      "context": {
+        "trace_id": "6a7db43a3b135880945000dbd0b5f328",
+        "span_id": "fc41f6894d8dbdac"
+      },
+      "span_kind": "TOOL",
+      "parent_id": "7d627e770a740686",
+      "start_time": "2026-11-03T04:22:21.266764+00:00",
+      "end_time": "2026-11-03T04:22:21.284180+00:00",
+      "status_code": "UNSET",
+      "status_message": "",
+      "attributes": {
+        "tool.name": "read",
+        "input.mime_type": "application/json",
+        "input.value": "{\"path\": \"local-files/source/guide.md\", \"max_bytes\": 1000}",
+        "output.mime_type": "application/json",
+        "output.value": "{\"path\": \"local-files/source/guide.md\", \"text\": \"Read the deployment guide before changing configuration.\\n\", \"content_hash\": \"sha256:1a52cbb4f8bba0c261e8eed7b3a98e3d9b5d3e04f733884ba3f152a3b59299b9\", \"complete\": true, \"stopped_by\": null}"
+      },
+      "events": []
+    },
+    {
+      "id": "U3Bhbjo2NQ==",
+      "name": "ctxd.read",
+      "context": {
+        "trace_id": "6a7db43a3b135880945000dbd0b5f328",
+        "span_id": "4da4a7e8caa24fb8"
+      },
+      "span_kind": "TOOL",
+      "parent_id": "7d627e770a740686",
+      "start_time": "2026-11-03T04:22:20.245269+00:00",
+      "end_time": "2026-11-03T04:22:20.259304+00:00",
+      "status_code": "UNSET",
+      "status_message": "",
+      "attributes": {
+        "tool.name": "read",
+        "input.mime_type": "application/json",
+        "input.value": "{\"path\": \"local-files/source/guide.md\", \"max_bytes\": 1000}",
+        "output.mime_type": "application/json",
+        "output.value": "{\"path\": \"local-files/source/guide.md\", \"text\": \"Read the deployment guide before changing configuration.\\n\", \"content_hash\": \"sha256:1a52cbb4f8bba0c261e8eed7b3a98e3d9b5d3e04f733884ba3f152a3b59299b9\", \"complete\": true, \"stopped_by\": null}"
+      },
+      "events": []
+    },
+    {
+      "id": "U3Bhbjo2NA==",
+      "name": "ctxd.read",
+      "context": {
+        "trace_id": "6a7db43a3b135880945000dbd0b5f328",
+        "span_id": "129d81af5ef1a5e5"
+      },
+      "span_kind": "TOOL",
+      "parent_id": "7d627e770a740686",
+      "start_time": "2026-11-03T04:22:19.211134+00:00",
+      "end_time": "2026-11-03T04:22:19.237461+00:00",
+      "status_code": "UNSET",
+      "status_message": "",
+      "attributes": {
+        "tool.name": "read",
+        "input.mime_type": "application/json",
+        "input.value": "{\"path\": \"local-files/source/guide.md\", \"max_bytes\": 1000}",
+        "output.mime_type": "application/json",
+        "output.value": "{\"path\": \"local-files/source/guide.md\", \"text\": \"Read the deployment guide before changing configuration.\\n\", \"content_hash\": \"sha256:1a52cbb4f8bba0c261e8eed7b3a98e3d9b5d3e04f733884ba3f152a3b59299b9\", \"complete\": true, \"stopped_by\": null}"
+      },
+      "events": []
+    },
+    {
+      "id": "U3Bhbjo2Mw==",
+      "name": "ctxd.read",
+      "context": {
+        "trace_id": "6a7db43a3b135880945000dbd0b5f328",
+        "span_id": "bf3e012aa60a297b"
+      },
+      "span_kind": "TOOL",
+      "parent_id": "7d627e770a740686",
+      "start_time": "2026-11-03T04:22:18.194587+00:00",
+      "end_time": "2026-11-03T04:22:18.205183+00:00",
+      "status_code": "UNSET",
+      "status_message": "",
+      "attributes": {
+        "tool.name": "read",
+        "input.mime_type": "application/json",
+        "input.value": "{\"path\": \"local-files/source/guide.md\", \"max_bytes\": 1000}",
+        "output.mime_type": "application/json",
+        "output.value": "{\"path\": \"local-files/source/guide.md\", \"text\": \"Read the deployment guide before changing configuration.\\n\", \"content_hash\": \"sha256:1a52cbb4f8bba0c261e8eed7b3a98e3d9b5d3e04f733884ba3f152a3b59299b9\", \"complete\": true, \"stopped_by\": null}"
+      },
+      "events": []
+    },
+    {
+      "id": "U3Bhbjo2Mg==",
+      "name": "ctxd.read",
+      "context": {
+        "trace_id": "6a7db43a3b135880945000dbd0b5f328",
+        "span_id": "e470025856806bfc"
+      },
+      "span_kind": "TOOL",
+      "parent_id": "7d627e770a740686",
+      "start_time": "2026-11-03T04:22:17.167007+00:00",
+      "end_time": "2026-11-03T04:22:17.187019+00:00",
+      "status_code": "UNSET",
+      "status_message": "",
+      "attributes": {
+        "tool.name": "read",
+        "input.mime_type": "application/json",
+        "input.value": "{\"path\": \"local-files/source/guide.md\", \"max_bytes\": 1000}",
+        "output.mime_type": "application/json",
+        "output.value": "{\"path\": \"local-files/source/guide.md\", \"text\": \"Read the deployment guide before changing configuration.\\n\", \"content_hash\": \"sha256:1a52cbb4f8bba0c261e8eed7b3a98e3d9b5d3e04f733884ba3f152a3b59299b9\", \"complete\": true, \"stopped_by\": null}"
+      },
+      "events": []
+    },
+    {
+      "id": "U3Bhbjo2MQ==",
+      "name": "ctxd.read",
+      "context": {
+        "trace_id": "6a7db43a3b135880945000dbd0b5f328",
+        "span_id": "cc472968fbb8c7fa"
+      },
+      "span_kind": "TOOL",
+      "parent_id": "7d627e770a740686",
+      "start_time": "2026-11-03T04:22:16.143618+00:00",
+      "end_time": "2026-11-03T04:22:16.160556+00:00",
+      "status_code": "UNSET",
+      "status_message": "",
+      "attributes": {
+        "tool.name": "read",
+        "input.mime_type": "application/json",
+        "input.value": "{\"path\": \"local-files/source/guide.md\", \"max_bytes\": 1000}",
+        "output.mime_type": "application/json",
+        "output.value": "{\"path\": \"local-files/source/guide.md\", \"text\": \"Read the deployment guide before changing configuration.\\n\", \"content_hash\": \"sha256:1a52cbb4f8bba0c261e8eed7b3a98e3d9b5d3e04f733884ba3f152a3b59299b9\", \"complete\": true, \"stopped_by\": null}"
+      },
+      "events": []
+    },
+    {
+      "id": "U3Bhbjo2MA==",
+      "name": "ctxd.read",
+      "context": {
+        "trace_id": "6a7db43a3b135880945000dbd0b5f328",
+        "span_id": "5b322f8398c34b91"
+      },
+      "span_kind": "TOOL",
+      "parent_id": "7d627e770a740686",
+      "start_time": "2026-11-03T04:22:15.121148+00:00",
+      "end_time": "2026-11-03T04:22:15.135770+00:00",
+      "status_code": "UNSET",
+      "status_message": "",
+      "attributes": {
+        "tool.name": "read",
+        "input.mime_type": "application/json",
+        "input.value": "{\"path\": \"local-files/source/guide.md\", \"max_bytes\": 1000}",
+        "output.mime_type": "application/json",
+        "output.value": "{\"path\": \"local-files/source/guide.md\", \"text\": \"Read the deployment guide before changing configuration.\\n\", \"content_hash\": \"sha256:1a52cbb4f8bba0c261e8eed7b3a98e3d9b5d3e04f733884ba3f152a3b59299b9\", \"complete\": true, \"stopped_by\": null}"
+      },
+      "events": []
+    },
+    {
+      "id": "U3Bhbjo1OQ==",
+      "name": "ctxd.read",
+      "context": {
+        "trace_id": "6a7db43a3b135880945000dbd0b5f328",
+        "span_id": "99d41506fb955163"
+      },
+      "span_kind": "TOOL",
+      "parent_id": "7d627e770a740686",
+      "start_time": "2026-11-03T04:22:14.096992+00:00",
+      "end_time": "2026-11-03T04:22:14.114930+00:00",
+      "status_code": "UNSET",
+      "status_message": "",
+      "attributes": {
+        "tool.name": "read",
+        "input.mime_type": "application/json",
+        "input.value": "{\"path\": \"local-files/source/guide.md\", \"max_bytes\": 1000}",
+        "output.mime_type": "application/json",
+        "output.value": "{\"path\": \"local-files/source/guide.md\", \"text\": \"Read the deployment guide before changing configuration.\\n\", \"content_hash\": \"sha256:1a52cbb4f8bba0c261e8eed7b3a98e3d9b5d3e04f733884ba3f152a3b59299b9\", \"complete\": true, \"stopped_by\": null}"
+      },
+      "events": []
+    },
+    {
+      "id": "U3Bhbjo1OA==",
+      "name": "ctxd.read",
+      "context": {
+        "trace_id": "6a7db43a3b135880945000dbd0b5f328",
+        "span_id": "13f45be0a0900c6e"
+      },
+      "span_kind": "TOOL",
+      "parent_id": "7d627e770a740686",
+      "start_time": "2026-11-03T04:22:13.061382+00:00",
+      "end_time": "2026-11-03T04:22:13.091920+00:00",
+      "status_code": "UNSET",
+      "status_message": "",
+      "attributes": {
+        "tool.name": "read",
+        "input.mime_type": "application/json",
+        "input.value": "{\"path\": \"local-files/source/guide.md\", \"max_bytes\": 1000}",
+        "output.mime_type": "application/json",
+        "output.value": "{\"path\": \"local-files/source/guide.md\", \"text\": \"Read the deployment guide before changing configuration.\\n\", \"content_hash\": \"sha256:1a52cbb4f8bba0c261e8eed7b3a98e3d9b5d3e04f733884ba3f152a3b59299b9\", \"complete\": true, \"stopped_by\": null}"
+      },
+      "events": []
+    },
+    {
+      "id": "U3Bhbjo1Nw==",
+      "name": "initial_read",
+      "context": {
+        "trace_id": "6a7db43a3b135880945000dbd0b5f328",
+        "span_id": "f6ae10886964666e"
+      },
+      "span_kind": "CHAIN",
+      "parent_id": "99b358f2b1c19ffc",
+      "start_time": "2026-11-03T04:22:12.990252+00:00",
+      "end_time": "2026-11-03T04:22:13.058076+00:00",
+      "status_code": "UNSET",
+      "status_message": "",
+      "attributes": {
+        "input.mime_type": "application/json",
+        "input.value": "{\"expected_text\": \"Read the deployment guide before changing configuration.\\n\"}",
+        "output.mime_type": "application/json",
+        "output.value": "{\"path\": \"local-files/source/guide.md\", \"text\": \"Read the deployment guide before changing configuration.\\n\", \"content_hash\": \"sha256:1a52cbb4f8bba0c261e8eed7b3a98e3d9b5d3e04f733884ba3f152a3b59299b9\", \"complete\": true, \"stopped_by\": null}"
+      },
+      "events": []
+    },
+    {
+      "id": "U3Bhbjo1Ng==",
+      "name": "ctxd.read",
+      "context": {
+        "trace_id": "6a7db43a3b135880945000dbd0b5f328",
+        "span_id": "5e963ea6bc6a3a0c"
+      },
+      "span_kind": "TOOL",
+      "parent_id": "f6ae10886964666e",
+      "start_time": "2026-11-03T04:22:13.043786+00:00",
+      "end_time": "2026-11-03T04:22:13.054180+00:00",
+      "status_code": "UNSET",
+      "status_message": "",
+      "attributes": {
+        "tool.name": "read",
+        "input.mime_type": "application/json",
+        "input.value": "{\"path\": \"local-files/source/guide.md\", \"max_bytes\": 1000}",
+        "output.mime_type": "application/json",
+        "output.value": "{\"path\": \"local-files/source/guide.md\", \"text\": \"Read the deployment guide before changing configuration.\\n\", \"content_hash\": \"sha256:1a52cbb4f8bba0c261e8eed7b3a98e3d9b5d3e04f733884ba3f152a3b59299b9\", \"complete\": true, \"stopped_by\": null}"
+      },
+      "events": []
+    },
+    {
+      "id": "U3Bhbjo1NQ==",
+      "name": "ctxd.glob",
+      "context": {
+        "trace_id": "6a7db43a3b135880945000dbd0b5f328",
+        "span_id": "283e9c4b34fc1ad0"
+      },
+      "span_kind": "TOOL",
+      "parent_id": "f6ae10886964666e",
+      "start_time": "2026-11-03T04:22:12.990448+00:00",
+      "end_time": "2026-11-03T04:22:13.037066+00:00",
+      "status_code": "UNSET",
+      "status_message": "",
+      "attributes": {
+        "tool.name": "glob",
+        "input.mime_type": "application/json",
+        "input.value": "{\"pattern\": \"**/guide.md\", \"limit\": 10}",
+        "output.mime_type": "application/json",
+        "output.value": "{\"items\": [{\"path\": \"local-files/source/guide.md\", \"kind\": \"file\", \"size_bytes\": 57, \"line_count\": 1, \"content_hash\": \"sha256:1a52cbb4f8bba0c261e8eed7b3a98e3d9b5d3e04f733884ba3f152a3b59299b9\"}], \"complete\": true, \"stopped_by\": null}"
+      },
+      "events": []
+    }
+  ],
+  "annotations": [
+    {
+      "id": "U3BhbkFubm90YXRpb246Ng==",
+      "created_at": "2026-11-03T04:22:33+00:00",
+      "updated_at": "2026-11-03T04:22:33+00:00",
+      "source": "API",
+      "user_id": null,
+      "name": "source_lifecycle_check",
+      "annotator_kind": "CODE",
+      "result": {
+        "label": "passed",
+        "score": 1.0,
+        "explanation": "Synthetic assertion passed: after_removal_sync"
+      },
+      "metadata": {},
+      "identifier": "",
+      "span_id": "ba439a2bfa9b1cb5"
+    },
+    {
+      "id": "U3BhbkFubm90YXRpb246NQ==",
+      "created_at": "2026-11-03T04:22:33+00:00",
+      "updated_at": "2026-11-03T04:22:33+00:00",
+      "source": "API",
+      "user_id": null,
+      "name": "source_lifecycle_check",
+      "annotator_kind": "CODE",
+      "result": {
+        "label": "passed",
+        "score": 1.0,
+        "explanation": "Synthetic assertion passed: after_edit_sync"
+      },
+      "metadata": {},
+      "identifier": "",
+      "span_id": "7d627e770a740686"
+    },
+    {
+      "id": "U3BhbkFubm90YXRpb246NA==",
+      "created_at": "2026-11-03T04:22:33+00:00",
+      "updated_at": "2026-11-03T04:22:33+00:00",
+      "source": "API",
+      "user_id": null,
+      "name": "source_lifecycle_check",
+      "annotator_kind": "CODE",
+      "result": {
+        "label": "passed",
+        "score": 1.0,
+        "explanation": "Synthetic assertion passed: initial_read"
+      },
+      "metadata": {},
+      "identifier": "",
+      "span_id": "f6ae10886964666e"
+    }
+  ],
+  "passed": true
+}

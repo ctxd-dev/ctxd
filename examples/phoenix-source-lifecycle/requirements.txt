@@ -1,0 +1,4 @@
+arize-phoenix==21.0.0
+arize-phoenix-client==3.6.0
+arize-phoenix-otel==0.17.2
+mcp==2.3.0
