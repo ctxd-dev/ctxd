@@ -1498,7 +1498,7 @@ class CtxfsStore:
             command,
             env=_rg_env(),
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT,
         )
         assert process.stdout is not None
         matches: list[GrepMatch] = []
@@ -1543,7 +1543,10 @@ class CtxfsStore:
                     stopped_by="max_bytes",
                     anchor_found=anchor_found,
                 )
-            event = json.loads(raw_line)
+            try:
+                event = json.loads(raw_line)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                raise RuntimeError("ctxfs grep failed") from None
             event_type = event.get("type")
             event_path = _rg_event_path(event)
             if event_path is None:

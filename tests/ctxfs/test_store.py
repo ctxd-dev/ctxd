@@ -1411,6 +1411,97 @@ with open(marker, "w", encoding="utf-8") as handle:
     assert termination_marker.read_text(encoding="utf-8") == "terminated:3"
 
 
+def test_grep_raises_when_earlier_batched_path_disappears_before_limit(
+    tmp_path, monkeypatch
+):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    logical_paths = [f"local_files/root/{name}.md" for name in ("a", "b")]
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [
+            _put(logical_paths[0], "inode-a", "haystack\n"),
+            _put(logical_paths[1], "inode-b", "needle one\nneedle two\n"),
+        ],
+    )
+    first_path = store._tree_path("user-1", logical_paths[0])
+    second_path = store._tree_path("user-1", logical_paths[1])
+    original_hash_path = store_module._hash_path
+
+    def delete_first_after_hashing_second(path, deadline):
+        content_hash = original_hash_path(path, deadline)
+        if path == second_path:
+            first_path.unlink()
+        return content_hash
+
+    monkeypatch.setattr(store_module, "_hash_path", delete_first_after_hashing_second)
+
+    with pytest.raises(RuntimeError, match="ctxfs grep failed"):
+        store.grep("user-1", "needle", prefix="local_files/root", limit=2)
+
+
+@pytest.mark.parametrize(
+    ("stream", "diagnostic"),
+    [
+        ("stderr", b"rg: failed\n"),
+        ("stderr", b"\xff"),
+        ("stdout", b'{"type":\n'),
+    ],
+)
+def test_grep_maps_diagnostics_before_limit_to_failure(
+    tmp_path, monkeypatch, stream, diagnostic
+):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_rg = fake_bin / "rg"
+    fake_rg.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+import sys
+
+if "--version" in sys.argv:
+    print("ripgrep 13.0.0")
+    raise SystemExit(0)
+
+path = sys.argv[-1]
+if os.path.basename(path) == "null":
+    raise SystemExit(1)
+
+sys.__STREAM__.buffer.write(__DIAGNOSTIC__)
+sys.__STREAM__.buffer.flush()
+event = {
+    "type": "match",
+    "data": {
+        "path": {"text": path},
+        "line_number": 1,
+        "lines": {"text": "needle\\n"},
+        "submatches": [{"start": 0, "end": 6}],
+    },
+}
+sys.stdout.write(json.dumps(event) + "\\n")
+sys.stdout.flush()
+""".replace("__STREAM__", stream).replace("__DIAGNOSTIC__", repr(diagnostic)),
+        encoding="utf-8",
+    )
+    fake_rg.chmod(0o755)
+    monkeypatch.setenv(
+        "PATH",
+        f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}",
+    )
+    store = CtxfsStore(tmp_path / "ctxfs")
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [_put("local_files/root/a.md", "inode-a", "needle\n")],
+    )
+
+    with pytest.raises(RuntimeError, match="ctxfs grep failed"):
+        store.grep("user-1", "needle", prefix="local_files/root", limit=1)
+
+
 @pytest.mark.parametrize("disk_only", [False, True])
 def test_grep_limit_does_not_read_later_files(tmp_path, monkeypatch, disk_only):
     store = CtxfsStore(tmp_path / "ctxfs")
