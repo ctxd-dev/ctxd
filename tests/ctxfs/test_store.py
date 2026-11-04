@@ -9,6 +9,7 @@ import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -810,6 +811,26 @@ def test_grep_invokes_one_directory_scan_for_the_requested_prefix(
     assert [match.path for match in page.items] == ["local_files/root/b.md"]
     assert page.complete is True
     assert targets == [store._tree_path("user-1", "local_files/root")]
+
+
+def test_grep_matches_with_relative_store_root(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    store = CtxfsStore(Path("ctxfs"))
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [_put("local_files/root/notes.md", "notes", "alpha\nneedle beta\n")],
+    )
+
+    page = store.grep("user-1", "needle", prefix="local_files/root")
+
+    assert [(match.path, match.line_number, match.line) for match in page.items] == [
+        ("local_files/root/notes.md", 2, "needle beta")
+    ]
+    assert page.complete is True
+    assert page.stopped_by is None
+    assert page.next_cursor is None
 
 
 def test_grep_does_not_inventory_catalog_or_snapshot_unmatched_files(

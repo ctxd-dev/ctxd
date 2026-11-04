@@ -1377,7 +1377,7 @@ class CtxfsStore:
             if resume is not None
             else ""
         )
-        user_root = self._user_root(user_id)
+        user_root = Path(os.path.abspath(self._user_root(user_id)))
         active_path: str | None = None
         active_snapshot: _GrepFileSnapshot | None = None
         last_match: GrepMatch | None = None
