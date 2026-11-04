@@ -418,6 +418,59 @@ def test_synchronous_files_client_automatically_resumes_grep(
     assert not hasattr(result, "next_cursor")
 
 
+def test_synchronous_files_client_rejects_mismatch_after_automatic_resume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = Client(ctxfs_endpoint="http://127.0.0.1:8765")
+    calls = 0
+
+    async def mock_request(self, method, url, *, params=None, **kwargs):
+        nonlocal calls
+        calls += 1
+        assert method == "GET" and url == "/api/ctxfs/grep"
+        if calls == 1:
+            assert params == {"pattern": "needle", "prefix": ""}
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {
+                            "path": "root/a.md",
+                            "line_number": 1,
+                            "line": "needle disk only",
+                        }
+                    ],
+                    "complete": False,
+                    "stopped_by": "limit",
+                    "next_cursor": "later-page",
+                },
+            )
+        assert params == {
+            "pattern": "needle",
+            "prefix": "",
+            "cursor": "later-page",
+        }
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "path": "root/b.md",
+                        "line_number": 2,
+                        "line": "needle two",
+                    }
+                ],
+                "complete": False,
+                "stopped_by": "catalog_mismatch",
+            },
+        )
+
+    monkeypatch.setattr("httpx.AsyncClient.request", mock_request)
+    with pytest.raises(CtxdIncompleteSearchError, match="not provide an exhaustive"):
+        client.files.grep("needle")
+    assert calls == 2
+
+
 def test_synchronous_files_client_extends_transport_timeout_for_max_grep_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

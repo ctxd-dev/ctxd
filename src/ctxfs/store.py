@@ -1443,8 +1443,6 @@ class CtxfsStore:
             if event_type != "match":
                 return None
             active_path = logical_path
-            if resume is not None and not anchor_found and logical_path != resume_path:
-                return None
             if active_snapshot is None or active_snapshot.logical_path != logical_path:
                 enrichment_started = time.monotonic()
                 active_snapshot = self._snapshot_grep_file(
@@ -1457,6 +1455,8 @@ class CtxfsStore:
             catalog_mismatch = (
                 catalog_mismatch or active_snapshot.catalog_mismatch
             )
+            if resume is not None and not anchor_found and logical_path != resume_path:
+                return None
             if not active_snapshot.verified:
                 return None
             match = _verified_grep_match(event, active_snapshot)

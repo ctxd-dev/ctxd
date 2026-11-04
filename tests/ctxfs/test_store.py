@@ -1723,6 +1723,49 @@ def test_grep_pages_resume_without_gaps_or_duplicates(tmp_path):
     ]
 
 
+def test_grep_resume_carries_catalog_mismatch_before_anchor(tmp_path):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [
+            _put(
+                "local_files/root/b.md",
+                "inode-b",
+                "needle one\nneedle two\n",
+            )
+        ],
+    )
+    disk_only = store._tree_path("user-1", "local_files/root/a.md")
+    disk_only.write_text("needle disk only\n")
+
+    first = store.grep(
+        "user-1", "needle", prefix="local_files/root", limit=2
+    )
+    assert [(match.path, match.line_number) for match in first.items] == [
+        ("local_files/root/a.md", 1),
+        ("local_files/root/b.md", 1),
+    ]
+    assert first.stopped_by == "limit"
+    assert first.next_cursor is not None
+
+    terminal = store.grep(
+        "user-1",
+        "needle",
+        prefix="local_files/root",
+        limit=2,
+        cursor=first.next_cursor,
+    )
+
+    assert [(match.path, match.line_number) for match in terminal.items] == [
+        ("local_files/root/b.md", 2)
+    ]
+    assert terminal.complete is False
+    assert terminal.stopped_by == "catalog_mismatch"
+    assert terminal.next_cursor is None
+
+
 @pytest.mark.parametrize("disk_only", [False, True])
 def test_grep_timeout_while_seeking_resume_keeps_cursor(
     tmp_path, monkeypatch, disk_only
