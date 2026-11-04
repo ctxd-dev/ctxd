@@ -1384,6 +1384,108 @@ def test_grep_invalid_utf8_match_offsets_slice_returned_line(tmp_path):
     assert matches.stopped_by == "catalog_mismatch"
 
 
+def _canonical_raw_rg_matches(path: Path, pattern: str):
+    completed = subprocess.run(
+        [
+            "rg",
+            "--json",
+            "--no-follow",
+            "--hidden",
+            "--no-ignore",
+            "--no-config",
+            "--binary",
+            "-e",
+            pattern,
+            "--",
+            str(path),
+        ],
+        env=store_module._rg_env(),
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 0
+    matches = []
+    for raw_record in completed.stdout.splitlines():
+        record = json.loads(raw_record)
+        if record["type"] != "match":
+            continue
+        data = record["data"]
+        submatch = data["submatches"][0]
+        lines = data["lines"]
+        raw_line = (
+            lines["text"].encode("utf-8")
+            if "text" in lines
+            else base64.b64decode(lines["bytes"], validate=True)
+        )
+        matches.append(
+            (
+                data["line_number"],
+                raw_line.decode("utf-8", "replace").rstrip("\r\n"),
+                len(raw_line[: submatch["start"]].decode("utf-8", "replace")),
+                len(raw_line[: submatch["end"]].decode("utf-8", "replace")),
+            )
+        )
+    return matches
+
+
+def test_grep_raw_lone_cr_framing_matches_canonical_ripgrep(tmp_path):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    path = "local_files/root/notes.md"
+    tree_path = store._tree_path("user-1", path)
+    tree_path.parent.mkdir(parents=True)
+    tree_path.write_bytes(b"alpha\rneedle omega\n")
+
+    page = store.grep("user-1", "needle", prefix="local_files/root")
+
+    assert [
+        (item.line_number, item.line, item.match_start, item.match_end)
+        for item in page.items
+    ] == _canonical_raw_rg_matches(tree_path, "needle") == [
+        (1, "alpha\rneedle omega", 6, 12)
+    ]
+    assert page.items[0].content_hash == (
+        "sha256:" + hashlib.sha256(b"alpha\rneedle omega\n").hexdigest()
+    )
+
+
+def test_grep_raw_post_nul_match_framing_matches_canonical_ripgrep(tmp_path):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    path = "local_files/root/notes.md"
+    tree_path = store._tree_path("user-1", path)
+    tree_path.parent.mkdir(parents=True)
+    tree_path.write_bytes(b"alpha\x00needle omega\n")
+
+    page = store.grep("user-1", "needle", prefix="local_files/root")
+
+    assert [
+        (item.line_number, item.line, item.match_start, item.match_end)
+        for item in page.items
+    ] == _canonical_raw_rg_matches(tree_path, "needle") == [
+        (2, "needle omega", 0, 6)
+    ]
+    assert page.items[0].content_hash == (
+        "sha256:" + hashlib.sha256(b"alpha\x00needle omega\n").hexdigest()
+    )
+
+
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        (b"", ()),
+        (b"alpha\nneedle\n", (b"alpha\n", b"needle\n")),
+        (b"alpha\r\nneedle\r\n", (b"alpha\r\n", b"needle\r\n")),
+        (b"alpha\rneedle\n", (b"alpha\rneedle\n",)),
+        (b"\x00needle\n", (b"\n", b"needle\n")),
+        (b"needle\x00tail\n", (b"needle\n", b"tail\n")),
+        (b"a\x00b\x00needle", (b"a\n", b"b\n", b"needle")),
+        (b"a\x00\nneedle\n", (b"a\n", b"\n", b"needle\n")),
+        (b"be\xffta needle", (b"be\xffta needle",)),
+    ],
+)
+def test_rg_binary_snapshot_framing(data, expected):
+    assert store_module._rg_binary_lines(data) == expected
+
+
 def test_grep_returns_limit_without_waiting_for_rg_eof(tmp_path, monkeypatch):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()

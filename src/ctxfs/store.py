@@ -1593,7 +1593,7 @@ class CtxfsStore:
         return _GrepFileSnapshot(
             logical_path=logical_path,
             tree_path=tree_path,
-            lines=tuple(b"".join(chunks).splitlines(keepends=True)),
+            lines=_rg_binary_lines(b"".join(chunks)),
             content_hash=content_hash,
             path_identity=_path_identity_from_stat(after),
             catalog_mismatch=catalog_mismatch or not stable,
@@ -2870,6 +2870,13 @@ def _rg_line_bytes(lines: dict[str, object]) -> bytes:
         return base64.b64decode(encoded, validate=True)
     except ValueError as exc:
         raise RuntimeError("ctxfs grep returned invalid JSON") from exc
+
+
+def _rg_binary_lines(data: bytes) -> tuple[bytes, ...]:
+    # In --binary mode ripgrep converts each NUL to an LF record terminator.
+    parts = data.replace(b"\x00", b"\n").split(b"\n")
+    terminated = tuple(part + b"\n" for part in parts[:-1])
+    return terminated + ((parts[-1],) if parts[-1] else ())
 
 
 def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
