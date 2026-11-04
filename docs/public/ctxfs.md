@@ -137,6 +137,14 @@ Every pattern scans files beneath the selected prefix and uses ripgrep for final
 matching. Choose the narrowest relevant canonical root before searching; broad
 prefixes may require multiple internal continuation pages.
 
+Grep invokes ripgrep directly over that filesystem prefix. It does not enumerate
+the SQLite catalog or hash unrelated files before matching. Only files that
+produce matches are checked against catalog metadata and assigned content
+hashes. Therefore, a complete grep response means the visible filesystem scope
+was searched exhaustively and its returned matches were verified; it does not
+assert that every catalog row still has a corresponding file. Use `stat`,
+`tree`, or writer-status diagnostics to investigate broader catalog drift.
+
 When an older catalog is opened, ctxfs attempts to remove its legacy derived
 grep tables. Cleanup is deferred if the current SQLite build cannot load the
 legacy FTS5 module, tokenizer, or `contentless_delete` table option. Those inert
