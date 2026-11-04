@@ -1445,13 +1445,15 @@ class CtxfsStore:
             active_path = logical_path
             if active_snapshot is None or active_snapshot.logical_path != logical_path:
                 enrichment_started = time.monotonic()
-                active_snapshot = self._snapshot_grep_file(
-                    user_id, logical_path, tree_path, deadline
-                )
-                enrichment_seconds += max(
-                    0.0, time.monotonic() - enrichment_started
-                )
                 matched_file_count += 1
+                try:
+                    active_snapshot = self._snapshot_grep_file(
+                        user_id, logical_path, tree_path, deadline
+                    )
+                finally:
+                    enrichment_seconds += max(
+                        0.0, time.monotonic() - enrichment_started
+                    )
             catalog_mismatch = (
                 catalog_mismatch or active_snapshot.catalog_mismatch
             )

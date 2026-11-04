@@ -1266,6 +1266,38 @@ def test_grep_logs_bounded_private_phase_diagnostics(tmp_path, caplog):
         assert private_value not in rendered
 
 
+def test_grep_logs_attempted_enrichment_when_snapshot_times_out(
+    tmp_path, monkeypatch, caplog
+):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    prefix = "local_files/root"
+    store.register_prefix("user-1", "writer-1", prefix)
+    store.submit(
+        "user-1",
+        "writer-1",
+        [_put(f"{prefix}/a.md", "inode-a", "needle\n")],
+    )
+
+    def delayed_timeout(*args):
+        time.sleep(0.01)
+        raise TimeoutError
+
+    monkeypatch.setattr(store, "_snapshot_grep_file", delayed_timeout)
+    caplog.set_level(logging.DEBUG, logger="ctxfs.store")
+
+    page = store.grep("user-1", "needle", prefix=prefix)
+
+    assert page.stopped_by == "timeout"
+    [record] = [
+        record for record in caplog.records if record.message == "ctxfs grep completed"
+    ]
+    assert record.ctxfs_grep_enrichment_seconds > 0
+    assert record.ctxfs_grep_scan_seconds >= 0
+    assert record.ctxfs_grep_matched_file_count == 1
+    assert record.ctxfs_grep_returned_match_count == 0
+    assert record.ctxfs_grep_stopped_by == "timeout"
+
+
 def test_grep_requires_ripgrep(
     tmp_path, monkeypatch
 ):
