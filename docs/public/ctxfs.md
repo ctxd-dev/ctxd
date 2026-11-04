@@ -165,8 +165,9 @@ Agents should scope retrieval before searching broadly:
 This keeps retrieval focused and makes search cost easier to understand without
 changing grep semantics.
 
-All patterns use the same scan behavior and report `catalog_mismatch` when
-private tree storage contains files that are not represented by the catalog.
+All patterns use the same filesystem-snapshot scan behavior and report
+`catalog_mismatch` when matching files in private tree storage are not
+represented by the catalog.
 
 ## Verify a tracked file
 
