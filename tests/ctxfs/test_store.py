@@ -1704,18 +1704,26 @@ def test_grep_search_start_cursor_replays_changed_disk_only_file(tmp_path, monke
     ticks = iter((0.0, 0.0, 0.2))
     monkeypatch.setattr(store_module.time, "monotonic", lambda: next(ticks))
 
-    store.grep(
-        "user-1", "needl[e]", prefix="local_files/root", timeout_seconds=0.1
+    first = store.grep(
+        "user-1", ".", prefix="local_files/root", timeout_seconds=0.1
     )
+
+    assert first.items == []
+    assert first.stopped_by == "timeout"
+    assert first.next_cursor is not None
+    cursor = store_module._decode_grep_cursor(first.next_cursor)
+    assert cursor.mode == "search_start"
     disk_path.write_text("changed content\n")
     monkeypatch.setattr(store_module.time, "monotonic", real_monotonic)
 
     resumed = store.grep(
         "user-1",
-        "changed",
+        ".",
         prefix="local_files/root",
+        cursor=first.next_cursor,
     )
-    assert [match.line for match in resumed.items] == ["changed content"]
+    found = [*first.items, *resumed.items]
+    assert [match.line for match in found] == ["changed content"]
     assert resumed.stopped_by == "catalog_mismatch"
 
 
