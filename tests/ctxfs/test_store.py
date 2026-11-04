@@ -1428,62 +1428,72 @@ def _canonical_raw_rg_matches(path: Path, pattern: str):
     return matches
 
 
-def test_grep_raw_lone_cr_framing_matches_canonical_ripgrep(tmp_path):
+@pytest.mark.parametrize("operand", ["directory", "exact_file"])
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(b"alpha\x00needle omega\n", id="post-nul"),
+        pytest.param(b"alpha\rneedle omega\n", id="lone-cr"),
+        pytest.param(b"alpha\r\nneedle omega\r\n", id="crlf"),
+        pytest.param(b"alpha\nbe\xffta needle", id="unterminated-invalid-utf8"),
+    ],
+)
+def test_grep_raw_record_framing_matches_ripgrep_for_operand_shape(
+    tmp_path, operand, data
+):
     store = CtxfsStore(tmp_path / "ctxfs")
     path = "local_files/root/notes.md"
     tree_path = store._tree_path("user-1", path)
     tree_path.parent.mkdir(parents=True)
-    tree_path.write_bytes(b"alpha\rneedle omega\n")
+    tree_path.write_bytes(data)
+    prefix = "local_files/root" if operand == "directory" else path
+    raw_operand = tree_path.parent if operand == "directory" else tree_path
 
-    page = store.grep("user-1", "needle", prefix="local_files/root")
-
-    assert [
-        (item.line_number, item.line, item.match_start, item.match_end)
-        for item in page.items
-    ] == _canonical_raw_rg_matches(tree_path, "needle") == [
-        (1, "alpha\rneedle omega", 6, 12)
-    ]
-    assert page.items[0].content_hash == (
-        "sha256:" + hashlib.sha256(b"alpha\rneedle omega\n").hexdigest()
-    )
-
-
-def test_grep_raw_post_nul_match_framing_matches_canonical_ripgrep(tmp_path):
-    store = CtxfsStore(tmp_path / "ctxfs")
-    path = "local_files/root/notes.md"
-    tree_path = store._tree_path("user-1", path)
-    tree_path.parent.mkdir(parents=True)
-    tree_path.write_bytes(b"alpha\x00needle omega\n")
-
-    page = store.grep("user-1", "needle", prefix="local_files/root")
+    page = store.grep("user-1", "needle", prefix=prefix)
 
     assert [
         (item.line_number, item.line, item.match_start, item.match_end)
         for item in page.items
-    ] == _canonical_raw_rg_matches(tree_path, "needle") == [
-        (2, "needle omega", 0, 6)
-    ]
+    ] == _canonical_raw_rg_matches(raw_operand, "needle")
     assert page.items[0].content_hash == (
-        "sha256:" + hashlib.sha256(b"alpha\x00needle omega\n").hexdigest()
+        "sha256:" + hashlib.sha256(data).hexdigest()
     )
 
 
 @pytest.mark.parametrize(
-    ("data", "expected"),
+    "absolute_offset",
     [
-        (b"", ()),
-        (b"alpha\nneedle\n", (b"alpha\n", b"needle\n")),
-        (b"alpha\r\nneedle\r\n", (b"alpha\r\n", b"needle\r\n")),
-        (b"alpha\rneedle\n", (b"alpha\rneedle\n",)),
-        (b"\x00needle\n", (b"\n", b"needle\n")),
-        (b"needle\x00tail\n", (b"needle\n", b"tail\n")),
-        (b"a\x00b\x00needle", (b"a\n", b"b\n", b"needle")),
-        (b"a\x00\nneedle\n", (b"a\n", b"\n", b"needle\n")),
-        (b"be\xffta needle", (b"be\xffta needle",)),
+        pytest.param(None, id="missing"),
+        pytest.param("0", id="wrong-type"),
+        pytest.param(True, id="bool"),
+        pytest.param(-1, id="negative"),
+        pytest.param(99, id="past-end"),
+        pytest.param(3, id="line-past-end"),
     ],
 )
-def test_rg_binary_snapshot_framing(data, expected):
-    assert store_module._rg_binary_lines(data) == expected
+def test_grep_match_with_unusable_absolute_offset_is_unverified(absolute_offset):
+    snapshot = store_module._GrepFileSnapshot(
+        logical_path="local_files/root/notes.md",
+        tree_path=Path("notes.md"),
+        data=b"needle\n",
+        content_hash="sha256:" + hashlib.sha256(b"needle\n").hexdigest(),
+        path_identity="stat:1:2:7:3:4",
+        catalog_mismatch=False,
+        verified=True,
+    )
+    event = {
+        "type": "match",
+        "data": {
+            "path": {"text": "notes.md"},
+            "line_number": 1,
+            "lines": {"text": "needle\n"},
+            "submatches": [{"start": 0, "end": 6}],
+        },
+    }
+    if absolute_offset is not None:
+        event["data"]["absolute_offset"] = absolute_offset
+
+    assert store_module._verified_grep_match(event, snapshot) is None
 
 
 def test_grep_returns_limit_without_waiting_for_rg_eof(tmp_path, monkeypatch):
@@ -1525,18 +1535,21 @@ def record_termination(signum, frame):
 signal.signal(signal.SIGTERM, record_termination)
 
 with open(path, encoding="utf-8") as handle:
+    absolute_offset = 0
     for line_number, line in enumerate(handle, start=1):
         payload = {
             "type": "match",
             "data": {
                 "path": {"text": path},
                 "line_number": line_number,
+                "absolute_offset": absolute_offset,
                 "lines": {"text": line},
                 "submatches": [{"start": 0, "end": 6}],
             },
         }
         sys.stdout.write(json.dumps(payload) + "\\n")
         sys.stdout.flush()
+        absolute_offset += len(line.encode())
         if line_number == 3:
             time.sleep(5)
 
@@ -1626,6 +1639,7 @@ event = {
     "data": {
         "path": {"text": path},
         "line_number": 1,
+        "absolute_offset": 0,
         "lines": {"text": "needle\\n"},
         "submatches": [{"start": 0, "end": 6}],
     },
@@ -2008,6 +2022,7 @@ events = [
         "data": {
             "path": {"text": path},
             "line_number": 1,
+            "absolute_offset": 0,
             "lines": {"text": "needle one\\n"},
             "submatches": [{"start": 0, "end": 6}],
         },
@@ -2311,6 +2326,7 @@ events = [
         "data": {
             "path": {"text": path},
             "line_number": 1,
+            "absolute_offset": 0,
             "lines": {"text": "needle one\\n"},
             "submatches": [{"start": 0, "end": 6}],
         },
