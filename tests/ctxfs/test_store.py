@@ -2074,6 +2074,112 @@ def test_grep_pages_resume_without_gaps_or_duplicates(tmp_path):
     ]
 
 
+def test_grep_limit_pages_snapshot_only_anchor_and_new_file_and_carry_mismatch(
+    tmp_path, monkeypatch
+):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [
+            _put("local_files/root/b.md", "inode-b", "needle b\n"),
+            _put("local_files/root/c.md", "inode-c", "needle c\n"),
+        ],
+    )
+    disk_only = store._tree_path("user-1", "local_files/root/a.md")
+    disk_only.write_text("needle a\n")
+
+    original_snapshot = store._snapshot_grep_file
+    page_snapshots: list[list[str]] = []
+    current_snapshots: list[str] = []
+
+    def counted_snapshot(user_id, logical_path, tree_path, deadline):
+        current_snapshots.append(logical_path)
+        return original_snapshot(user_id, logical_path, tree_path, deadline)
+
+    monkeypatch.setattr(store, "_snapshot_grep_file", counted_snapshot)
+    cursor = None
+    found = []
+    pages = []
+    while True:
+        current_snapshots = []
+        page = store.grep(
+            "user-1",
+            "needle",
+            prefix="local_files/root",
+            limit=1,
+            cursor=cursor,
+        )
+        page_snapshots.append(current_snapshots)
+        pages.append(page)
+        found.extend((match.path, match.line_number) for match in page.items)
+        if page.next_cursor is None:
+            break
+        payload = json.loads(
+            base64.urlsafe_b64decode(
+                page.next_cursor + "=" * (-len(page.next_cursor) % 4)
+            )
+        )
+        assert payload["v"] == 3
+        assert payload["c"] is True
+        cursor = page.next_cursor
+
+    assert found == [
+        ("local_files/root/a.md", 1),
+        ("local_files/root/b.md", 1),
+        ("local_files/root/c.md", 1),
+    ]
+    assert page_snapshots == [
+        ["local_files/root/a.md"],
+        ["local_files/root/a.md", "local_files/root/b.md"],
+        ["local_files/root/b.md", "local_files/root/c.md"],
+        ["local_files/root/c.md"],
+    ]
+    assert [page.stopped_by for page in pages] == [
+        "limit",
+        "limit",
+        "limit",
+        "catalog_mismatch",
+    ]
+
+
+def test_grep_accepts_v2_after_match_cursor(tmp_path):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [
+            _put("local_files/root/a.md", "inode-a", "needle a\n"),
+            _put("local_files/root/b.md", "inode-b", "needle b\n"),
+        ],
+    )
+    first = store.grep("user-1", "needle", prefix="local_files/root", limit=1)
+    assert first.next_cursor is not None
+    payload = json.loads(
+        base64.urlsafe_b64decode(
+            first.next_cursor + "=" * (-len(first.next_cursor) % 4)
+        )
+    )
+    payload["v"] = 2
+    del payload["c"]
+    v2_cursor = (
+        base64.urlsafe_b64encode(
+            json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+        )
+        .decode()
+        .rstrip("=")
+    )
+
+    resumed = store.grep(
+        "user-1", "needle", prefix="local_files/root", cursor=v2_cursor
+    )
+
+    assert [match.path for match in resumed.items] == ["local_files/root/b.md"]
+    assert resumed.complete is True
+
+
 def test_grep_resume_carries_catalog_mismatch_before_anchor(tmp_path):
     store = CtxfsStore(tmp_path / "ctxfs")
     store.register_prefix("user-1", "writer-1", "local_files/root")

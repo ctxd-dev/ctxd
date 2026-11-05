@@ -100,17 +100,19 @@ class _GrepCursor:
     content_hash: str | None
     mode: str
     anchor: tuple[int, int, int] | None = None
+    catalog_mismatch: bool = False
 
 
 def _encode_grep_cursor(cursor: _GrepCursor) -> str:
     payload = {
-        "v": 2,
+        "v": 3,
         "p": cursor.prefix_hash,
         "q": cursor.pattern_hash,
         "r": cursor.path,
         "h": cursor.content_hash,
         "m": cursor.mode,
         "a": list(cursor.anchor) if cursor.anchor is not None else None,
+        "c": cursor.catalog_mismatch,
     }
     encoded = (
         base64.urlsafe_b64encode(
@@ -136,13 +138,17 @@ def _decode_grep_cursor(value: str) -> _GrepCursor:
         payload = json.loads(raw)
     except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("invalid ctxfs grep cursor") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("invalid ctxfs grep cursor")
+    version = payload.get("v")
+    if not isinstance(version, int) or isinstance(version, bool) or version not in {2, 3}:
+        raise ValueError("invalid ctxfs grep cursor")
     expected = {"v", "p", "q", "r", "h", "m", "a"}
+    if version == 3:
+        expected.add("c")
     if (
-        not isinstance(payload, dict)
-        or set(payload) != expected
-        or not isinstance(payload["v"], int)
-        or isinstance(payload["v"], bool)
-        or payload["v"] != 2
+        set(payload) != expected
+        or (version == 3 and not isinstance(payload["c"], bool))
     ):
         raise ValueError("invalid ctxfs grep cursor")
     string_fields = ("p", "q", "r", "m")
@@ -197,6 +203,7 @@ def _decode_grep_cursor(value: str) -> _GrepCursor:
         content_hash=payload["h"],
         mode=payload["m"],
         anchor=anchor,
+        catalog_mismatch=payload.get("c", False),
     )
 
 
@@ -1276,6 +1283,9 @@ class CtxfsStore:
             )
             _log_grep_diagnostics(page, 0.0, 0.0, 0)
             return page
+        inherited_catalog_mismatch = (
+            resume.catalog_mismatch if resume is not None else False
+        )
         if resume is not None and resume.mode == "search_start":
             resume = None
         target = (
@@ -1286,7 +1296,13 @@ class CtxfsStore:
         if not target.exists():
             if resume is not None:
                 raise ValueError("ctxfs grep cursor is stale")
-            page = GrepPage(items=[], complete=True)
+            page = GrepPage(
+                items=[],
+                complete=not inherited_catalog_mismatch,
+                stopped_by=(
+                    "catalog_mismatch" if inherited_catalog_mismatch else None
+                ),
+            )
             _log_grep_diagnostics(page, 0.0, 0.0, 0)
             return page
         result = self._grep_tree_target(
@@ -1299,6 +1315,7 @@ class CtxfsStore:
             deadline,
             limit,
             resume=resume,
+            inherited_catalog_mismatch=inherited_catalog_mismatch,
         )
         if not result.anchor_found and result.stopped_by != "timeout":
             raise ValueError("ctxfs grep cursor is stale")
@@ -1358,6 +1375,7 @@ class CtxfsStore:
         match_limit: int,
         *,
         resume: _GrepCursor | None = None,
+        inherited_catalog_mismatch: bool = False,
     ) -> _GrepScanResult:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -1366,7 +1384,9 @@ class CtxfsStore:
                 stopped_by="timeout",
                 anchor_found=resume is None,
                 next_cursor=resume
-                or _grep_search_start_cursor(prefix_hash, pattern_hash),
+                or _grep_search_start_cursor(
+                    prefix_hash, pattern_hash, inherited_catalog_mismatch
+                ),
             )
         _require_rg()
         started = time.monotonic()
@@ -1383,7 +1403,7 @@ class CtxfsStore:
         active_line_number_state: _RgLineNumberState | None = None
         resume_snapshot: _GrepFileSnapshot | None = None
         last_match: GrepMatch | None = None
-        catalog_mismatch = False
+        catalog_mismatch = inherited_catalog_mismatch
         enrichment_seconds = 0.0
         matched_file_count = 0
         pending = b""
@@ -1451,8 +1471,12 @@ class CtxfsStore:
             if not anchor_found and resume is not None:
                 return resume
             if last_match is not None:
-                return _grep_cursor_for_match(prefix, pattern_hash, last_match)
-            return _grep_search_start_cursor(prefix_hash, pattern_hash)
+                return _grep_cursor_for_match(
+                    prefix, pattern_hash, last_match, catalog_mismatch
+                )
+            return _grep_search_start_cursor(
+                prefix_hash, pattern_hash, catalog_mismatch
+            )
 
         def result(
             *,
@@ -1520,6 +1544,14 @@ class CtxfsStore:
             if event_type != "match":
                 return None
             active_path = logical_path
+            # A continuation cursor carries mismatch state observed on earlier
+            # pages, so pre-anchor files need not be read and hashed again.
+            if (
+                resume is not None
+                and not anchor_found
+                and logical_path != resume_path
+            ):
+                return None
             if active_snapshot is None or active_snapshot.logical_path != logical_path:
                 enrichment_started = time.monotonic()
                 matched_file_count += 1
@@ -1537,8 +1569,6 @@ class CtxfsStore:
             catalog_mismatch = (
                 catalog_mismatch or active_snapshot.catalog_mismatch
             )
-            if resume is not None and not anchor_found and logical_path != resume_path:
-                return None
             if not active_snapshot.verified:
                 _terminate_process(process)
                 return result(stopped_by="catalog_mismatch")
@@ -1580,7 +1610,9 @@ class CtxfsStore:
                 _terminate_process(process)
                 return result(
                     stopped_by="limit",
-                    next_cursor=_grep_cursor_for_match(prefix, pattern_hash, match),
+                    next_cursor=_grep_cursor_for_match(
+                        prefix, pattern_hash, match, catalog_mismatch
+                    ),
                 )
             return None
 
@@ -2773,6 +2805,7 @@ def _grep_cursor_for_match(
     prefix: str,
     pattern_hash: str,
     match: GrepMatch,
+    catalog_mismatch: bool = False,
 ) -> _GrepCursor:
     return _GrepCursor(
         prefix_hash=_sha256(prefix.encode()),
@@ -2781,16 +2814,22 @@ def _grep_cursor_for_match(
         content_hash=match.content_hash,
         mode="after_match",
         anchor=(match.line_number, match.match_start, match.match_end),
+        catalog_mismatch=catalog_mismatch,
     )
 
 
-def _grep_search_start_cursor(prefix_hash: str, pattern_hash: str) -> _GrepCursor:
+def _grep_search_start_cursor(
+    prefix_hash: str,
+    pattern_hash: str,
+    catalog_mismatch: bool = False,
+) -> _GrepCursor:
     return _GrepCursor(
         prefix_hash=prefix_hash,
         pattern_hash=pattern_hash,
         path="",
         content_hash=None,
         mode="search_start",
+        catalog_mismatch=catalog_mismatch,
     )
 
 
