@@ -1534,6 +1534,71 @@ def test_grep_match_line_number_accepts_supported_binary_conventions(
     assert (match is not None) is expected
 
 
+def test_grep_line_number_state_accepts_equal_and_rejects_unsafe_offsets():
+    data = b"alpha\nneedle\n"
+    state = store_module._RgLineNumberState(data)
+
+    assert store_module._rg_line_number_matches(
+        data, 6, 2, state, float("inf")
+    )
+    assert store_module._rg_line_number_matches(
+        data, 6, 2, state, float("inf")
+    )
+    assert not store_module._rg_line_number_matches(
+        data, 0, 1, state, float("inf")
+    )
+    assert not store_module._rg_line_number_matches(
+        data, len(data) + 1, 3, state, float("inf")
+    )
+    equal_but_unrelated_data = (data + b"x")[:-1]
+    assert not store_module._rg_line_number_matches(
+        data,
+        6,
+        2,
+        store_module._RgLineNumberState(equal_but_unrelated_data),
+        float("inf"),
+    )
+
+
+@pytest.mark.parametrize("operand", ["directory", "exact_file"])
+def test_grep_validates_max_size_late_matches_incrementally(
+    tmp_path, monkeypatch, operand
+):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    path = "local_files/root/notes.md"
+    tree_path = store._tree_path("user-1", path)
+    tree_path.parent.mkdir(parents=True)
+    tail = b"".join(f"needle {index:04d}\n".encode() for index in range(1000))
+    padding_size = 5_000_000 - len(tail)
+    data = b"x" * (padding_size - 1) + b"\n" + tail
+    tree_path.write_bytes(data)
+    prefix = "local_files/root" if operand == "directory" else path
+    raw_operand = tree_path.parent if operand == "directory" else tree_path
+    advances = []
+    real_advance = store_module._advance_rg_line_number_state
+
+    def record_advance(state, absolute_offset, deadline):
+        advances.append((state.offset, absolute_offset))
+        return real_advance(state, absolute_offset, deadline)
+
+    monkeypatch.setattr(
+        store_module, "_advance_rg_line_number_state", record_advance
+    )
+
+    page = store.grep("user-1", "needle", prefix=prefix)
+
+    assert [
+        (item.line_number, item.line, item.match_start, item.match_end)
+        for item in page.items
+    ] == _canonical_raw_rg_matches(raw_operand, "needle")
+    assert len(page.items) == 1000
+    assert advances[0][0] == 0
+    assert all(previous_end == start for (_, previous_end), (start, _) in zip(
+        advances, advances[1:]
+    ))
+    assert sum(end - start for start, end in advances) == advances[-1][1]
+
+
 @pytest.mark.parametrize("line_number", [None, "2", 1.0, [], {}, True, 0, -1])
 def test_grep_match_rejects_malformed_line_number(line_number):
     snapshot = store_module._GrepFileSnapshot(

@@ -84,6 +84,14 @@ class _GrepFileSnapshot:
     verified: bool
 
 
+@dataclass
+class _RgLineNumberState:
+    data: bytes
+    offset: int = 0
+    lf_count: int = 0
+    nul_count: int = 0
+
+
 @dataclass(frozen=True)
 class _GrepCursor:
     prefix_hash: str
@@ -1372,6 +1380,7 @@ class CtxfsStore:
         user_root = Path(os.path.abspath(self._user_root(user_id)))
         active_path: str | None = None
         active_snapshot: _GrepFileSnapshot | None = None
+        active_line_number_state: _RgLineNumberState | None = None
         resume_snapshot: _GrepFileSnapshot | None = None
         last_match: GrepMatch | None = None
         catalog_mismatch = False
@@ -1463,7 +1472,8 @@ class CtxfsStore:
             )
 
         def consume_record(raw_line: bytes) -> _GrepScanResult | None:
-            nonlocal active_path, active_snapshot, anchor_found
+            nonlocal active_path, active_snapshot, active_line_number_state
+            nonlocal anchor_found
             nonlocal catalog_mismatch, enrichment_seconds, matched_file_count
             nonlocal last_match, resume_replay_complete
             if len(raw_line) > GREP_MAX_JSON_RECORD_BYTES:
@@ -1495,11 +1505,17 @@ class CtxfsStore:
                     if legacy_file_start and tree_path == resume_tree_path
                     else None
                 )
+                active_line_number_state = (
+                    _RgLineNumberState(active_snapshot.data)
+                    if active_snapshot is not None
+                    else None
+                )
                 return None
             if event_type == "end":
                 if active_path == logical_path:
                     active_path = None
                     active_snapshot = None
+                    active_line_number_state = None
                 return None
             if event_type != "match":
                 return None
@@ -1510,6 +1526,9 @@ class CtxfsStore:
                 try:
                     active_snapshot = self._snapshot_grep_file(
                         user_id, logical_path, tree_path, deadline
+                    )
+                    active_line_number_state = _RgLineNumberState(
+                        active_snapshot.data
                     )
                 finally:
                     enrichment_seconds += max(
@@ -1523,7 +1542,14 @@ class CtxfsStore:
             if not active_snapshot.verified:
                 _terminate_process(process)
                 return result(stopped_by="catalog_mismatch")
-            match = _verified_grep_match(event, active_snapshot)
+            if active_line_number_state is None:
+                active_line_number_state = _RgLineNumberState(active_snapshot.data)
+            match = _verified_grep_match(
+                event,
+                active_snapshot,
+                active_line_number_state,
+                deadline,
+            )
             if match is None:
                 catalog_mismatch = True
                 _terminate_process(process)
@@ -2878,7 +2904,10 @@ def _terminate_process(process: subprocess.Popen[str]) -> None:
 
 
 def _verified_grep_match(
-    event: dict[str, object], snapshot: _GrepFileSnapshot
+    event: dict[str, object],
+    snapshot: _GrepFileSnapshot,
+    line_number_state: _RgLineNumberState | None = None,
+    deadline: float = math.inf,
 ) -> GrepMatch | None:
     data = event.get("data")
     if not isinstance(data, dict):
@@ -2906,9 +2935,13 @@ def _verified_grep_match(
         or absolute_offset < 0
         or absolute_offset > len(snapshot.data)
         or len(raw_line) > len(snapshot.data) - absolute_offset
-        or snapshot.data[absolute_offset : absolute_offset + len(raw_line)] != raw_line
+        or not snapshot.data.startswith(raw_line, absolute_offset)
         or not _rg_line_number_matches(
-            snapshot.data, absolute_offset, line_number
+            snapshot.data,
+            absolute_offset,
+            line_number,
+            line_number_state or _RgLineNumberState(snapshot.data),
+            deadline,
         )
     ):
         return None
@@ -2946,18 +2979,43 @@ def _rg_line_bytes(lines: dict[str, object]) -> bytes:
 
 
 def _rg_line_number_matches(
-    data: bytes, absolute_offset: int, line_number: int
+    data: bytes,
+    absolute_offset: int,
+    line_number: int,
+    state: _RgLineNumberState,
+    deadline: float,
 ) -> bool:
+    if (
+        state.data is not data
+        or absolute_offset < state.offset
+        or absolute_offset > len(data)
+    ):
+        return False
     if absolute_offset and data[absolute_offset - 1] not in b"\n\x00":
         return False
-    lf_line_number = data.count(b"\n", 0, absolute_offset) + 1
+    _advance_rg_line_number_state(state, absolute_offset, deadline)
+    lf_line_number = state.lf_count + 1
     # ripgrep --binary releases differ on whether a NUL record boundary also
     # advances line_number. Accept either convention, but never trust a line
     # number that cannot describe this offset in the captured bytes.
     return line_number in {
         lf_line_number,
-        lf_line_number + data.count(b"\x00", 0, absolute_offset),
+        lf_line_number + state.nul_count,
     }
+
+
+def _advance_rg_line_number_state(
+    state: _RgLineNumberState, absolute_offset: int, deadline: float
+) -> None:
+    while state.offset < absolute_offset:
+        if time.monotonic() >= deadline:
+            raise TimeoutError
+        end = min(state.offset + GREP_JSON_CHUNK_BYTES, absolute_offset)
+        state.lf_count += state.data.count(b"\n", state.offset, end)
+        state.nul_count += state.data.count(b"\x00", state.offset, end)
+        state.offset = end
+    if time.monotonic() >= deadline:
+        raise TimeoutError
 
 
 def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
