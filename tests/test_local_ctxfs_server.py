@@ -11,7 +11,6 @@ from ctxfs import (
     MachineCredentialCoordinator,
     MachineCredentialNotCurrentError,
 )
-from ctxfs import store as store_module
 from ctxfs.credentials import CredentialStore
 
 
@@ -132,17 +131,14 @@ def test_local_ctxfs_http_grep_limit_returns_earlier_match_before_later_hash_tim
         },
     )
     assert response.status_code == 200
-    store = CtxfsStore(root)
-    later_path = store._tree_path("local", "local-files/root/b.md")
-    store.close()
-    original_hash_path = store_module._hash_path
+    original_snapshot = CtxfsStore._snapshot_grep_file
 
-    def timeout_on_later_path(path, deadline):
-        if path == later_path:
-            raise TimeoutError
-        return original_hash_path(path, deadline)
+    def reject_later_snapshot(self, user_id, logical_path, tree_path, deadline):
+        if logical_path == "local-files/root/b.md":
+            raise AssertionError("grep enriched a file after satisfying the limit")
+        return original_snapshot(self, user_id, logical_path, tree_path, deadline)
 
-    monkeypatch.setattr(store_module, "_hash_path", timeout_on_later_path)
+    monkeypatch.setattr(CtxfsStore, "_snapshot_grep_file", reject_later_snapshot)
 
     response = client.get(
         "/api/ctxfs/grep",

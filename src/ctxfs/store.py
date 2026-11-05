@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import bisect
 import fnmatch
 import functools
 import hashlib
@@ -55,27 +56,41 @@ GREP_MIN_TIMEOUT_SECONDS = 0.1
 GREP_MAX_TIMEOUT_SECONDS = 60.0
 GREP_MAX_CURSOR_BYTES = 4096
 GREP_JSON_CHUNK_BYTES = 64 * 1024
-GREP_MAX_BATCH_PATHS = 256
-GREP_MAX_COMMAND_CHARS = 24_000
 RIPGREP_MIN_VERSION = (13, 0, 0)
 GREP_MAX_JSON_RECORD_BYTES = 1_000_000
 _GREP_CONTENT_HASH_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _GREP_PATH_IDENTITY_RE = re.compile(r"stat:\d+:\d+:\d+:-?\d+:-?\d+\Z")
 
 
-@dataclass(frozen=True)
-class _GrepTarget:
-    logical_path: str
-    tree_path: Path
-    content_hash: str
-
-
 @dataclass
-class _GrepBatchResult:
+class _GrepScanResult:
     matches: list[GrepMatch]
     stopped_by: str | None = None
     anchor_found: bool = True
     next_cursor: _GrepCursor | None = None
+    catalog_mismatch: bool = False
+    scan_seconds: float = 0.0
+    enrichment_seconds: float = 0.0
+    matched_file_count: int = 0
+
+
+@dataclass(frozen=True)
+class _GrepFileSnapshot:
+    logical_path: str
+    tree_path: Path
+    data: bytes
+    content_hash: str
+    path_identity: str
+    catalog_mismatch: bool
+    verified: bool
+
+
+@dataclass
+class _RgLineNumberState:
+    data: bytes
+    offset: int = 0
+    lf_count: int = 0
+    nul_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -86,17 +101,20 @@ class _GrepCursor:
     content_hash: str | None
     mode: str
     anchor: tuple[int, int, int] | None = None
+    catalog_mismatch: bool = False
+    version: int = 3
 
 
 def _encode_grep_cursor(cursor: _GrepCursor) -> str:
     payload = {
-        "v": 2,
+        "v": 3,
         "p": cursor.prefix_hash,
         "q": cursor.pattern_hash,
         "r": cursor.path,
         "h": cursor.content_hash,
         "m": cursor.mode,
         "a": list(cursor.anchor) if cursor.anchor is not None else None,
+        "c": cursor.catalog_mismatch,
     }
     encoded = (
         base64.urlsafe_b64encode(
@@ -122,13 +140,17 @@ def _decode_grep_cursor(value: str) -> _GrepCursor:
         payload = json.loads(raw)
     except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("invalid ctxfs grep cursor") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("invalid ctxfs grep cursor")
+    version = payload.get("v")
+    if not isinstance(version, int) or isinstance(version, bool) or version not in {2, 3}:
+        raise ValueError("invalid ctxfs grep cursor")
     expected = {"v", "p", "q", "r", "h", "m", "a"}
+    if version == 3:
+        expected.add("c")
     if (
-        not isinstance(payload, dict)
-        or set(payload) != expected
-        or not isinstance(payload["v"], int)
-        or isinstance(payload["v"], bool)
-        or payload["v"] != 2
+        set(payload) != expected
+        or (version == 3 and not isinstance(payload["c"], bool))
     ):
         raise ValueError("invalid ctxfs grep cursor")
     string_fields = ("p", "q", "r", "m")
@@ -139,7 +161,13 @@ def _decode_grep_cursor(value: str) -> _GrepCursor:
     if (
         not _GREP_CONTENT_HASH_RE.fullmatch(payload["p"])
         or not _GREP_CONTENT_HASH_RE.fullmatch(payload["q"])
-        or payload["m"] not in {"after_match", "file_start", "search_start"}
+        or payload["m"]
+        not in {
+            "after_match",
+            "legacy_after_match",
+            "file_start",
+            "search_start",
+        }
     ):
         raise ValueError("invalid ctxfs grep cursor")
     content_hash = payload["h"]
@@ -151,7 +179,7 @@ def _decode_grep_cursor(value: str) -> _GrepCursor:
     )
     anchor_value = payload["a"]
     anchor: tuple[int, int, int] | None = None
-    if payload["m"] == "after_match":
+    if payload["m"] in {"after_match", "legacy_after_match"}:
         if (
             not is_content_hash
             or not isinstance(anchor_value, list)
@@ -183,6 +211,8 @@ def _decode_grep_cursor(value: str) -> _GrepCursor:
         content_hash=payload["h"],
         mode=payload["m"],
         anchor=anchor,
+        catalog_mismatch=payload.get("c", False),
+        version=version,
     )
 
 
@@ -1246,15 +1276,10 @@ class CtxfsStore:
             resume.prefix_hash != prefix_hash or resume.pattern_hash != pattern_hash
         ):
             raise ValueError("ctxfs grep cursor does not match this search")
-        resume_path = (
-            _grep_absolute_path(normalized_prefix, resume.path)
-            if resume is not None and resume.mode != "search_start"
-            else ""
-        )
         try:
             self._validate_grep_pattern(pattern, deadline)
         except TimeoutError:
-            return _grep_timeout_page(
+            page = _grep_timeout_page(
                 [],
                 resume
                 or _GrepCursor(
@@ -1265,185 +1290,70 @@ class CtxfsStore:
                     mode="search_start",
                 ),
             )
+            _log_grep_diagnostics(page, 0.0, 0.0, 0)
+            return page
+        inherited_catalog_mismatch = (
+            resume.catalog_mismatch if resume is not None else False
+        )
         if resume is not None and resume.mode == "search_start":
             resume = None
-        matches: list[GrepMatch] = []
-        incomplete = False
-        resume_pending = resume is not None
-        resume_anchor: tuple[int, int, int] | None = None
-        catalog_paths: set[str] = set()
-        pending_targets: list[_GrepTarget] = []
-
-        def target_cursor(
-            target: _GrepTarget,
-            anchor: tuple[int, int, int] | None = None,
-        ) -> _GrepCursor:
-            return _GrepCursor(
-                prefix_hash=prefix_hash,
-                pattern_hash=pattern_hash,
-                path=_grep_relative_path(normalized_prefix, target.logical_path),
-                content_hash=target.content_hash,
-                mode="after_match" if anchor is not None else "file_start",
-                anchor=anchor,
-            )
-
-        def timeout_page_before(
-            logical_path: str,
-            content_identity: str,
-        ) -> GrepPage:
-            if pending_targets:
-                first = pending_targets[0]
-                anchor = (
-                    resume_anchor
-                    if resume is not None and first.logical_path == resume_path
-                    else None
-                )
-                cursor = target_cursor(first, anchor)
-            else:
-                cursor = _grep_unsearched_cursor(
-                    normalized_prefix,
-                    pattern_hash,
-                    logical_path,
-                    resume if resume_pending else None,
-                    content_identity,
-                )
-            return _grep_timeout_page(matches, cursor)
-
-        def search_pending_targets() -> GrepPage | None:
-            nonlocal pending_targets, resume_anchor
-            for batch in _grep_target_batches(pattern, pending_targets):
-                batch_result = self._grep_tree_paths(
-                    pattern,
-                    batch,
-                    normalized_prefix,
-                    prefix_hash,
-                    pattern_hash,
-                    deadline,
-                    limit - len(matches),
-                    skip_through=resume_anchor,
-                )
-                if (
-                    not batch_result.anchor_found
-                    and batch_result.stopped_by != "timeout"
-                ):
-                    raise ValueError("ctxfs grep cursor is stale")
-                matches.extend(batch_result.matches)
-                resume_anchor = None
-                if batch_result.stopped_by is not None:
-                    next_cursor = (
-                        _encode_grep_cursor(batch_result.next_cursor)
-                        if batch_result.next_cursor is not None
-                        else None
-                    )
-                    return GrepPage(
-                        items=matches,
-                        complete=False,
-                        stopped_by=batch_result.stopped_by,
-                        next_cursor=next_cursor,
-                    )
-            pending_targets = []
-            return None
-
-        def pending_target_capacity_reached() -> bool:
-            return len(pending_targets) >= min(
-                GREP_MAX_BATCH_PATHS, limit - len(matches)
-            )
-
-        for entry in self._iter_entries_under_prefix(user_id, normalized_prefix):
-            if time.monotonic() >= deadline:
-                return timeout_page_before(entry.path, entry.content_hash)
-            catalog_paths.add(entry.path)
-            if resume_pending and entry.path != resume_path:
-                continue
-            tree_path = self._tree_path(user_id, entry.path)
-            if not tree_path.exists():
-                incomplete = True
-                continue
-            try:
-                content_hash = _hash_path(tree_path, deadline)
-            except TimeoutError:
-                return timeout_page_before(entry.path, entry.content_hash)
-            if resume_pending:
-                if (
-                    resume.content_hash is not None
-                    and content_hash != resume.content_hash
-                ):
-                    raise ValueError("ctxfs grep cursor is stale")
-                resume_pending = False
-                if resume.mode == "after_match":
-                    resume_anchor = resume.anchor
-            pending_targets.append(
-                _GrepTarget(
-                    logical_path=entry.path,
-                    tree_path=tree_path,
-                    content_hash=content_hash,
-                )
-            )
-            if pending_target_capacity_reached():
-                page = search_pending_targets()
-                if page is not None:
-                    return page
-        page = search_pending_targets()
-        if page is not None:
-            return page
-        for logical_path, tree_path in self._iter_disk_files_under_prefix(
-            user_id, normalized_prefix, deadline
-        ):
-            if tree_path is None:
-                return timeout_page_before(
-                    logical_path,
-                    _path_identity(self._tree_path(user_id, logical_path)),
-                )
-            if logical_path in catalog_paths:
-                continue
-            incomplete = True
-            if resume_pending and logical_path != resume_path:
-                continue
-            resume_identity = _path_identity(tree_path)
-            if (
-                resume_pending
-                and resume.content_hash is not None
-                and resume.content_hash.startswith("stat:")
-                and resume.content_hash != resume_identity
-            ):
-                raise ValueError("ctxfs grep cursor is stale")
-            try:
-                content_hash = _hash_path(tree_path, deadline)
-            except TimeoutError:
-                return timeout_page_before(logical_path, resume_identity)
-            if resume_pending:
-                if resume.content_hash is not None and resume.content_hash.startswith(
-                    "stat:"
-                ):
-                    stale = _path_identity(tree_path) != resume_identity
-                else:
-                    stale = content_hash != resume.content_hash
-                if stale:
-                    raise ValueError("ctxfs grep cursor is stale")
-                resume_pending = False
-                if resume.mode == "after_match":
-                    resume_anchor = resume.anchor
-            pending_targets.append(
-                _GrepTarget(
-                    logical_path=logical_path,
-                    tree_path=tree_path,
-                    content_hash=content_hash,
-                )
-            )
-            if pending_target_capacity_reached():
-                page = search_pending_targets()
-                if page is not None:
-                    return page
-        page = search_pending_targets()
-        if page is not None:
-            return page
-        if resume_pending:
-            raise ValueError("ctxfs grep cursor is stale")
-        return GrepPage(
-            items=matches,
-            complete=not incomplete,
-            stopped_by=None if not incomplete else "catalog_mismatch",
+        target = (
+            self._tree_path(user_id, normalized_prefix)
+            if normalized_prefix
+            else self._user_root(user_id)
         )
+        if not target.exists():
+            if resume is not None:
+                raise ValueError("ctxfs grep cursor is stale")
+            page = GrepPage(
+                items=[],
+                complete=not inherited_catalog_mismatch,
+                stopped_by=(
+                    "catalog_mismatch" if inherited_catalog_mismatch else None
+                ),
+            )
+            _log_grep_diagnostics(page, 0.0, 0.0, 0)
+            return page
+        result = self._grep_tree_target(
+            user_id,
+            pattern,
+            target,
+            normalized_prefix,
+            prefix_hash,
+            pattern_hash,
+            deadline,
+            limit,
+            resume=resume,
+            inherited_catalog_mismatch=inherited_catalog_mismatch,
+        )
+        if not result.anchor_found and result.stopped_by != "timeout":
+            raise ValueError("ctxfs grep cursor is stale")
+        stopped_by = result.stopped_by
+        if stopped_by is None and result.catalog_mismatch:
+            stopped_by = "catalog_mismatch"
+        page = GrepPage(
+            items=result.matches,
+            complete=stopped_by is None,
+            stopped_by=stopped_by,
+            next_cursor=(
+                (
+                    cursor
+                    if cursor is not None
+                    and result.stopped_by == "timeout"
+                    and result.next_cursor == resume
+                    else _encode_grep_cursor(result.next_cursor)
+                )
+                if result.next_cursor is not None
+                else None
+            ),
+        )
+        _log_grep_diagnostics(
+            page,
+            result.scan_seconds,
+            result.enrichment_seconds,
+            result.matched_file_count,
+        )
+        return page
 
     def _validate_grep_pattern(self, pattern: str, deadline: float) -> None:
         _require_rg()
@@ -1468,32 +1378,149 @@ class CtxfsStore:
         if process.returncode not in {0, 1}:
             raise RuntimeError("ctxfs grep pattern validation failed")
 
-    def _grep_tree_paths(
+    def _grep_tree_target(
         self,
+        user_id: str,
         pattern: str,
-        targets: list[_GrepTarget],
+        target: Path,
         prefix: str,
         prefix_hash: str,
         pattern_hash: str,
         deadline: float,
         match_limit: int,
         *,
-        skip_through: tuple[int, int, int] | None = None,
-    ) -> _GrepBatchResult:
-        if not targets:
-            return _GrepBatchResult([])
+        resume: _GrepCursor | None = None,
+        inherited_catalog_mismatch: bool = False,
+    ) -> _GrepScanResult:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            return _GrepBatchResult(
+            return _GrepScanResult(
                 [],
                 stopped_by="timeout",
-                anchor_found=skip_through is None,
-                next_cursor=_grep_target_cursor(
-                    targets[0], prefix, prefix_hash, pattern_hash, skip_through
+                anchor_found=resume is None,
+                next_cursor=resume
+                or _grep_search_start_cursor(
+                    prefix_hash, pattern_hash, inherited_catalog_mismatch
                 ),
             )
         _require_rg()
-        command = _rg_command(pattern, [target.tree_path for target in targets])
+        started = time.monotonic()
+        matches: list[GrepMatch] = []
+        anchor_found = resume is None
+        resume_path = (
+            _grep_absolute_path(prefix, resume.path)
+            if resume is not None
+            else ""
+        )
+        user_root = Path(os.path.abspath(self._user_root(user_id)))
+        active_path: str | None = None
+        active_snapshot: _GrepFileSnapshot | None = None
+        active_line_number_state: _RgLineNumberState | None = None
+        resume_snapshot: _GrepFileSnapshot | None = None
+        last_match: GrepMatch | None = None
+        catalog_mismatch = inherited_catalog_mismatch
+        enrichment_seconds = 0.0
+        matched_file_count = 0
+        pending = b""
+        legacy_logical_resume = resume is not None and (
+            resume.mode == "legacy_after_match"
+            or (resume.version == 2 and resume.mode == "after_match")
+        )
+        legacy_candidate_keys: list[tuple[str, int, int, int]] = []
+        legacy_candidates: list[GrepMatch] = []
+        legacy_file_start = resume is not None and resume.mode == "file_start"
+        resume_tree_path = (
+            Path(os.path.abspath(self._tree_path(user_id, resume_path)))
+            if legacy_file_start
+            else None
+        )
+        resume_replay_complete = not legacy_file_start
+
+        # v2 cursors were issued against catalog path order. The encoded tree
+        # order consumed by a direct ripgrep scan differs when one path is a
+        # directory prefix of another (for example, a-x sorts before a/b in
+        # the catalog but after it on disk). Only legacy logical resumes pay
+        # for a full scan. Keep at most limit + 1 verified matches so the
+        # compatibility cost is bounded in memory, then continue with an
+        # explicitly marked v3 cursor until the logical scan is exhausted.
+        if legacy_logical_resume:
+            assert resume is not None
+            resume_tree_path = Path(
+                os.path.abspath(self._tree_path(user_id, resume_path))
+            )
+            enrichment_started = time.monotonic()
+            try:
+                try:
+                    resume_snapshot = self._snapshot_grep_file(
+                        user_id, resume_path, resume_tree_path, deadline
+                    )
+                except TimeoutError:
+                    resume_snapshot = None
+            finally:
+                enrichment_seconds += max(
+                    0.0, time.monotonic() - enrichment_started
+                )
+            if resume_snapshot is None:
+                total = max(0.0, time.monotonic() - started)
+                return _GrepScanResult(
+                    [],
+                    stopped_by="timeout",
+                    anchor_found=False,
+                    next_cursor=resume,
+                    scan_seconds=max(0.0, total - enrichment_seconds),
+                    enrichment_seconds=enrichment_seconds,
+                )
+            catalog_mismatch = (
+                catalog_mismatch or resume_snapshot.catalog_mismatch
+            )
+            expected_identity = (
+                resume_snapshot.path_identity
+                if resume.content_hash is not None
+                and resume.content_hash.startswith("stat:")
+                else resume_snapshot.content_hash
+            )
+            if expected_identity != resume.content_hash:
+                raise ValueError("ctxfs grep cursor is stale")
+
+        # Direct directory scans do not necessarily emit JSON events for files
+        # with zero matches. Base-issued v2 file_start cursors can nevertheless
+        # name such a file, so validate that one file before replaying the scan.
+        # Reuse the snapshot if ripgrep does emit an event for it.
+        if legacy_file_start:
+            assert resume is not None
+            assert resume_tree_path is not None
+            enrichment_started = time.monotonic()
+            try:
+                try:
+                    resume_snapshot = self._snapshot_grep_file(
+                        user_id, resume_path, resume_tree_path, deadline
+                    )
+                except TimeoutError:
+                    resume_snapshot = None
+            finally:
+                enrichment_seconds += max(0.0, time.monotonic() - enrichment_started)
+            if resume_snapshot is None:
+                total = max(0.0, time.monotonic() - started)
+                return _GrepScanResult(
+                    [],
+                    stopped_by="timeout",
+                    anchor_found=False,
+                    next_cursor=resume,
+                    scan_seconds=max(0.0, total - enrichment_seconds),
+                    enrichment_seconds=enrichment_seconds,
+                )
+            catalog_mismatch = catalog_mismatch or resume_snapshot.catalog_mismatch
+            expected_identity = (
+                resume_snapshot.path_identity
+                if resume.content_hash is not None
+                and resume.content_hash.startswith("stat:")
+                else resume_snapshot.content_hash
+            )
+            if expected_identity != resume.content_hash:
+                raise ValueError("ctxfs grep cursor is stale")
+            anchor_found = True
+
+        command = _rg_command(pattern, target)
         process = subprocess.Popen(
             command,
             env=_rg_env(),
@@ -1501,48 +1528,49 @@ class CtxfsStore:
             stderr=subprocess.STDOUT,
         )
         assert process.stdout is not None
-        matches: list[GrepMatch] = []
-        anchor_found = skip_through is None
-        target_by_path = {
-            _normalized_physical_path(target.tree_path): target for target in targets
-        }
-        ended_paths: set[str] = set()
-        active_target: _GrepTarget | None = None
-        last_anchor_by_path: dict[str, tuple[int, int, int]] = {}
-        pending = b""
 
         def timeout_cursor() -> _GrepCursor:
-            if not anchor_found and skip_through is not None:
-                return _grep_target_cursor(
-                    targets[0], prefix, prefix_hash, pattern_hash, skip_through
+            if legacy_logical_resume:
+                assert resume is not None
+                return resume
+            if legacy_file_start and not resume_replay_complete:
+                assert resume is not None
+                return resume
+            if not anchor_found and resume is not None:
+                return resume
+            if last_match is not None:
+                return _grep_cursor_for_match(
+                    prefix, pattern_hash, last_match, catalog_mismatch
                 )
-            target = active_target
-            if target is None:
-                target = next(
-                    (
-                        candidate
-                        for candidate in targets
-                        if _normalized_physical_path(candidate.tree_path)
-                        not in ended_paths
-                    ),
-                    targets[-1],
-                )
-            anchor = last_anchor_by_path.get(
-                _normalized_physical_path(target.tree_path)
-            )
-            return _grep_target_cursor(
-                target, prefix, prefix_hash, pattern_hash, anchor
+            return _grep_search_start_cursor(
+                prefix_hash, pattern_hash, catalog_mismatch
             )
 
-        def consume_record(raw_line: bytes) -> _GrepBatchResult | None:
-            nonlocal active_target, anchor_found
+        def result(
+            *,
+            stopped_by: str | None = None,
+            next_cursor: _GrepCursor | None = None,
+        ) -> _GrepScanResult:
+            total = max(0.0, time.monotonic() - started)
+            return _GrepScanResult(
+                matches,
+                stopped_by=stopped_by,
+                anchor_found=anchor_found,
+                next_cursor=next_cursor,
+                catalog_mismatch=catalog_mismatch,
+                scan_seconds=max(0.0, total - enrichment_seconds),
+                enrichment_seconds=enrichment_seconds,
+                matched_file_count=matched_file_count,
+            )
+
+        def consume_record(raw_line: bytes) -> _GrepScanResult | None:
+            nonlocal active_path, active_snapshot, active_line_number_state
+            nonlocal anchor_found
+            nonlocal catalog_mismatch, enrichment_seconds, matched_file_count
+            nonlocal last_match, resume_replay_complete
             if len(raw_line) > GREP_MAX_JSON_RECORD_BYTES:
                 _terminate_process(process)
-                return _GrepBatchResult(
-                    matches,
-                    stopped_by="max_bytes",
-                    anchor_found=anchor_found,
-                )
+                return result(stopped_by="max_bytes")
             try:
                 event = json.loads(raw_line)
             except (json.JSONDecodeError, UnicodeDecodeError):
@@ -1551,45 +1579,128 @@ class CtxfsStore:
             event_path = _rg_event_path(event)
             if event_path is None:
                 return None
-            path_key = _normalized_physical_path(event_path)
-            target = target_by_path.get(path_key)
-            if target is None:
+            tree_path = Path(os.path.abspath(event_path))
+            logical_path = _logical_tree_path(user_root, tree_path)
+            if logical_path is None or (
+                prefix and not _path_is_within_prefix(logical_path, prefix)
+            ):
                 raise RuntimeError("ctxfs grep returned an unexpected path")
+            if legacy_file_start and not resume_replay_complete:
+                assert resume_tree_path is not None
+                if os.fspath(tree_path) < os.fspath(resume_tree_path):
+                    return None
+                resume_replay_complete = True
             if event_type == "begin":
-                active_target = target
+                active_path = logical_path
+                active_snapshot = (
+                    resume_snapshot
+                    if (legacy_file_start or legacy_logical_resume)
+                    and tree_path == resume_tree_path
+                    else None
+                )
+                active_line_number_state = (
+                    _RgLineNumberState(active_snapshot.data)
+                    if active_snapshot is not None
+                    else None
+                )
                 return None
             if event_type == "end":
-                ended_paths.add(path_key)
-                if active_target == target:
-                    active_target = None
+                if active_path == logical_path:
+                    active_path = None
+                    active_snapshot = None
+                    active_line_number_state = None
                 return None
             if event_type != "match":
                 return None
-            active_target = target
-            match = _grep_match_from_rg_event(
-                raw_line,
-                target.logical_path,
-                target.content_hash,
-            )
-            assert match is not None
-            position = (match.line_number, match.match_start, match.match_end)
-            if not anchor_found:
-                if target != targets[0]:
-                    return None
-                if position == skip_through:
-                    anchor_found = True
-                    last_anchor_by_path[path_key] = position
+            active_path = logical_path
+            if legacy_logical_resume and logical_path < resume_path:
                 return None
+            # A continuation cursor carries mismatch state observed on earlier
+            # pages, so pre-anchor files need not be read and hashed again.
+            if (
+                resume is not None
+                and not anchor_found
+                and not legacy_logical_resume
+                and logical_path != resume_path
+            ):
+                return None
+            if active_snapshot is None or active_snapshot.logical_path != logical_path:
+                enrichment_started = time.monotonic()
+                matched_file_count += 1
+                try:
+                    active_snapshot = self._snapshot_grep_file(
+                        user_id, logical_path, tree_path, deadline
+                    )
+                    active_line_number_state = _RgLineNumberState(
+                        active_snapshot.data
+                    )
+                finally:
+                    enrichment_seconds += max(
+                        0.0, time.monotonic() - enrichment_started
+                    )
+            catalog_mismatch = (
+                catalog_mismatch or active_snapshot.catalog_mismatch
+            )
+            if not active_snapshot.verified:
+                _terminate_process(process)
+                return result(stopped_by="catalog_mismatch")
+            if active_line_number_state is None:
+                active_line_number_state = _RgLineNumberState(active_snapshot.data)
+            match = _verified_grep_match(
+                event,
+                active_snapshot,
+                active_line_number_state,
+                deadline,
+            )
+            if match is None:
+                catalog_mismatch = True
+                _terminate_process(process)
+                return result(stopped_by="catalog_mismatch")
+            position = (match.line_number, match.match_start, match.match_end)
+            if legacy_logical_resume:
+                assert resume is not None
+                assert resume.anchor is not None
+                if logical_path == resume_path:
+                    if position == resume.anchor:
+                        anchor_found = True
+                        return None
+                    if position < resume.anchor:
+                        return None
+                key = (logical_path, *position)
+                insertion = bisect.bisect_right(legacy_candidate_keys, key)
+                legacy_candidate_keys.insert(insertion, key)
+                legacy_candidates.insert(insertion, match)
+                if len(legacy_candidates) > match_limit + 1:
+                    legacy_candidate_keys.pop()
+                    legacy_candidates.pop()
+                return None
+            if not anchor_found:
+                if resume is None:
+                    raise ValueError("ctxfs grep cursor is stale")
+                expected_identity = (
+                    active_snapshot.path_identity
+                    if resume.content_hash is not None
+                    and resume.content_hash.startswith("stat:")
+                    else active_snapshot.content_hash
+                )
+                if expected_identity != resume.content_hash:
+                    raise ValueError("ctxfs grep cursor is stale")
+                if resume.mode == "file_start":
+                    anchor_found = True
+                elif position == resume.anchor:
+                    anchor_found = True
+                    last_match = match
+                    return None
+                else:
+                    return None
             matches.append(match)
-            last_anchor_by_path[path_key] = position
+            last_match = match
             if len(matches) >= match_limit:
                 _terminate_process(process)
-                return _GrepBatchResult(
-                    matches,
+                return result(
                     stopped_by="limit",
-                    anchor_found=anchor_found,
-                    next_cursor=_grep_target_cursor(
-                        target, prefix, prefix_hash, pattern_hash, position
+                    next_cursor=_grep_cursor_for_match(
+                        prefix, pattern_hash, match, catalog_mismatch
                     ),
                 )
             return None
@@ -1609,28 +1720,21 @@ class CtxfsStore:
                     pending += chunk
                     while b"\n" in pending:
                         raw_line, pending = pending.split(b"\n", 1)
-                        result = consume_record(raw_line)
-                        if result is not None:
-                            return result
+                        consumed = consume_record(raw_line)
+                        if consumed is not None:
+                            return consumed
                     if len(pending) > GREP_MAX_JSON_RECORD_BYTES:
                         _terminate_process(process)
-                        return _GrepBatchResult(
-                            matches,
-                            stopped_by="max_bytes",
-                            anchor_found=anchor_found,
-                        )
+                        return result(stopped_by="max_bytes")
                 if pending:
-                    result = consume_record(pending)
-                    if result is not None:
-                        return result
+                    consumed = consume_record(pending)
+                    if consumed is not None:
+                        return consumed
         except TimeoutError:
             _terminate_process(process)
-            return _GrepBatchResult(
-                matches,
-                stopped_by="timeout",
-                anchor_found=anchor_found,
-                next_cursor=timeout_cursor(),
-            )
+            if legacy_logical_resume:
+                matches.clear()
+            return result(stopped_by="timeout", next_cursor=timeout_cursor())
         except Exception:
             _terminate_process(process)
             raise
@@ -1640,19 +1744,89 @@ class CtxfsStore:
             returncode = process.wait(timeout=max(deadline - time.monotonic(), 0.0))
         except subprocess.TimeoutExpired:
             _terminate_process(process)
-            return _GrepBatchResult(
-                matches,
-                stopped_by="timeout",
-                anchor_found=anchor_found,
-                next_cursor=timeout_cursor(),
-            )
-        if returncode == 1:
-            return _GrepBatchResult(matches, anchor_found=anchor_found)
+            if legacy_logical_resume:
+                matches.clear()
+            return result(stopped_by="timeout", next_cursor=timeout_cursor())
+        if not anchor_found:
+            raise ValueError("ctxfs grep cursor is stale")
         if returncode == 2:
             raise RuntimeError("ctxfs grep failed")
-        if returncode != 0:
+        if returncode not in {0, 1}:
             raise RuntimeError("ctxfs grep failed")
-        return _GrepBatchResult(matches, anchor_found=anchor_found)
+        if legacy_logical_resume:
+            matches[:] = legacy_candidates[:match_limit]
+            if len(legacy_candidates) > match_limit:
+                last_match = matches[-1]
+                return result(
+                    stopped_by="limit",
+                    next_cursor=_grep_cursor_for_match(
+                        prefix,
+                        pattern_hash,
+                        last_match,
+                        catalog_mismatch,
+                        mode="legacy_after_match",
+                    ),
+                )
+        if returncode == 1:
+            return result()
+        return result()
+
+    def _snapshot_grep_file(
+        self,
+        user_id: str,
+        logical_path: str,
+        tree_path: Path,
+        deadline: float,
+    ) -> _GrepFileSnapshot:
+        digest = hashlib.sha256()
+        chunks: list[bytes] = []
+        try:
+            with tree_path.open("rb") as handle:
+                before = os.fstat(handle.fileno())
+                while True:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError
+                    chunk = handle.read(64 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                    chunks.append(chunk)
+                after = os.fstat(handle.fileno())
+        except OSError:
+            return _GrepFileSnapshot(
+                logical_path,
+                tree_path,
+                b"",
+                "sha256:" + "0" * 64,
+                "stat:0:0:0:0:0",
+                True,
+                False,
+            )
+        content_hash = f"sha256:{digest.hexdigest()}"
+        try:
+            path_after = tree_path.stat(follow_symlinks=False)
+        except OSError:
+            path_after = None
+        stable = (
+            _stat_identity(before) == _stat_identity(after)
+            and path_after is not None
+            and _stat_identity(after) == _stat_identity(path_after)
+        )
+        row = self.connection.execute(
+            "SELECT content_hash FROM entries WHERE user_id = ? AND path = ?",
+            (user_id, logical_path),
+        ).fetchone()
+        catalog_mismatch = row is None or row["content_hash"] != content_hash
+        verified = stable and (row is None or row["content_hash"] == content_hash)
+        return _GrepFileSnapshot(
+            logical_path=logical_path,
+            tree_path=tree_path,
+            data=b"".join(chunks),
+            content_hash=content_hash,
+            path_identity=_path_identity_from_stat(after),
+            catalog_mismatch=catalog_mismatch or not stable,
+            verified=verified,
+        )
 
     def _put(
         self,
@@ -2716,8 +2890,7 @@ def _disk_directory_entry(path: str, tree_path: Path) -> DirectoryEntry:
     )
 
 
-def _rg_command(pattern: str, paths: Path | list[Path]) -> list[str]:
-    path_arguments = [paths] if isinstance(paths, Path) else paths
+def _rg_command(pattern: str, path: Path) -> list[str]:
     return [
         "rg",
         "--json",
@@ -2731,56 +2904,41 @@ def _rg_command(pattern: str, paths: Path | list[Path]) -> list[str]:
         "-e",
         pattern,
         "--",
-        *(str(path) for path in path_arguments),
+        str(path),
     ]
 
 
-def _grep_target_batches(
-    pattern: str,
-    targets: list[_GrepTarget],
-):
-    batch: list[_GrepTarget] = []
-    previous_path = ""
-    for target in targets:
-        physical_path = _normalized_physical_path(target.tree_path)
-        candidate = [*batch, target]
-        command_chars = len(
-            subprocess.list2cmdline(
-                _rg_command(pattern, [item.tree_path for item in candidate])
-            ).encode("utf-16-le")
-        ) // 2
-        requires_new_batch = bool(batch) and (
-            len(batch) >= GREP_MAX_BATCH_PATHS
-            or command_chars > GREP_MAX_COMMAND_CHARS
-            or physical_path <= previous_path
-        )
-        if requires_new_batch:
-            yield batch
-            batch = []
-        batch.append(target)
-        previous_path = physical_path
-    if batch:
-        yield batch
-
-
-def _normalized_physical_path(path: Path | str) -> str:
-    return os.path.normcase(os.path.normpath(os.fspath(path)))
-
-
-def _grep_target_cursor(
-    target: _GrepTarget,
+def _grep_cursor_for_match(
     prefix: str,
+    pattern_hash: str,
+    match: GrepMatch,
+    catalog_mismatch: bool = False,
+    *,
+    mode: str = "after_match",
+) -> _GrepCursor:
+    return _GrepCursor(
+        prefix_hash=_sha256(prefix.encode()),
+        pattern_hash=pattern_hash,
+        path=_grep_relative_path(prefix, match.path),
+        content_hash=match.content_hash,
+        mode=mode,
+        anchor=(match.line_number, match.match_start, match.match_end),
+        catalog_mismatch=catalog_mismatch,
+    )
+
+
+def _grep_search_start_cursor(
     prefix_hash: str,
     pattern_hash: str,
-    anchor: tuple[int, int, int] | None,
+    catalog_mismatch: bool = False,
 ) -> _GrepCursor:
     return _GrepCursor(
         prefix_hash=prefix_hash,
         pattern_hash=pattern_hash,
-        path=_grep_relative_path(prefix, target.logical_path),
-        content_hash=target.content_hash,
-        mode="after_match" if anchor is not None else "file_start",
-        anchor=anchor,
+        path="",
+        content_hash=None,
+        mode="search_start",
+        catalog_mismatch=catalog_mismatch,
     )
 
 
@@ -2838,18 +2996,6 @@ def _validate_rg_version(executable: str) -> None:
         )
 
 
-def _hash_path(path: Path, deadline: float) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while True:
-            if time.monotonic() >= deadline:
-                raise TimeoutError
-            chunk = handle.read(64 * 1024)
-            if not chunk:
-                return f"sha256:{digest.hexdigest()}"
-            digest.update(chunk)
-
-
 def _grep_timeout_page(
     matches: list[GrepMatch],
     cursor: _GrepCursor,
@@ -2862,52 +3008,10 @@ def _grep_timeout_page(
     )
 
 
-def _grep_unsearched_cursor(
-    prefix: str,
-    pattern_hash: str,
-    path: str,
-    resume: _GrepCursor | None,
-    content_hash: str,
-) -> _GrepCursor:
-    if resume is not None:
-        return resume
-    return _GrepCursor(
-        prefix_hash=_sha256(prefix.encode()),
-        pattern_hash=pattern_hash,
-        path=_grep_relative_path(prefix, path),
-        content_hash=content_hash,
-        mode="file_start",
-    )
-
-
-def _path_identity(path: Path) -> str:
-    try:
-        stat = path.stat()
-    except OSError as exc:
-        raise ValueError("ctxfs grep cursor is stale") from exc
-    return (
-        f"stat:{stat.st_dev}:{stat.st_ino}:{stat.st_size}:"
-        f"{stat.st_mtime_ns}:{stat.st_ctime_ns}"
-    )
-
-
 def _sorted_walk_paths(directory: Path, directories: list[str], filenames: list[str]):
     directories.sort()
     for filename in sorted(filenames):
         yield directory / filename
-
-
-def _grep_match_cursor(prefix: str, pattern_hash: str, match: GrepMatch) -> str:
-    return _encode_grep_cursor(
-        _GrepCursor(
-            prefix_hash=_sha256(prefix.encode()),
-            pattern_hash=pattern_hash,
-            path=_grep_relative_path(prefix, match.path),
-            content_hash=match.content_hash,
-            mode="after_match",
-            anchor=(match.line_number, match.match_start, match.match_end),
-        )
-    )
 
 
 def _grep_relative_path(prefix: str, path: str) -> str:
@@ -2947,42 +3051,175 @@ def _terminate_process(process: subprocess.Popen[str]) -> None:
         process.wait()
 
 
-def _grep_match_from_rg_event(
-    raw_line: bytes,
-    logical_path: str,
-    content_hash: str,
+def _verified_grep_match(
+    event: dict[str, object],
+    snapshot: _GrepFileSnapshot,
+    line_number_state: _RgLineNumberState | None = None,
+    deadline: float = math.inf,
 ) -> GrepMatch | None:
-    event = json.loads(raw_line)
-    if event.get("type") != "match":
+    data = event.get("data")
+    if not isinstance(data, dict):
+        raise RuntimeError("ctxfs grep returned invalid JSON")
+    line_number = data.get("line_number")
+    absolute_offset = data.get("absolute_offset")
+    lines = data.get("lines")
+    submatches = data.get("submatches")
+    if (
+        not isinstance(line_number, int)
+        or isinstance(line_number, bool)
+        or line_number <= 0
+        or not isinstance(lines, dict)
+        or not isinstance(submatches, list)
+        or not submatches
+        or not isinstance(submatches[0], dict)
+    ):
+        raise RuntimeError("ctxfs grep returned invalid JSON")
+    raw_line = _rg_line_bytes(lines)
+    # Treat ripgrep's framing as opaque: only its byte offset can tie the
+    # reported record back to the exact bytes retained in this snapshot.
+    if (
+        not isinstance(absolute_offset, int)
+        or isinstance(absolute_offset, bool)
+        or absolute_offset < 0
+        or absolute_offset > len(snapshot.data)
+        or len(raw_line) > len(snapshot.data) - absolute_offset
+    ):
         return None
-    data = event["data"]
-    lines = data["lines"]
-    line = _rg_line_text(lines).rstrip("\r\n")
-    submatch = data["submatches"][0]
-    match_start = _rg_byte_offset_to_char_offset(lines, submatch["start"])
-    match_end = _rg_byte_offset_to_char_offset(lines, submatch["end"])
+    verified_line_length = _rg_verified_line_length(
+        snapshot.data, absolute_offset, raw_line
+    )
+    if verified_line_length is None or not _rg_line_number_matches(
+        snapshot.data,
+        absolute_offset,
+        line_number,
+        line_number_state or _RgLineNumberState(snapshot.data),
+        deadline,
+    ):
+        return None
+    start = submatches[0].get("start")
+    end = submatches[0].get("end")
+    if (
+        not isinstance(start, int)
+        or isinstance(start, bool)
+        or not isinstance(end, int)
+        or isinstance(end, bool)
+        or not 0 <= start <= end <= len(raw_line)
+    ):
+        raise RuntimeError("ctxfs grep returned invalid JSON")
+    if end > verified_line_length:
+        return None
     return GrepMatch(
-        path=logical_path,
-        line_number=data["line_number"],
-        line=line,
-        match_start=match_start,
-        match_end=match_end,
-        content_hash=content_hash,
+        path=snapshot.logical_path,
+        line_number=line_number,
+        line=raw_line.decode("utf-8", "replace").rstrip("\r\n"),
+        match_start=len(raw_line[:start].decode("utf-8", "replace")),
+        match_end=len(raw_line[:end].decode("utf-8", "replace")),
+        content_hash=snapshot.content_hash,
     )
 
 
-def _rg_line_text(lines: dict[str, str]) -> str:
-    if "text" in lines:
-        return lines["text"]
-    return base64.b64decode(lines["bytes"]).decode("utf-8", "replace")
+def _rg_line_bytes(lines: dict[str, object]) -> bytes:
+    text = lines.get("text")
+    if isinstance(text, str):
+        return text.encode("utf-8")
+    encoded = lines.get("bytes")
+    if not isinstance(encoded, str):
+        raise RuntimeError("ctxfs grep returned invalid JSON")
+    try:
+        return base64.b64decode(encoded, validate=True)
+    except ValueError as exc:
+        raise RuntimeError("ctxfs grep returned invalid JSON") from exc
 
 
-def _rg_byte_offset_to_char_offset(lines: dict[str, str], byte_offset: int) -> int:
-    if "bytes" in lines:
-        raw = base64.b64decode(lines["bytes"])
-    else:
-        raw = lines["text"].encode("utf-8")
-    return len(raw[:byte_offset].decode("utf-8", "replace"))
+def _rg_verified_line_length(
+    data: bytes, absolute_offset: int, raw_line: bytes
+) -> int | None:
+    if data.startswith(raw_line, absolute_offset):
+        return len(raw_line)
+    if (
+        raw_line.endswith(b"\n")
+        and data.startswith(raw_line[:-1], absolute_offset)
+        and data[absolute_offset + len(raw_line) - 1] == 0
+    ):
+        # Some ripgrep/operand combinations render the terminating NUL record
+        # boundary as LF in JSON. Only that final framing byte is synthetic.
+        return len(raw_line) - 1
+    return None
+
+
+def _rg_line_number_matches(
+    data: bytes,
+    absolute_offset: int,
+    line_number: int,
+    state: _RgLineNumberState,
+    deadline: float,
+) -> bool:
+    if (
+        state.data is not data
+        or absolute_offset < state.offset
+        or absolute_offset > len(data)
+    ):
+        return False
+    if absolute_offset and data[absolute_offset - 1] not in b"\n\x00":
+        return False
+    _advance_rg_line_number_state(state, absolute_offset, deadline)
+    lf_line_number = state.lf_count + 1
+    # ripgrep --binary releases differ on whether a NUL record boundary also
+    # advances line_number. Accept either convention, but never trust a line
+    # number that cannot describe this offset in the captured bytes.
+    return line_number in {
+        lf_line_number,
+        lf_line_number + state.nul_count,
+    }
+
+
+def _advance_rg_line_number_state(
+    state: _RgLineNumberState, absolute_offset: int, deadline: float
+) -> None:
+    while state.offset < absolute_offset:
+        if time.monotonic() >= deadline:
+            raise TimeoutError
+        end = min(state.offset + GREP_JSON_CHUNK_BYTES, absolute_offset)
+        state.lf_count += state.data.count(b"\n", state.offset, end)
+        state.nul_count += state.data.count(b"\x00", state.offset, end)
+        state.offset = end
+    if time.monotonic() >= deadline:
+        raise TimeoutError
+
+
+def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _path_identity_from_stat(value: os.stat_result) -> str:
+    return (
+        f"stat:{value.st_dev}:{value.st_ino}:{value.st_size}:"
+        f"{value.st_mtime_ns}:{value.st_ctime_ns}"
+    )
+
+
+def _log_grep_diagnostics(
+    page: GrepPage,
+    scan_seconds: float,
+    enrichment_seconds: float,
+    matched_file_count: int,
+) -> None:
+    logger.debug(
+        "ctxfs grep completed",
+        extra={
+            "ctxfs_grep_scan_seconds": scan_seconds,
+            "ctxfs_grep_enrichment_seconds": enrichment_seconds,
+            "ctxfs_grep_matched_file_count": matched_file_count,
+            "ctxfs_grep_returned_match_count": len(page.items),
+            "ctxfs_grep_stopped_by": page.stopped_by,
+        },
+    )
 
 
 def _rollback_filesystem(
