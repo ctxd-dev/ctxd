@@ -320,6 +320,8 @@ def test_local_ctxfs_mcp_grep_hides_and_consumes_transport_pages(
     tmp_path, monkeypatch
 ) -> None:
     calls = []
+    now = iter((100.0, 101.0))
+    monkeypatch.setattr("ctxd._grep_timeout._monotonic", lambda: next(now))
 
     def grep(
         self,
@@ -354,7 +356,7 @@ def test_local_ctxfs_mcp_grep_hides_and_consumes_transport_pages(
                     )
                 ],
                 complete=False,
-                stopped_by="timeout",
+                stopped_by="limit",
                 next_cursor="next-page",
             )
         return GrepPage(
@@ -408,7 +410,7 @@ def test_local_ctxfs_mcp_grep_hides_and_consumes_transport_pages(
             "pattern": "needle",
             "prefix": "local-files/root",
             "limit": 1000,
-            "timeout_seconds": 7.5,
+            "timeout_seconds": 6.5,
             "cursor": "next-page",
         },
     ]
@@ -421,6 +423,59 @@ def test_local_ctxfs_mcp_grep_hides_and_consumes_transport_pages(
     assert result["complete"] is True
     assert "next_cursor" not in result
     assert "continuation_required" not in result
+
+
+def test_local_ctxfs_mcp_grep_does_not_retry_timeout_page(
+    tmp_path, monkeypatch
+) -> None:
+    calls = []
+
+    def grep(
+        self,
+        user_id,
+        pattern,
+        *,
+        prefix,
+        limit,
+        timeout_seconds,
+        cursor,
+    ):
+        calls.append(cursor)
+        return GrepPage(
+            items=[],
+            complete=False,
+            stopped_by="timeout",
+            next_cursor="unchanged-search-start",
+        )
+
+    monkeypatch.setattr(CtxfsStore, "grep", grep)
+    client = TestClient(
+        create_ctxfs_app(tmp_path / "ctxfs", auth_mode=CtxfsAuthMode.TRUSTED_LOCAL)
+    )
+
+    response = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "grep",
+                "arguments": {
+                    "pattern": "needle",
+                    "prefix": "local-files/root",
+                    "timeout_seconds": 7.5,
+                },
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    result = response.json()["result"]
+    assert calls == [None]
+    assert result["isError"] is True
+    assert "stopped because of timeout" in result["content"][0]["text"]
+    assert "narrow the prefix or pattern and retry" in result["content"][0]["text"]
 
 
 def test_bearer_mode_rejects_missing_malformed_invalid_and_revoked_keys(

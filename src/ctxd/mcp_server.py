@@ -66,8 +66,9 @@ TOOLS = [
             "grep prefix, and "
             "(4) broaden the prefix only when the scoped search does not find "
             "enough context. "
-            "Transport continuations are handled automatically; a failure means "
-            "the result was not exhaustive."
+            "Transport continuations are handled automatically within one "
+            "timeout budget. A timeout is not retried automatically; narrow the "
+            "prefix or pattern and retry."
         ),
         {
             "pattern": {"type": "string"},

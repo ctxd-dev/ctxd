@@ -68,7 +68,7 @@ authenticated on HTTP endpoints.
 
 ## Bounds and identity
 
-Directory, tree, glob, and grep responses are bounded by `limit`. Grep uses ripgrep's Rust regex syntax and a 2-second timeout by default; `timeout_seconds` accepts 0.1 through 60 seconds. The raw HTTP response exposes opaque continuation cursors for transport clients, and cursors become stale if the resumed file changes. The public SDK, CLI, and MCP tool consume those pages automatically and fail explicitly when a safety bound prevents an exhaustive result. File reads include content identity metadata so a caller can detect changed content.
+Directory, tree, glob, and grep responses are bounded by `limit`. Grep uses ripgrep's Rust regex syntax and a 2-second timeout by default; `timeout_seconds` accepts 0.1 through 60 seconds. The raw HTTP response exposes opaque continuation cursors for transport clients, and cursors become stale if the resumed file changes. The public SDK, CLI, and MCP tool consume non-timeout transport pages automatically within one timeout budget. They do not retry a timed-out page and fail explicitly with guidance to narrow the prefix or pattern when the result cannot be exhaustive. File reads include content identity metadata so a caller can detect changed content.
 
 Every grep pattern scans files beneath the selected prefix and uses ripgrep for
 matching. Continuation works the same way for literal and other regular-expression
