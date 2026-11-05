@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 import ctxd
+from ctxfs import CtxfsStore, DocClass, Provenance, PutOperation
 from ctxd import AsyncClient, Client, CtxfsClient, CtxfsGrepPage, CtxfsGrepResult
 from ctxd.config import (
     DEFAULT_CTXFS_SOCKET,
@@ -500,6 +501,70 @@ def test_synchronous_files_client_rejects_non_resumable_partial_grep(
     monkeypatch.setattr("httpx.AsyncClient.request", mock_request)
     with pytest.raises(CtxdIncompleteSearchError, match="not provide an exhaustive"):
         client.files.grep("needle")
+
+
+def test_synchronous_files_client_never_completes_past_writer_replaced_match(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    store = CtxfsStore(tmp_path / "ctxfs")
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+
+    def put(path: str, source_key: str, text: str) -> PutOperation:
+        return PutOperation(
+            path=path,
+            source_key=source_key,
+            source_version="v1",
+            doc_class=DocClass.EDITABLE,
+            file_format="text/markdown",
+            text=text,
+            provenance=Provenance(producer="test", producer_version="1"),
+        )
+
+    a_path = "local_files/root/a.md"
+    store.submit(
+        "user-1",
+        "writer-1",
+        [
+            put(a_path, "inode-a", "alpha\nneedle old\n"),
+            put("local_files/root/b.md", "inode-b", "needle b\n"),
+        ],
+    )
+    original_snapshot = store._snapshot_grep_file
+    replaced = False
+
+    def replace_a_after_ripgrep_event(user_id, logical_path, matched_path, deadline):
+        nonlocal replaced
+        if logical_path == a_path and not replaced:
+            replaced = True
+            store.submit(
+                "user-1",
+                "writer-1",
+                [put(a_path, "inode-a", "needle current\n")],
+            )
+        return original_snapshot(user_id, logical_path, matched_path, deadline)
+
+    monkeypatch.setattr(store, "_snapshot_grep_file", replace_a_after_ripgrep_event)
+    calls = 0
+
+    async def mock_request(self, method, url, *, params=None, **kwargs):
+        nonlocal calls
+        del self, kwargs
+        calls += 1
+        assert method == "GET" and url == "/api/ctxfs/grep"
+        request_params = dict(params or {})
+        pattern = request_params.pop("pattern")
+        page = store.grep("user-1", pattern, **request_params)
+        return httpx.Response(200, json=page.model_dump())
+
+    monkeypatch.setattr("httpx.AsyncClient.request", mock_request)
+    client = Client(ctxfs_endpoint="http://127.0.0.1:8765")
+
+    with pytest.raises(CtxdIncompleteSearchError, match="not provide an exhaustive"):
+        client.files.grep("needle", prefix="local_files/root", limit=1)
+
+    assert replaced is True
+    assert calls == 1
+    assert store.read("user-1", a_path).text == "needle current\n"
 
 
 def test_default_endpoint_is_local_ctxfs(

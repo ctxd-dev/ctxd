@@ -1587,6 +1587,45 @@ def test_grep_rejects_old_line_number_after_same_offset_replacement(
     assert page.next_cursor is None
 
 
+def test_grep_does_not_continue_past_writer_replaced_match(tmp_path, monkeypatch):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    store.register_prefix("user-1", "writer-1", "local_files/root")
+    a_path = "local_files/root/a.md"
+    store.submit(
+        "user-1",
+        "writer-1",
+        [
+            _put(a_path, "inode-a", "alpha\nneedle old\n"),
+            _put("local_files/root/b.md", "inode-b", "needle b\n"),
+        ],
+    )
+    original_snapshot = store._snapshot_grep_file
+    replaced = False
+
+    def replace_a_after_ripgrep_event(user_id, logical_path, matched_path, deadline):
+        nonlocal replaced
+        if logical_path == a_path and not replaced:
+            replaced = True
+            store.submit(
+                "user-1",
+                "writer-1",
+                [_put(a_path, "inode-a", "needle current\n")],
+            )
+        return original_snapshot(user_id, logical_path, matched_path, deadline)
+
+    monkeypatch.setattr(store, "_snapshot_grep_file", replace_a_after_ripgrep_event)
+
+    page = store.grep(
+        "user-1", "needle", prefix="local_files/root", limit=1
+    )
+
+    assert replaced is True
+    assert page.items == []
+    assert page.complete is False
+    assert page.stopped_by == "catalog_mismatch"
+    assert page.next_cursor is None
+
+
 def test_grep_returns_limit_without_waiting_for_rg_eof(tmp_path, monkeypatch):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()

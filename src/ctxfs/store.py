@@ -1460,11 +1460,13 @@ class CtxfsStore:
             if resume is not None and not anchor_found and logical_path != resume_path:
                 return None
             if not active_snapshot.verified:
-                return None
+                _terminate_process(process)
+                return result(stopped_by="catalog_mismatch")
             match = _verified_grep_match(event, active_snapshot)
             if match is None:
                 catalog_mismatch = True
-                return None
+                _terminate_process(process)
+                return result(stopped_by="catalog_mismatch")
             position = (match.line_number, match.match_start, match.match_end)
             if not anchor_found:
                 if resume is None:
