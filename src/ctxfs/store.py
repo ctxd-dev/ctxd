@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import bisect
 import fnmatch
 import functools
 import hashlib
@@ -101,6 +102,7 @@ class _GrepCursor:
     mode: str
     anchor: tuple[int, int, int] | None = None
     catalog_mismatch: bool = False
+    version: int = 3
 
 
 def _encode_grep_cursor(cursor: _GrepCursor) -> str:
@@ -159,7 +161,13 @@ def _decode_grep_cursor(value: str) -> _GrepCursor:
     if (
         not _GREP_CONTENT_HASH_RE.fullmatch(payload["p"])
         or not _GREP_CONTENT_HASH_RE.fullmatch(payload["q"])
-        or payload["m"] not in {"after_match", "file_start", "search_start"}
+        or payload["m"]
+        not in {
+            "after_match",
+            "legacy_after_match",
+            "file_start",
+            "search_start",
+        }
     ):
         raise ValueError("invalid ctxfs grep cursor")
     content_hash = payload["h"]
@@ -171,7 +179,7 @@ def _decode_grep_cursor(value: str) -> _GrepCursor:
     )
     anchor_value = payload["a"]
     anchor: tuple[int, int, int] | None = None
-    if payload["m"] == "after_match":
+    if payload["m"] in {"after_match", "legacy_after_match"}:
         if (
             not is_content_hash
             or not isinstance(anchor_value, list)
@@ -204,6 +212,7 @@ def _decode_grep_cursor(value: str) -> _GrepCursor:
         mode=payload["m"],
         anchor=anchor,
         catalog_mismatch=payload.get("c", False),
+        version=version,
     )
 
 
@@ -1327,7 +1336,13 @@ class CtxfsStore:
             complete=stopped_by is None,
             stopped_by=stopped_by,
             next_cursor=(
-                _encode_grep_cursor(result.next_cursor)
+                (
+                    cursor
+                    if cursor is not None
+                    and result.stopped_by == "timeout"
+                    and result.next_cursor == resume
+                    else _encode_grep_cursor(result.next_cursor)
+                )
                 if result.next_cursor is not None
                 else None
             ),
@@ -1407,6 +1422,12 @@ class CtxfsStore:
         enrichment_seconds = 0.0
         matched_file_count = 0
         pending = b""
+        legacy_logical_resume = resume is not None and (
+            resume.mode == "legacy_after_match"
+            or (resume.version == 2 and resume.mode == "after_match")
+        )
+        legacy_candidate_keys: list[tuple[str, int, int, int]] = []
+        legacy_candidates: list[GrepMatch] = []
         legacy_file_start = resume is not None and resume.mode == "file_start"
         resume_tree_path = (
             Path(os.path.abspath(self._tree_path(user_id, resume_path)))
@@ -1415,13 +1436,18 @@ class CtxfsStore:
         )
         resume_replay_complete = not legacy_file_start
 
-        # Direct directory scans do not necessarily emit JSON events for files
-        # with zero matches. Base-issued v2 file_start cursors can nevertheless
-        # name such a file, so validate that one file before replaying the scan.
-        # Reuse the snapshot if ripgrep does emit an event for it.
-        if legacy_file_start:
+        # v2 cursors were issued against catalog path order. The encoded tree
+        # order consumed by a direct ripgrep scan differs when one path is a
+        # directory prefix of another (for example, a-x sorts before a/b in
+        # the catalog but after it on disk). Only legacy logical resumes pay
+        # for a full scan. Keep at most limit + 1 verified matches so the
+        # compatibility cost is bounded in memory, then continue with an
+        # explicitly marked v3 cursor until the logical scan is exhausted.
+        if legacy_logical_resume:
             assert resume is not None
-            assert resume_tree_path is not None
+            resume_tree_path = Path(
+                os.path.abspath(self._tree_path(user_id, resume_path))
+            )
             enrichment_started = time.monotonic()
             try:
                 try:
@@ -1455,6 +1481,43 @@ class CtxfsStore:
             )
             if expected_identity != resume.content_hash:
                 raise ValueError("ctxfs grep cursor is stale")
+
+        # Direct directory scans do not necessarily emit JSON events for files
+        # with zero matches. Base-issued v2 file_start cursors can nevertheless
+        # name such a file, so validate that one file before replaying the scan.
+        # Reuse the snapshot if ripgrep does emit an event for it.
+        if legacy_file_start:
+            assert resume is not None
+            assert resume_tree_path is not None
+            enrichment_started = time.monotonic()
+            try:
+                try:
+                    resume_snapshot = self._snapshot_grep_file(
+                        user_id, resume_path, resume_tree_path, deadline
+                    )
+                except TimeoutError:
+                    resume_snapshot = None
+            finally:
+                enrichment_seconds += max(0.0, time.monotonic() - enrichment_started)
+            if resume_snapshot is None:
+                total = max(0.0, time.monotonic() - started)
+                return _GrepScanResult(
+                    [],
+                    stopped_by="timeout",
+                    anchor_found=False,
+                    next_cursor=resume,
+                    scan_seconds=max(0.0, total - enrichment_seconds),
+                    enrichment_seconds=enrichment_seconds,
+                )
+            catalog_mismatch = catalog_mismatch or resume_snapshot.catalog_mismatch
+            expected_identity = (
+                resume_snapshot.path_identity
+                if resume.content_hash is not None
+                and resume.content_hash.startswith("stat:")
+                else resume_snapshot.content_hash
+            )
+            if expected_identity != resume.content_hash:
+                raise ValueError("ctxfs grep cursor is stale")
             anchor_found = True
 
         command = _rg_command(pattern, target)
@@ -1467,6 +1530,9 @@ class CtxfsStore:
         assert process.stdout is not None
 
         def timeout_cursor() -> _GrepCursor:
+            if legacy_logical_resume:
+                assert resume is not None
+                return resume
             if legacy_file_start and not resume_replay_complete:
                 assert resume is not None
                 return resume
@@ -1528,7 +1594,8 @@ class CtxfsStore:
                 active_path = logical_path
                 active_snapshot = (
                     resume_snapshot
-                    if legacy_file_start and tree_path == resume_tree_path
+                    if (legacy_file_start or legacy_logical_resume)
+                    and tree_path == resume_tree_path
                     else None
                 )
                 active_line_number_state = (
@@ -1546,11 +1613,14 @@ class CtxfsStore:
             if event_type != "match":
                 return None
             active_path = logical_path
+            if legacy_logical_resume and logical_path < resume_path:
+                return None
             # A continuation cursor carries mismatch state observed on earlier
             # pages, so pre-anchor files need not be read and hashed again.
             if (
                 resume is not None
                 and not anchor_found
+                and not legacy_logical_resume
                 and logical_path != resume_path
             ):
                 return None
@@ -1587,6 +1657,23 @@ class CtxfsStore:
                 _terminate_process(process)
                 return result(stopped_by="catalog_mismatch")
             position = (match.line_number, match.match_start, match.match_end)
+            if legacy_logical_resume:
+                assert resume is not None
+                assert resume.anchor is not None
+                if logical_path == resume_path:
+                    if position == resume.anchor:
+                        anchor_found = True
+                        return None
+                    if position < resume.anchor:
+                        return None
+                key = (logical_path, *position)
+                insertion = bisect.bisect_right(legacy_candidate_keys, key)
+                legacy_candidate_keys.insert(insertion, key)
+                legacy_candidates.insert(insertion, match)
+                if len(legacy_candidates) > match_limit + 1:
+                    legacy_candidate_keys.pop()
+                    legacy_candidates.pop()
+                return None
             if not anchor_found:
                 if resume is None:
                     raise ValueError("ctxfs grep cursor is stale")
@@ -1645,6 +1732,8 @@ class CtxfsStore:
                         return consumed
         except TimeoutError:
             _terminate_process(process)
+            if legacy_logical_resume:
+                matches.clear()
             return result(stopped_by="timeout", next_cursor=timeout_cursor())
         except Exception:
             _terminate_process(process)
@@ -1655,15 +1744,31 @@ class CtxfsStore:
             returncode = process.wait(timeout=max(deadline - time.monotonic(), 0.0))
         except subprocess.TimeoutExpired:
             _terminate_process(process)
+            if legacy_logical_resume:
+                matches.clear()
             return result(stopped_by="timeout", next_cursor=timeout_cursor())
         if not anchor_found:
             raise ValueError("ctxfs grep cursor is stale")
-        if returncode == 1:
-            return result()
         if returncode == 2:
             raise RuntimeError("ctxfs grep failed")
-        if returncode != 0:
+        if returncode not in {0, 1}:
             raise RuntimeError("ctxfs grep failed")
+        if legacy_logical_resume:
+            matches[:] = legacy_candidates[:match_limit]
+            if len(legacy_candidates) > match_limit:
+                last_match = matches[-1]
+                return result(
+                    stopped_by="limit",
+                    next_cursor=_grep_cursor_for_match(
+                        prefix,
+                        pattern_hash,
+                        last_match,
+                        catalog_mismatch,
+                        mode="legacy_after_match",
+                    ),
+                )
+        if returncode == 1:
+            return result()
         return result()
 
     def _snapshot_grep_file(
@@ -2808,13 +2913,15 @@ def _grep_cursor_for_match(
     pattern_hash: str,
     match: GrepMatch,
     catalog_mismatch: bool = False,
+    *,
+    mode: str = "after_match",
 ) -> _GrepCursor:
     return _GrepCursor(
         prefix_hash=_sha256(prefix.encode()),
         pattern_hash=pattern_hash,
         path=_grep_relative_path(prefix, match.path),
         content_hash=match.content_hash,
-        mode="after_match",
+        mode=mode,
         anchor=(match.line_number, match.match_start, match.match_end),
         catalog_mismatch=catalog_mismatch,
     )

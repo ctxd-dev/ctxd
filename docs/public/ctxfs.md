@@ -142,7 +142,11 @@ the SQLite catalog or hash unrelated files before matching. On a fresh scan,
 only files that produce matches are checked against catalog metadata and
 assigned content hashes. Resuming a legacy v2 `file_start` cursor also snapshots
 its named anchor file, even if that file has no match, to validate the cursor
-before continuing. Therefore, a complete grep response means the visible
+before continuing. Legacy v2 match cursors retain the catalog's logical path
+ordering even when it differs from encoded filesystem order. Those resumes may
+scan the full prefix on each compatibility page, but retain only `limit + 1`
+verified matches in memory; newly issued direct-scan cursors do not pay this
+legacy cost. Therefore, a complete grep response means the visible
 filesystem scope was searched exhaustively and its returned matches were
 verified; it does not assert that every catalog row still has a corresponding
 file. Use `stat`, `tree`, or writer-status diagnostics to investigate broader

@@ -2276,6 +2276,117 @@ def test_grep_accepts_v2_after_match_cursor(tmp_path):
     assert resumed.complete is True
 
 
+def test_grep_v2_after_match_uses_legacy_logical_order_across_pages(tmp_path):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    prefix = "local_files/root"
+    store.register_prefix("user-1", "writer-1", prefix)
+    store.submit(
+        "user-1",
+        "writer-1",
+        [
+            _put(f"{prefix}/a-x", "inode-anchor", "needle anchor\n"),
+            _put(f"{prefix}/a/b", "inode-b", "needle b\n"),
+            _put(f"{prefix}/a/c", "inode-c", "needle c\n"),
+            _put(f"{prefix}/z", "inode-z", "needle z\n"),
+        ],
+    )
+    anchor_hash = store.stat("user-1", f"{prefix}/a-x").content_hash
+    payload = {
+        "v": 2,
+        "p": f"sha256:{hashlib.sha256(prefix.encode()).hexdigest()}",
+        "q": f"sha256:{hashlib.sha256(b'needle').hexdigest()}",
+        "r": "a-x",
+        "h": anchor_hash,
+        "m": "after_match",
+        "a": [1, 0, 6],
+    }
+    cursor = (
+        base64.urlsafe_b64encode(
+            json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+        )
+        .decode()
+        .rstrip("=")
+    )
+
+    found = []
+    modes = []
+    while cursor is not None:
+        page = store.grep("user-1", "needle", prefix=prefix, limit=1, cursor=cursor)
+        found.extend(match.path for match in page.items)
+        cursor = page.next_cursor
+        if cursor is not None:
+            emitted = json.loads(
+                base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
+            )
+            assert emitted["v"] == 3
+            modes.append(emitted["m"])
+
+    assert found == [f"{prefix}/a/b", f"{prefix}/a/c", f"{prefix}/z"]
+    assert modes == ["legacy_after_match", "legacy_after_match"]
+    assert page.complete is True
+
+    raw = store.grep("user-1", "needle", prefix=prefix, limit=4)
+    assert [match.path for match in raw.items] == [
+        f"{prefix}/a/b",
+        f"{prefix}/a/c",
+        f"{prefix}/a-x",
+        f"{prefix}/z",
+    ]
+
+
+def test_grep_v2_logical_resume_timeout_is_retryable_and_anchor_is_stale(
+    tmp_path, monkeypatch
+):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    prefix = "local_files/root"
+    anchor_path = f"{prefix}/a-x"
+    store.register_prefix("user-1", "writer-1", prefix)
+    store.submit(
+        "user-1",
+        "writer-1",
+        [
+            _put(anchor_path, "inode-anchor", "needle anchor\n"),
+            _put(f"{prefix}/a/b", "inode-b", "needle b\n"),
+        ],
+    )
+    payload = {
+        "v": 2,
+        "p": f"sha256:{hashlib.sha256(prefix.encode()).hexdigest()}",
+        "q": f"sha256:{hashlib.sha256(b'needle').hexdigest()}",
+        "r": "a-x",
+        "h": store.stat("user-1", anchor_path).content_hash,
+        "m": "after_match",
+        "a": [1, 0, 6],
+    }
+    cursor = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+    original_snapshot = store._snapshot_grep_file
+
+    def timeout_after_anchor(user_id, logical_path, tree_path, deadline):
+        if logical_path != anchor_path:
+            raise TimeoutError
+        return original_snapshot(user_id, logical_path, tree_path, deadline)
+
+    monkeypatch.setattr(store, "_snapshot_grep_file", timeout_after_anchor)
+    timed_out = store.grep("user-1", "needle", prefix=prefix, cursor=cursor)
+    assert timed_out.items == []
+    assert timed_out.stopped_by == "timeout"
+    assert timed_out.next_cursor == cursor
+
+    monkeypatch.setattr(store, "_snapshot_grep_file", original_snapshot)
+    stale_payload = {**payload, "a": [2, 0, 6]}
+    stale_cursor = (
+        base64.urlsafe_b64encode(json.dumps(stale_payload).encode())
+        .decode()
+        .rstrip("=")
+    )
+    with pytest.raises(ValueError, match="cursor is stale"):
+        store.grep("user-1", "needle", prefix=prefix, cursor=stale_cursor)
+
+    store._tree_path("user-1", anchor_path).write_text("needle mutated\n")
+    with pytest.raises(ValueError, match="cursor is stale"):
+        store.grep("user-1", "needle", prefix=prefix, cursor=cursor)
+
+
 @pytest.mark.parametrize(
     ("mode", "path", "content", "anchor"),
     [
