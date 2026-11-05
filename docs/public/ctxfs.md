@@ -138,12 +138,15 @@ matching. Choose the narrowest relevant canonical root before searching; broad
 prefixes may require multiple internal continuation pages.
 
 Grep invokes ripgrep directly over that filesystem prefix. It does not enumerate
-the SQLite catalog or hash unrelated files before matching. Only files that
-produce matches are checked against catalog metadata and assigned content
-hashes. Therefore, a complete grep response means the visible filesystem scope
-was searched exhaustively and its returned matches were verified; it does not
-assert that every catalog row still has a corresponding file. Use `stat`,
-`tree`, or writer-status diagnostics to investigate broader catalog drift.
+the SQLite catalog or hash unrelated files before matching. On a fresh scan,
+only files that produce matches are checked against catalog metadata and
+assigned content hashes. Resuming a legacy v2 `file_start` cursor also snapshots
+its named anchor file, even if that file has no match, to validate the cursor
+before continuing. Therefore, a complete grep response means the visible
+filesystem scope was searched exhaustively and its returned matches were
+verified; it does not assert that every catalog row still has a corresponding
+file. Use `stat`, `tree`, or writer-status diagnostics to investigate broader
+catalog drift.
 
 When an older catalog is opened, ctxfs attempts to remove its legacy derived
 grep tables. Cleanup is deferred if the current SQLite build cannot load the
@@ -165,9 +168,11 @@ Agents should scope retrieval before searching broadly:
 This keeps retrieval focused and makes search cost easier to understand without
 changing grep semantics.
 
-All patterns use the same filesystem-snapshot scan behavior and report
-`catalog_mismatch` when matching files in private tree storage are not
-represented by the catalog.
+All patterns use the same filesystem-snapshot scan behavior. A completed scan
+reports `catalog_mismatch` when matching files in private tree storage are not
+represented by the catalog. If a safety bound stops the scan, its operational
+reason (`limit`, `timeout`, or `max_bytes`) takes precedence, even when a catalog
+mismatch was observed earlier.
 
 ## Verify a tracked file
 
