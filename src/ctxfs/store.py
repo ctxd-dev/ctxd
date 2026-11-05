@@ -2844,6 +2844,9 @@ def _verified_grep_match(
         or absolute_offset > len(snapshot.data)
         or len(raw_line) > len(snapshot.data) - absolute_offset
         or snapshot.data[absolute_offset : absolute_offset + len(raw_line)] != raw_line
+        or not _rg_line_number_matches(
+            snapshot.data, absolute_offset, line_number
+        )
     ):
         return None
     start = submatches[0].get("start")
@@ -2877,6 +2880,21 @@ def _rg_line_bytes(lines: dict[str, object]) -> bytes:
         return base64.b64decode(encoded, validate=True)
     except ValueError as exc:
         raise RuntimeError("ctxfs grep returned invalid JSON") from exc
+
+
+def _rg_line_number_matches(
+    data: bytes, absolute_offset: int, line_number: int
+) -> bool:
+    if absolute_offset and data[absolute_offset - 1] not in b"\n\x00":
+        return False
+    lf_line_number = data.count(b"\n", 0, absolute_offset) + 1
+    # ripgrep --binary releases differ on whether a NUL record boundary also
+    # advances line_number. Accept either convention, but never trust a line
+    # number that cannot describe this offset in the captured bytes.
+    return line_number in {
+        lf_line_number,
+        lf_line_number + data.count(b"\x00", 0, absolute_offset),
+    }
 
 
 def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:

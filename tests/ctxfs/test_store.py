@@ -1496,6 +1496,97 @@ def test_grep_match_with_unusable_absolute_offset_is_unverified(absolute_offset)
     assert store_module._verified_grep_match(event, snapshot) is None
 
 
+@pytest.mark.parametrize(
+    ("line_number", "expected"),
+    [
+        pytest.param(2, True, id="lf-count"),
+        pytest.param(3, True, id="lf-and-nul-count"),
+        pytest.param(1, False, id="too-low"),
+        pytest.param(4, False, id="too-high"),
+    ],
+)
+def test_grep_match_line_number_accepts_supported_binary_conventions(
+    line_number, expected
+):
+    data = b"alpha\x00beta\nneedle\n"
+    snapshot = store_module._GrepFileSnapshot(
+        logical_path="local_files/root/notes.md",
+        tree_path=Path("notes.md"),
+        data=data,
+        content_hash="sha256:" + hashlib.sha256(data).hexdigest(),
+        path_identity="stat:1:2:18:3:4",
+        catalog_mismatch=False,
+        verified=True,
+    )
+    event = {
+        "type": "match",
+        "data": {
+            "path": {"text": "notes.md"},
+            "line_number": line_number,
+            "absolute_offset": 11,
+            "lines": {"text": "needle\n"},
+            "submatches": [{"start": 0, "end": 6}],
+        },
+    }
+
+    match = store_module._verified_grep_match(event, snapshot)
+
+    assert (match is not None) is expected
+
+
+@pytest.mark.parametrize("line_number", [None, "2", 1.0, [], {}, True, 0, -1])
+def test_grep_match_rejects_malformed_line_number(line_number):
+    snapshot = store_module._GrepFileSnapshot(
+        logical_path="local_files/root/notes.md",
+        tree_path=Path("notes.md"),
+        data=b"needle\n",
+        content_hash="sha256:" + hashlib.sha256(b"needle\n").hexdigest(),
+        path_identity="stat:1:2:7:3:4",
+        catalog_mismatch=False,
+        verified=True,
+    )
+    event = {
+        "type": "match",
+        "data": {
+            "path": {"text": "notes.md"},
+            "line_number": line_number,
+            "absolute_offset": 0,
+            "lines": {"text": "needle\n"},
+            "submatches": [{"start": 0, "end": 6}],
+        },
+    }
+
+    with pytest.raises(RuntimeError, match="invalid JSON"):
+        store_module._verified_grep_match(event, snapshot)
+
+
+def test_grep_rejects_old_line_number_after_same_offset_replacement(
+    tmp_path, monkeypatch
+):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    path = "local_files/root/notes.md"
+    tree_path = store._tree_path("user-1", path)
+    tree_path.parent.mkdir(parents=True)
+    tree_path.write_bytes(b"abc\nneedle\n")
+    original_snapshot = store._snapshot_grep_file
+    replaced = False
+
+    def snapshot_replacement(user_id, logical_path, matched_path, deadline):
+        nonlocal replaced
+        if not replaced:
+            replaced = True
+            matched_path.write_bytes(b"a\nb\nneedle\n")
+        return original_snapshot(user_id, logical_path, matched_path, deadline)
+
+    monkeypatch.setattr(store, "_snapshot_grep_file", snapshot_replacement)
+
+    page = store.grep("user-1", "needle", prefix="local_files/root", limit=1)
+
+    assert page.items == []
+    assert page.stopped_by == "catalog_mismatch"
+    assert page.next_cursor is None
+
+
 def test_grep_returns_limit_without_waiting_for_rg_eof(tmp_path, monkeypatch):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
