@@ -2349,6 +2349,58 @@ def test_grep_cursor_rejects_file_start_without_disk_identity(tmp_path):
         store.grep("user-1", "needle", prefix="local_files/root", cursor=cursor)
 
 
+@pytest.mark.parametrize("identity_kind", ["content_hash", "stat_identity"])
+def test_grep_file_start_cursor_resumes_after_unchanged_no_match_file(
+    tmp_path, identity_kind
+):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    prefix = "local_files/root"
+    resume_path = f"{prefix}/a.md"
+    later_path = f"{prefix}/b.md"
+    store.register_prefix("user-1", "writer-1", prefix)
+    store.submit(
+        "user-1",
+        "writer-1",
+        [_put(later_path, "inode-b", "needle later\n")],
+    )
+    resume_tree_path = store._tree_path("user-1", resume_path)
+    if identity_kind == "content_hash":
+        store.submit(
+            "user-1",
+            "writer-1",
+            [_put(resume_path, "inode-a", "haystack\n")],
+        )
+        identity = store.stat("user-1", resume_path).content_hash
+    else:
+        resume_tree_path.parent.mkdir(parents=True, exist_ok=True)
+        resume_tree_path.write_text("haystack\n")
+        identity = store_module._path_identity_from_stat(resume_tree_path.stat())
+    cursor = store_module._encode_grep_cursor(
+        store_module._GrepCursor(
+            prefix_hash=f"sha256:{hashlib.sha256(prefix.encode()).hexdigest()}",
+            pattern_hash=f"sha256:{hashlib.sha256(b'needle').hexdigest()}",
+            path="a.md",
+            content_hash=identity,
+            mode="file_start",
+        )
+    )
+
+    resumed = store.grep(
+        "user-1", "needle", prefix=prefix, cursor=cursor
+    )
+
+    assert [(item.path, item.line) for item in resumed.items] == [
+        (later_path, "needle later")
+    ]
+    assert resumed.stopped_by == (
+        None if identity_kind == "content_hash" else "catalog_mismatch"
+    )
+
+    resume_tree_path.write_text("mutated haystack\n")
+    with pytest.raises(ValueError, match="cursor is stale"):
+        store.grep("user-1", "needle", prefix=prefix, cursor=cursor)
+
+
 @pytest.mark.parametrize(
     "timeout_seconds", [0, 0.09, 60.01, float("nan"), float("inf")]
 )

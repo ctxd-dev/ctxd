@@ -1361,15 +1361,7 @@ class CtxfsStore:
                 or _grep_search_start_cursor(prefix_hash, pattern_hash),
             )
         _require_rg()
-        command = _rg_command(pattern, target)
         started = time.monotonic()
-        process = subprocess.Popen(
-            command,
-            env=_rg_env(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
-        assert process.stdout is not None
         matches: list[GrepMatch] = []
         anchor_found = resume is None
         resume_path = (
@@ -1380,13 +1372,73 @@ class CtxfsStore:
         user_root = Path(os.path.abspath(self._user_root(user_id)))
         active_path: str | None = None
         active_snapshot: _GrepFileSnapshot | None = None
+        resume_snapshot: _GrepFileSnapshot | None = None
         last_match: GrepMatch | None = None
         catalog_mismatch = False
         enrichment_seconds = 0.0
         matched_file_count = 0
         pending = b""
+        legacy_file_start = resume is not None and resume.mode == "file_start"
+        resume_tree_path = (
+            Path(os.path.abspath(self._tree_path(user_id, resume_path)))
+            if legacy_file_start
+            else None
+        )
+        resume_replay_complete = not legacy_file_start
+
+        # Direct directory scans do not necessarily emit JSON events for files
+        # with zero matches. Base-issued v2 file_start cursors can nevertheless
+        # name such a file, so validate that one file before replaying the scan.
+        # Reuse the snapshot if ripgrep does emit an event for it.
+        if legacy_file_start:
+            assert resume is not None
+            assert resume_tree_path is not None
+            enrichment_started = time.monotonic()
+            try:
+                try:
+                    resume_snapshot = self._snapshot_grep_file(
+                        user_id, resume_path, resume_tree_path, deadline
+                    )
+                except TimeoutError:
+                    resume_snapshot = None
+            finally:
+                enrichment_seconds += max(
+                    0.0, time.monotonic() - enrichment_started
+                )
+            if resume_snapshot is None:
+                total = max(0.0, time.monotonic() - started)
+                return _GrepScanResult(
+                    [],
+                    stopped_by="timeout",
+                    anchor_found=False,
+                    next_cursor=resume,
+                    scan_seconds=max(0.0, total - enrichment_seconds),
+                    enrichment_seconds=enrichment_seconds,
+                )
+            catalog_mismatch = resume_snapshot.catalog_mismatch
+            expected_identity = (
+                resume_snapshot.path_identity
+                if resume.content_hash is not None
+                and resume.content_hash.startswith("stat:")
+                else resume_snapshot.content_hash
+            )
+            if expected_identity != resume.content_hash:
+                raise ValueError("ctxfs grep cursor is stale")
+            anchor_found = True
+
+        command = _rg_command(pattern, target)
+        process = subprocess.Popen(
+            command,
+            env=_rg_env(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        assert process.stdout is not None
 
         def timeout_cursor() -> _GrepCursor:
+            if legacy_file_start and not resume_replay_complete:
+                assert resume is not None
+                return resume
             if not anchor_found and resume is not None:
                 return resume
             if last_match is not None:
@@ -1413,7 +1465,7 @@ class CtxfsStore:
         def consume_record(raw_line: bytes) -> _GrepScanResult | None:
             nonlocal active_path, active_snapshot, anchor_found
             nonlocal catalog_mismatch, enrichment_seconds, matched_file_count
-            nonlocal last_match
+            nonlocal last_match, resume_replay_complete
             if len(raw_line) > GREP_MAX_JSON_RECORD_BYTES:
                 _terminate_process(process)
                 return result(stopped_by="max_bytes")
@@ -1431,9 +1483,18 @@ class CtxfsStore:
                 prefix and not _path_is_within_prefix(logical_path, prefix)
             ):
                 raise RuntimeError("ctxfs grep returned an unexpected path")
+            if legacy_file_start and not resume_replay_complete:
+                assert resume_tree_path is not None
+                if os.fspath(tree_path) < os.fspath(resume_tree_path):
+                    return None
+                resume_replay_complete = True
             if event_type == "begin":
                 active_path = logical_path
-                active_snapshot = None
+                active_snapshot = (
+                    resume_snapshot
+                    if legacy_file_start and tree_path == resume_tree_path
+                    else None
+                )
                 return None
             if event_type == "end":
                 if active_path == logical_path:
