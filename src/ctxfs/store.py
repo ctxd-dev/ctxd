@@ -2976,14 +2976,17 @@ def _verified_grep_match(
         or absolute_offset < 0
         or absolute_offset > len(snapshot.data)
         or len(raw_line) > len(snapshot.data) - absolute_offset
-        or not snapshot.data.startswith(raw_line, absolute_offset)
-        or not _rg_line_number_matches(
-            snapshot.data,
-            absolute_offset,
-            line_number,
-            line_number_state or _RgLineNumberState(snapshot.data),
-            deadline,
-        )
+    ):
+        return None
+    verified_line_length = _rg_verified_line_length(
+        snapshot.data, absolute_offset, raw_line
+    )
+    if verified_line_length is None or not _rg_line_number_matches(
+        snapshot.data,
+        absolute_offset,
+        line_number,
+        line_number_state or _RgLineNumberState(snapshot.data),
+        deadline,
     ):
         return None
     start = submatches[0].get("start")
@@ -2996,6 +2999,8 @@ def _verified_grep_match(
         or not 0 <= start <= end <= len(raw_line)
     ):
         raise RuntimeError("ctxfs grep returned invalid JSON")
+    if end > verified_line_length:
+        return None
     return GrepMatch(
         path=snapshot.logical_path,
         line_number=line_number,
@@ -3017,6 +3022,22 @@ def _rg_line_bytes(lines: dict[str, object]) -> bytes:
         return base64.b64decode(encoded, validate=True)
     except ValueError as exc:
         raise RuntimeError("ctxfs grep returned invalid JSON") from exc
+
+
+def _rg_verified_line_length(
+    data: bytes, absolute_offset: int, raw_line: bytes
+) -> int | None:
+    if data.startswith(raw_line, absolute_offset):
+        return len(raw_line)
+    if (
+        raw_line.endswith(b"\n")
+        and data.startswith(raw_line[:-1], absolute_offset)
+        and data[absolute_offset + len(raw_line) - 1] == 0
+    ):
+        # Some ripgrep/operand combinations render the terminating NUL record
+        # boundary as LF in JSON. Only that final framing byte is synthetic.
+        return len(raw_line) - 1
+    return None
 
 
 def _rg_line_number_matches(

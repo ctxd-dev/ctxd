@@ -1460,6 +1460,102 @@ def test_grep_raw_record_framing_matches_ripgrep_for_operand_shape(
     )
 
 
+@pytest.mark.parametrize("operand", ["directory", "exact_file"])
+def test_grep_raw_pre_nul_match_matches_ripgrep_for_operand_shape(
+    tmp_path, operand
+):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    path = "local_files/root/notes.md"
+    tree_path = store._tree_path("user-1", path)
+    tree_path.parent.mkdir(parents=True)
+    data = b"alpha needle\x00omega\n"
+    tree_path.write_bytes(data)
+    prefix = "local_files/root" if operand == "directory" else path
+    raw_operand = tree_path.parent if operand == "directory" else tree_path
+
+    page = store.grep("user-1", "needle", prefix=prefix)
+
+    assert [
+        (item.line_number, item.line, item.match_start, item.match_end)
+        for item in page.items
+    ] == _canonical_raw_rg_matches(raw_operand, "needle")
+    assert page.items[0].content_hash == (
+        "sha256:" + hashlib.sha256(data).hexdigest()
+    )
+
+
+@pytest.mark.parametrize(
+    ("data", "raw_line"),
+    [
+        pytest.param(
+            b"alpha needle\x00omega\n",
+            b"alpha neXdle\n",
+            id="non-terminal-substitution",
+        ),
+        pytest.param(
+            b"alpha\x00needle\x00omega\n",
+            b"alpha\nneedle\n",
+            id="internal-nul-as-lf",
+        ),
+        pytest.param(
+            b"alpha needle\x00omega\n",
+            b"alpha needleX",
+            id="terminal-non-lf",
+        ),
+    ],
+)
+def test_grep_match_rejects_noncanonical_nul_record_substitutions(
+    data, raw_line
+):
+    snapshot = store_module._GrepFileSnapshot(
+        logical_path="local_files/root/notes.md",
+        tree_path=Path("notes.md"),
+        data=data,
+        content_hash="sha256:" + hashlib.sha256(data).hexdigest(),
+        path_identity="stat:1:2:19:3:4",
+        catalog_mismatch=False,
+        verified=True,
+    )
+    event = {
+        "type": "match",
+        "data": {
+            "path": {"text": "notes.md"},
+            "line_number": 1,
+            "absolute_offset": 0,
+            "lines": {"bytes": base64.b64encode(raw_line).decode("ascii")},
+            "submatches": [{"start": 6, "end": 12}],
+        },
+    }
+
+    assert store_module._verified_grep_match(event, snapshot) is None
+
+
+def test_grep_match_rejects_submatch_of_synthetic_nul_record_terminator():
+    data = b"alpha needle\x00omega\n"
+    snapshot = store_module._GrepFileSnapshot(
+        logical_path="local_files/root/notes.md",
+        tree_path=Path("notes.md"),
+        data=data,
+        content_hash="sha256:" + hashlib.sha256(data).hexdigest(),
+        path_identity="stat:1:2:19:3:4",
+        catalog_mismatch=False,
+        verified=True,
+    )
+    raw_line = b"alpha needle\n"
+    event = {
+        "type": "match",
+        "data": {
+            "path": {"text": "notes.md"},
+            "line_number": 1,
+            "absolute_offset": 0,
+            "lines": {"text": raw_line.decode("ascii")},
+            "submatches": [{"start": len(raw_line) - 1, "end": len(raw_line)}],
+        },
+    }
+
+    assert store_module._verified_grep_match(event, snapshot) is None
+
+
 @pytest.mark.parametrize(
     "absolute_offset",
     [
