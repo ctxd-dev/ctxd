@@ -2180,6 +2180,106 @@ def test_grep_accepts_v2_after_match_cursor(tmp_path):
     assert resumed.complete is True
 
 
+@pytest.mark.parametrize(
+    ("mode", "path", "content", "anchor"),
+    [
+        ("search_start", "", None, None),
+        ("file_start", "a.md", "haystack\n", None),
+        ("after_match", "a.md", "needle anchor\n", (1, 0, 6)),
+    ],
+)
+def test_grep_v3_cursor_modes_preserve_carried_catalog_mismatch_at_terminal(
+    tmp_path, mode, path, content, anchor
+):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    prefix = "local_files/root"
+    store.register_prefix("user-1", "writer-1", prefix)
+    store._tree_path("user-1", prefix).mkdir(parents=True, exist_ok=True)
+    content_hash = None
+    if path:
+        logical_path = f"{prefix}/{path}"
+        store.submit(
+            "user-1",
+            "writer-1",
+            [_put(logical_path, "inode-a", content)],
+        )
+        content_hash = store.stat("user-1", logical_path).content_hash
+    cursor = store_module._encode_grep_cursor(
+        store_module._GrepCursor(
+            prefix_hash=f"sha256:{hashlib.sha256(prefix.encode()).hexdigest()}",
+            pattern_hash=f"sha256:{hashlib.sha256(b'needle').hexdigest()}",
+            path=path,
+            content_hash=content_hash,
+            mode=mode,
+            anchor=anchor,
+            catalog_mismatch=True,
+        )
+    )
+
+    terminal = store.grep(
+        "user-1", "needle", prefix=prefix, cursor=cursor
+    )
+
+    assert terminal.items == []
+    assert terminal.complete is False
+    assert terminal.stopped_by == "catalog_mismatch"
+    assert terminal.next_cursor is None
+
+
+@pytest.mark.parametrize(
+    ("mode", "path", "content", "anchor"),
+    [
+        ("search_start", "", None, None),
+        ("file_start", "a.md", "haystack\n", None),
+        ("after_match", "a.md", "needle anchor\n", (1, 0, 6)),
+    ],
+)
+def test_grep_v3_cursor_modes_preserve_carried_catalog_mismatch_on_timeout(
+    tmp_path, monkeypatch, mode, path, content, anchor
+):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    prefix = "local_files/root"
+    store.register_prefix("user-1", "writer-1", prefix)
+    store._tree_path("user-1", prefix).mkdir(parents=True, exist_ok=True)
+    content_hash = None
+    if path:
+        logical_path = f"{prefix}/{path}"
+        store.submit(
+            "user-1",
+            "writer-1",
+            [_put(logical_path, "inode-a", content)],
+        )
+        content_hash = store.stat("user-1", logical_path).content_hash
+    cursor = store_module._encode_grep_cursor(
+        store_module._GrepCursor(
+            prefix_hash=f"sha256:{hashlib.sha256(prefix.encode()).hexdigest()}",
+            pattern_hash=f"sha256:{hashlib.sha256(b'needle').hexdigest()}",
+            path=path,
+            content_hash=content_hash,
+            mode=mode,
+            anchor=anchor,
+            catalog_mismatch=True,
+        )
+    )
+    monotonic_values = iter([0.0, 0.0, 61.0])
+    monkeypatch.setattr(store_module.time, "monotonic", lambda: next(monotonic_values))
+
+    timed_out = store.grep(
+        "user-1",
+        "needle",
+        prefix=prefix,
+        cursor=cursor,
+        timeout_seconds=60,
+    )
+
+    assert timed_out.items == []
+    assert timed_out.complete is False
+    assert timed_out.stopped_by == "timeout"
+    assert timed_out.next_cursor is not None
+    resumed = store_module._decode_grep_cursor(timed_out.next_cursor)
+    assert resumed.catalog_mismatch is True
+
+
 def test_grep_resume_carries_catalog_mismatch_before_anchor(tmp_path):
     store = CtxfsStore(tmp_path / "ctxfs")
     store.register_prefix("user-1", "writer-1", "local_files/root")

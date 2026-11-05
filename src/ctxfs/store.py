@@ -1444,7 +1444,9 @@ class CtxfsStore:
                     scan_seconds=max(0.0, total - enrichment_seconds),
                     enrichment_seconds=enrichment_seconds,
                 )
-            catalog_mismatch = resume_snapshot.catalog_mismatch
+            catalog_mismatch = (
+                catalog_mismatch or resume_snapshot.catalog_mismatch
+            )
             expected_identity = (
                 resume_snapshot.path_identity
                 if resume.content_hash is not None
