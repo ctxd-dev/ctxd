@@ -382,6 +382,8 @@ def test_synchronous_files_client_automatically_resumes_grep(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = Client(ctxfs_endpoint="http://127.0.0.1:8765")
+    now = iter((100.0, 101.0))
+    monkeypatch.setattr("ctxd._grep_timeout._monotonic", lambda: next(now))
 
     async def mock_request(
         self, method, url, *, params=None, headers=None, timeout=None
@@ -390,18 +392,24 @@ def test_synchronous_files_client_automatically_resumes_grep(
         expected = {
             "pattern": "needle",
             "prefix": "root",
-            "limit": 5,
-            "timeout_seconds": 10.0,
+            "timeout_seconds": 9.0 if getattr(mock_request, "called", False) else 10.0,
         }
         if getattr(mock_request, "called", False):
             expected["cursor"] = "later-page"
-            response = {"items": [], "complete": True}
+            response = {
+                "items": [
+                    {"path": "root/b", "line_number": 2, "line": "needle two"}
+                ],
+                "complete": True,
+            }
         else:
             mock_request.called = True
             response = {
-                "items": [],
+                "items": [
+                    {"path": "root/a", "line_number": 1, "line": "needle one"}
+                ],
                 "complete": False,
-                "stopped_by": "timeout",
+                "stopped_by": "limit",
                 "next_cursor": "later-page",
             }
         assert params == expected
@@ -412,11 +420,67 @@ def test_synchronous_files_client_automatically_resumes_grep(
     result = client.files.grep(
         "needle",
         prefix="root",
-        limit=5,
         timeout_seconds=10.0,
     )
     assert result.complete is True
+    assert [item.line for item in result.items] == ["needle one", "needle two"]
     assert not hasattr(result, "next_cursor")
+
+
+def test_synchronous_files_client_does_not_retry_timeout_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = Client(ctxfs_endpoint="http://127.0.0.1:8765")
+    calls = 0
+
+    async def mock_request(self, method, url, *, params=None, **kwargs):
+        nonlocal calls
+        calls += 1
+        assert method == "GET" and url == "/api/ctxfs/grep"
+        return httpx.Response(
+            200,
+            json={
+                "items": [],
+                "complete": False,
+                "stopped_by": "timeout",
+                "next_cursor": "unchanged-search-start",
+            },
+        )
+
+    monkeypatch.setattr("httpx.AsyncClient.request", mock_request)
+
+    with pytest.raises(CtxdIncompleteSearchError, match="stopped because of timeout"):
+        client.files.grep("needle", timeout_seconds=10.0)
+    assert calls == 1
+
+
+def test_synchronous_files_client_does_not_start_page_after_budget_expires(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = Client(ctxfs_endpoint="http://127.0.0.1:8765")
+    calls = 0
+    now = iter((100.0, 110.0))
+    monkeypatch.setattr("ctxd._grep_timeout._monotonic", lambda: next(now))
+
+    async def mock_request(self, method, url, *, params=None, **kwargs):
+        nonlocal calls
+        calls += 1
+        assert method == "GET" and url == "/api/ctxfs/grep"
+        return httpx.Response(
+            200,
+            json={
+                "items": [],
+                "complete": False,
+                "stopped_by": "limit",
+                "next_cursor": "later-page",
+            },
+        )
+
+    monkeypatch.setattr("httpx.AsyncClient.request", mock_request)
+
+    with pytest.raises(CtxdIncompleteSearchError, match="stopped because of timeout"):
+        client.files.grep("needle", timeout_seconds=10.0)
+    assert calls == 1
 
 
 def test_synchronous_files_client_rejects_mismatch_after_automatic_resume(
@@ -446,6 +510,8 @@ def test_synchronous_files_client_rejects_mismatch_after_automatic_resume(
                     "next_cursor": "later-page",
                 },
             )
+        remaining_timeout = params.pop("timeout_seconds")
+        assert 0.1 <= remaining_timeout <= 2.0
         assert params == {
             "pattern": "needle",
             "prefix": "",

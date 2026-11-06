@@ -9,6 +9,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from ctxd._grep_timeout import GrepTimeoutBudget, incomplete_grep_error
 from ctxd.exceptions import CtxdIncompleteSearchError
 from ctxd.mcp_server import handle_message
 from ctxd.models import CtxfsGrepResult
@@ -597,6 +598,8 @@ def _execute_ctxfs_grep(
     """Hide raw HTTP pagination from the local MCP agent surface."""
     items = []
     cursor: str | None = None
+    budget = GrepTimeoutBudget.start(timeout_seconds)
+    page_timeout = timeout_seconds
     for _ in range(_GREP_MAX_TRANSPORT_PAGES):
         page = _call_store(
             store.grep,
@@ -604,7 +607,7 @@ def _execute_ctxfs_grep(
             pattern,
             prefix=prefix,
             limit=1000 if limit is None else max(1, limit - len(items)),
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=page_timeout,
             cursor=cursor,
         )
         items.extend(page.items)
@@ -620,13 +623,12 @@ def _execute_ctxfs_grep(
                 complete=True,
                 stopped_by="limit",
             )
+        if page.stopped_by == "timeout":
+            raise incomplete_grep_error("timeout")
         if page.next_cursor is None:
-            reason = page.stopped_by or "an unknown safety bound"
-            raise CtxdIncompleteSearchError(
-                f"ctxfs grep stopped because of {reason} without a continuation; "
-                "narrow the prefix or pattern and retry"
-            )
+            raise incomplete_grep_error(page.stopped_by)
         cursor = page.next_cursor
+        page_timeout = budget.remaining()
     raise CtxdIncompleteSearchError(
         "ctxfs grep exceeded its continuation safety limit; narrow the prefix "
         "or pattern and retry"

@@ -146,10 +146,11 @@ Use a scoped-search workflow:
 4. Broaden the prefix only when the scoped search does not find enough context.
 
 Every listing and matching command is bounded. Grep uses ripgrep regular-expression
-syntax and automatically resumes internal transport pages. An explicit `--limit`
-is an intentional result bound; other incomplete searches fail with guidance to
-narrow the prefix or pattern. Use `--timeout-seconds` to override the 2-second
-per-page search deadline (0.1 to 60).
+syntax and automatically resumes non-timeout internal transport pages. An explicit
+`--limit` is an intentional result bound; other incomplete searches fail with
+guidance to narrow the prefix or pattern. Use `--timeout-seconds` to override the
+2-second budget for the whole CLI grep call (0.1 to 60). A timed-out page is not
+retried automatically.
 
 ## ctxfs
 

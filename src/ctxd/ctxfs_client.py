@@ -4,6 +4,7 @@ from typing import Any
 import httpx
 
 from ctxd._metadata import get_user_agent
+from ctxd._grep_timeout import GrepTimeoutBudget, incomplete_grep_error
 from ctxd.config import resolve_ctxfs_api_key, resolve_ctxfs_endpoint_details
 from ctxd.exceptions import CtxdError, CtxdIncompleteSearchError, CtxdProtocolError
 from ctxd.models import (
@@ -169,12 +170,14 @@ class AsyncCtxfsClient:
     ) -> CtxfsGrepResult:
         items = []
         cursor: str | None = None
+        budget = GrepTimeoutBudget.start(timeout_seconds)
+        page_timeout = timeout_seconds
         for _ in range(_GREP_MAX_TRANSPORT_PAGES):
             page = await self._grep_page(
                 pattern,
                 prefix=prefix,
                 limit=None if limit is None else max(1, limit - len(items)),
-                timeout_seconds=timeout_seconds,
+                timeout_seconds=page_timeout,
                 cursor=cursor,
             )
             items.extend(page.items)
@@ -186,9 +189,12 @@ class AsyncCtxfsClient:
                 return CtxfsGrepResult(
                     items=items, complete=True, stopped_by="limit"
                 )
+            if page.stopped_by == "timeout":
+                raise incomplete_grep_error("timeout")
             if page.next_cursor is None:
-                raise _incomplete_grep_error(page.stopped_by)
+                raise incomplete_grep_error(page.stopped_by)
             cursor = page.next_cursor
+            page_timeout = budget.remaining()
         raise CtxdIncompleteSearchError(
             "ctxfs grep exceeded its continuation safety limit; narrow the prefix "
             "or pattern and retry"
@@ -495,14 +501,6 @@ def _run(coro):
     from ctxd.client import Client
 
     return Client._run(coro)
-
-
-def _incomplete_grep_error(stopped_by: str | None) -> CtxdIncompleteSearchError:
-    reason = stopped_by or "an unknown safety bound"
-    return CtxdIncompleteSearchError(
-        f"ctxfs grep stopped because of {reason} and cannot provide an exhaustive "
-        "result; narrow the prefix or pattern and retry"
-    )
 
 
 def _ensure_managed_local_started() -> None:

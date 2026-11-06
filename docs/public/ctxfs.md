@@ -193,11 +193,13 @@ See the [ctxfs API reference](/docs/api) for every endpoint and parameter.
 
 Listing and matching operations accept a `limit`. Read operations accept byte or line bounds. Responses include completeness information; callers must not treat a truncated response as exhaustive.
 
-Grep accepts a per-request `timeout_seconds` from 0.1 to 60 seconds and defaults
-to 2 seconds. The SDK, CLI, and MCP tool automatically resume transport pages;
-agents never manage cursors. If a safety bound prevents an exhaustive result,
-grep fails explicitly and asks the caller to narrow its prefix or pattern. The
-raw HTTP endpoint retains opaque cursors for transport implementations.
+Grep accepts `timeout_seconds` from 0.1 to 60 seconds and defaults to 2 seconds.
+For the SDK, CLI, and MCP tool, that value is one budget for the whole grep call.
+Those surfaces automatically resume non-timeout transport pages; agents never
+manage cursors. They do not retry a timed-out page. If the budget or another
+safety bound prevents an exhaustive result, grep fails explicitly and asks the
+caller to narrow its prefix or pattern. The raw HTTP endpoint retains opaque
+cursors and per-request page bounds for transport implementations.
 
 File reads also include content identity information. An agent can use it to detect whether a cited file changed between reads.
 

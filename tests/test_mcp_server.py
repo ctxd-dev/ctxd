@@ -48,6 +48,9 @@ def test_local_mcp_lists_all_ctxfs_tools_without_connection_arguments() -> None:
     assert "local-files/slack" not in description
     assert "ripgrep" in description
     assert "handled automatically" in description
+    assert "within one timeout budget" in description
+    assert "a timeout is not retried automatically" in description
+    assert "narrow the prefix or pattern and retry" in description
 
 
 def test_local_mcp_initializes_and_calls_bounded_tree() -> None:
