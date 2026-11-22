@@ -17,10 +17,9 @@ a server can run without any local folders.
 - Do not expose server state, private keys, or bearer tokens through shared
   files, logs, command arguments, or URLs.
 
-This is a single ctxfs namespace with scoped credentials, not a multi-tenant
-security boundary. `read`, `submit`, `status`, and `admin` are distinct scopes;
-submission credentials are restricted by server-owned prefix grants. REST and
-MCP enforce the same policy.
+The server owns one ctxfs namespace. `read`, `submit`, `status`, and `admin` are
+distinct credential scopes; submission credentials are restricted by
+server-owned prefix grants. REST and MCP enforce the same policy.
 
 ## Authorization scopes
 
@@ -90,7 +89,7 @@ Text files that need no transformation may be linked into the ctxfs tree instead
 - Data from folders you did not add
 - A semantic-search embedding index
 
-## Per-user isolation
+## Local filesystem protections
 
 The managed local ctxfs service runs under the invoking operating-system account
 and protects its default runtime and data directories with user-only
@@ -101,7 +100,7 @@ operating-system administrators, can access ctxd state.
 For a standalone server, protect its selected `--root`, credential database,
 TLS private key, and backups with a dedicated operating-system account and
 private permissions. ctxd does not configure a service manager, reverse proxy,
-firewall, certificate issuer, backup system, or multi-tenant isolation.
+firewall, certificate issuer, or backup system.
 
 ## Credential recovery
 

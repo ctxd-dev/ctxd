@@ -32,8 +32,8 @@ A deployment can separate three roles:
 3. A **reader** uses `ctxd files`, REST, or MCP against the configured endpoint.
 
 The server may start empty and does not need a tracker or local folders. One
-machine may run all three roles. This release provides a single ctxfs namespace
-with multiple scoped credentials; it does not claim multi-tenant isolation.
+machine may run all three roles. Each server owns one ctxfs namespace and may
+issue multiple scoped credentials for its readers and writers.
 
 ## Standalone and network server
 
@@ -127,11 +127,58 @@ does not have that local folder configuration uses the canonical
 | `read` | Read a complete file up to a byte bound |
 | `read_lines` | Read an inclusive line range |
 | `grep` | Match a regular expression beneath a prefix |
+| `search` | Rank indexed documents for a natural-language lexical query |
 
 ctxfs deliberately exposes no shell and no arbitrary commands. `grep` uses
-ripgrep's Rust regular-expression syntax, not semantic search. ripgrep is a
-required runtime dependency (version 13.0.0 or newer); ctxfs never substitutes
-a different regex engine.
+ripgrep's Rust regular-expression syntax. `search` is a deterministic lexical
+retriever: it selects up to eight corpus-rare query terms and ranks authorized
+documents with title-weighted BM25. It does not use embeddings or expand the
+caller's path scope. ripgrep is a required runtime dependency (version 13.0.0
+or newer); ctxfs never substitutes a different regex engine.
+
+The full-detail FTS5 search index is built transactionally for an existing
+catalog. Subsequent puts, content updates, moves, and deletes update it in the
+same transaction as the catalog mutation. Search responses report catalog and
+index counts, freshness, the selected normalized terms, and an index revision.
+Clients must echo that revision on later offset pages; a concurrent index update
+makes the page request fail rather than silently changing result order.
+Search returns ten results and up to five 800-byte evidence excerpts by default.
+Pass `excerpt_bytes=0` and `excerpt_limit=0` together for metadata-only results.
+An existing catalog without a ready index remains available for reads, grep and
+writes, while search returns `503` until an operator runs `server index rebuild`.
+Before that explicit backfill, ctxfs verifies free disk headroom equal to at
+least twice the catalog's source bytes, with a 256 MiB floor. It logs progress
+every 10,000 documents. Index schema creation and backfill use one explicit
+transaction, so an interruption cannot publish a partial ready index.
+Search maintains index and catalog counts for directory prefixes in the same
+transaction as content changes. Freshness checks therefore avoid a full catalog
+scan for ordinary root and directory-scoped queries; exact-file or otherwise
+uncached prefixes retain the authoritative count fallback.
+
+### Search-index operations
+
+Operators can inspect index health without exposing query or document data:
+
+```sh
+ctxd server index status --json
+```
+
+The command reports build and schema state, revision, update time, index and
+catalog counts, freshness, and overall health. A non-healthy result exits with
+status 1. Rebuild the derived index from the authoritative catalog with:
+
+```sh
+ctxd server index rebuild --json
+```
+
+Use `--root PATH` immediately after `index` for a non-default server data root.
+A successful rebuild advances the index revision so pagination clients restart
+safely. Schedule rebuild during a low-traffic maintenance window.
+
+Search and rebuild diagnostics record latency, success/failure, freshness,
+selected-term count, bounded response size, excerpt fallback count, revision,
+result count, entry counts, and rebuild progress. They never record query text,
+paths, excerpts, or document content.
 
 Every pattern scans files beneath the selected prefix and uses ripgrep for final
 matching. Choose the narrowest relevant canonical root before searching; broad
@@ -140,23 +187,13 @@ prefixes may require multiple internal continuation pages.
 Grep invokes ripgrep directly over that filesystem prefix. It does not enumerate
 the SQLite catalog or hash unrelated files before matching. On a fresh scan,
 only files that produce matches are checked against catalog metadata and
-assigned content hashes. Resuming a legacy v2 `file_start` cursor also snapshots
-its named anchor file, even if that file has no match, to validate the cursor
-before continuing. Legacy v2 match cursors retain the catalog's logical path
-ordering even when it differs from encoded filesystem order. Those resumes may
-scan the full prefix on each compatibility page, but retain only `limit + 1`
-verified matches in memory; newly issued direct-scan cursors do not pay this
-legacy cost. Therefore, a complete grep response means the visible
+assigned content hashes. Resuming a `file_start` cursor also snapshots its named
+anchor file, even if that file has no match, to validate the cursor before
+continuing. Therefore, a complete grep response means the visible
 filesystem scope was searched exhaustively and its returned matches were
 verified; it does not assert that every catalog row still has a corresponding
 file. Use `stat`, `tree`, or writer-status diagnostics to investigate broader
 catalog drift.
-
-When an older catalog is opened, ctxfs attempts to remove its legacy derived
-grep tables. Cleanup is deferred if the current SQLite build cannot load the
-legacy FTS5 module, tokenizer, or `contentless_delete` table option. Those inert
-tables do not affect scan-only ripgrep search and can be removed later on a
-capable SQLite build.
 
 Agents should scope retrieval before searching broadly:
 
@@ -205,7 +242,7 @@ File reads also include content identity information. An agent can use it to det
 
 ## MCP
 
-The running ctxfs service exposes the seven read operations through MCP at
+The running ctxfs service exposes the eight read operations through MCP at
 `POST /mcp` on its configured endpoint. MCP calls use the same in-process read
 service as the REST API.
 

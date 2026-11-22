@@ -39,6 +39,7 @@ from ctxd.tracker_service import (
 )
 from ctxfs.auth import Scope
 from ctxfs.credentials import CredentialStore, IssuedCredential
+from ctxfs.store import CtxfsStore
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -322,6 +323,22 @@ def _build_parser() -> argparse.ArgumentParser:
     server_serve.add_argument("--tls-key", type=Path)
     server_serve.add_argument("--credential-root", type=Path)
     server_serve.add_argument("--advertised-url")
+    server_index = server_subparsers.add_parser(
+        "index", help="Inspect or rebuild the ctxfs search index."
+    )
+    server_index.add_argument(
+        "--root", type=Path, default=default_ctxfs_paths().root,
+        help="ctxfs server data root (defaults to the managed local server root).",
+    )
+    server_index_subparsers = server_index.add_subparsers(
+        dest="index_command", metavar="<index-command>", required=True
+    )
+    for command, help_text in (
+        ("status", "Show search-index health and freshness."),
+        ("rebuild", "Rebuild the derived search index from the catalog."),
+    ):
+        command_parser = server_index_subparsers.add_parser(command, help=help_text)
+        command_parser.add_argument("--json", action="store_true")
 
     return parser
 
@@ -333,6 +350,23 @@ def _add_description_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _handle_server(args: argparse.Namespace) -> int:
+    if args.server_command == "index":
+        store = CtxfsStore(args.root)
+        try:
+            status = (
+                store.rebuild_search_index()
+                if args.index_command == "rebuild"
+                else store.search_index_status()
+            )
+        finally:
+            store.close()
+        payload = status.model_dump(mode="json")
+        if args.json:
+            print(json.dumps(payload, sort_keys=True))
+        else:
+            for key, value in payload.items():
+                print(f"{key}: {value}")
+        return 0 if status.healthy else 1
     if args.server_command != "serve":
         raise ValueError(f"Unknown server command: {args.server_command}")
     socket_path = args.socket

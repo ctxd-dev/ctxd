@@ -33,7 +33,7 @@ ctxd files tree Documents
 
 | Component | Role | Default location |
 | --- | --- | --- |
-| [Local tracker](/docs/local-tracker) | Watches selected folders and applies changes | Per-user background process |
+| [Local tracker](/docs/local-tracker) | Watches selected folders and applies changes | Background process for the invoking operating-system account |
 | [ctxfs](/docs/ctxfs) | Stores indexed content and exposes filesystem-shaped paths | `~/.ctxd/ctxfs` |
 | [CLI](/docs/cli) | Configures ctxfs and tracked folders, and reads indexed content | `ctxd` |
 | [ctxfs API](/docs/api) | Provides REST and MCP access | Unix socket or HTTPS endpoint |

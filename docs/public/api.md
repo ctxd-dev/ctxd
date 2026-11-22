@@ -29,6 +29,7 @@ authentication and authorization policy.
 | Read a file | `GET /api/ctxfs/read` | `path`, `max_bytes` |
 | Read line range | `GET /api/ctxfs/read-lines` | `path`, `start_line`, `end_line` |
 | Match a regular expression | `GET /api/ctxfs/grep` | `pattern`, `prefix`, `limit`, `timeout_seconds`, `cursor` |
+| Rank indexed documents | `POST /api/ctxfs/search` | JSON: `query`, `prefix`, `limit`, `offset`, `index_revision`, `excerpt_bytes`, `excerpt_limit` |
 | Submit tracker changes | `POST /api/ctxfs/submissions` | Tracker-managed submission payload |
 | Register a machine | `POST /api/ctxfs/machines/register` | One-use enrollment credential and machine metadata |
 | Prepare credential rotation | `POST /api/ctxfs/machines/{machine_id}/credentials/prepare` | Current machine credential |
@@ -68,17 +69,40 @@ authenticated on HTTP endpoints.
 
 ## Bounds and identity
 
-Directory, tree, glob, and grep responses are bounded by `limit`. Grep uses ripgrep's Rust regex syntax and a 2-second timeout by default; `timeout_seconds` accepts 0.1 through 60 seconds. The raw HTTP response exposes opaque continuation cursors for transport clients, and cursors become stale if the resumed file changes. The public SDK, CLI, and MCP tool consume non-timeout transport pages automatically within one timeout budget. They do not retry a timed-out page and fail explicitly with guidance to narrow the prefix or pattern when the result cannot be exhaustive. File reads include content identity metadata so a caller can detect changed content.
+Directory, tree, glob, grep, and search responses are bounded by `limit`. Search
+selects up to eight corpus-rare terms from the natural-language query and uses
+title-weighted BM25 over the authorized prefix. Its response includes the index
+revision, freshness/count metadata, normalized query terms, scores, and a next
+offset. Pass the returned revision when requesting another page; pagination
+fails explicitly if a concurrent submission changed the index.
+Search returns ten results and up to five 800-byte evidence excerpts by default.
+Pass `excerpt_bytes=0` and `excerpt_limit=0` together for metadata-only results.
+
+Grep uses ripgrep's Rust regex syntax and a 2-second timeout by default;
+`timeout_seconds` accepts 0.1 through 60 seconds. The raw HTTP response exposes
+opaque continuation cursors for transport clients, and cursors become stale if
+the resumed file changes. The public SDK, CLI, and MCP tool consume non-timeout
+transport pages automatically within one timeout budget. They do not retry a
+timed-out page and fail explicitly with guidance to narrow the prefix or pattern
+when the result cannot be exhaustive. File reads include content identity
+metadata so a caller can detect changed content.
 
 Every grep pattern scans files beneath the selected prefix and uses ripgrep for
 matching. Continuation works the same way for literal and other regular-expression
 patterns. If private tree storage contains files that are absent from the catalog,
-all patterns can return those matches and report `catalog_mismatch`. When an older
-catalog is opened, ctxfs attempts to remove legacy derived grep tables. If the
-SQLite build can no longer load the legacy FTS5 module, tokenizer, or
-`contentless_delete` table option, cleanup is deferred and the inert tables are
-left in place; scan-only ripgrep search remains available and no search data
-needs to be backfilled.
+all patterns can return those matches and report `catalog_mismatch`.
+
+The current lexical search index is contentless FTS5 with full term-frequency
+detail. Existing catalogs remain available on upgrade with search disabled
+until an operator runs `ctxd server index rebuild`. Before a non-empty backfill,
+ctxfs requires free disk headroom equal to the larger of 256 MiB or twice the
+catalog's source bytes. Backfill progress is logged every 10,000 indexed
+documents. Schema creation and backfill share an explicit SQLite transaction;
+interruption cannot publish a partial ready index. Tracker puts, content updates, moves, and deletes
+maintain the index in the same transaction as the catalog mutation, so failed
+submissions cannot publish partial index state or revision changes. Directory
+prefix counts are also maintained transactionally, allowing freshness metadata
+to be returned without rescanning the full catalog on every search.
 
 `read` accepts at most 5,000,000 bytes. The default is 1,000,000 bytes. Use `read-lines` when an agent needs only a section of a large file.
 

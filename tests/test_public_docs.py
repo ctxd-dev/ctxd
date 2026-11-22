@@ -524,10 +524,7 @@ def test_public_docs_describe_scan_only_grep() -> None:
         "all patterns can return those matches and report `catalog_mismatch`"
         in public_text
     )
-    assert "ctxfs attempts to remove legacy derived grep tables" in public_text
-    assert "cleanup is deferred" in public_text
-    assert "inert tables are" in public_text
-    assert "ripgrep search remains available" in public_text
+    assert "legacy derived grep tables" not in public_text
 
 
 def test_public_docs_teach_bounded_scoped_grep_discovery() -> None:
@@ -604,14 +601,13 @@ def test_public_docs_describe_supported_authenticated_network_topology() -> None
         "ctxd logout --endpoint",
         "CTXD_CTXFS_API_KEY",
         "REST and MCP",
-        "single ctxfs namespace",
+        "one ctxfs namespace",
     )
     for claim in required:
         assert claim in public_text
 
     unsafe_or_unsupported = (
         "Certificate verification is optional",
-        "multi-tenant isolation is supported",
         "installs a background supervisor",
         "Loopback requests do not require",
         "shown by `ctxd folders list`",

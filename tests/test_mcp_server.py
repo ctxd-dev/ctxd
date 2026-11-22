@@ -23,6 +23,7 @@ def test_local_mcp_lists_all_ctxfs_tools_without_connection_arguments() -> None:
         "read",
         "read_lines",
         "grep",
+        "search",
     ]
     for tool in tools:
         properties = tool["inputSchema"]["properties"]
@@ -149,6 +150,39 @@ def test_local_mcp_grep_uses_real_client_files_facade(monkeypatch) -> None:
         "complete": True,
         "stopped_by": "limit",
     }
+
+
+def test_local_mcp_search_uses_distinct_natural_language_query() -> None:
+    result = SimpleNamespace(
+        model_dump=lambda **kwargs: {
+            "items": [{"path": "local-files/root/notes.md", "score": 1.5}],
+            "complete": True,
+            "index_revision": 3,
+            "index_fresh": True,
+        }
+    )
+    search = Mock(return_value=result)
+    client = SimpleNamespace(files=SimpleNamespace(search=search))
+    payload = execute_client_tool(
+        client,
+        "search",
+        {
+            "query": "multipart request limits",
+            "prefix": "local-files/root",
+            "limit": 20,
+            "offset": 0,
+        },
+    )
+    search.assert_called_once_with(
+        "multipart request limits",
+        prefix="local-files/root",
+        limit=20,
+        offset=0,
+        index_revision=None,
+        excerpt_bytes=800,
+        excerpt_limit=5,
+    )
+    assert payload["items"][0]["path"] == "local-files/root/notes.md"
 
 
 def test_local_mcp_returns_tool_errors_without_terminating_server() -> None:

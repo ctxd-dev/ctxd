@@ -294,3 +294,37 @@ class GrepPage(_CtxfsModel):
                 "prefix, passing next_cursor as cursor."
             )
         return self
+
+
+class SearchHit(_CtxfsModel):
+    path: str
+    score: float = Field(allow_inf_nan=False)
+    content_hash: str
+    indexed_at: float = Field(gt=0, allow_inf_nan=False)
+    excerpt: str | None = None
+    excerpt_truncated: bool | None = None
+
+
+class SearchPage(_CtxfsModel):
+    items: list[SearchHit] = Field(default_factory=list)
+    complete: bool = True
+    stopped_by: str | None = None
+    next_offset: int | None = Field(default=None, ge=0)
+    index_revision: int = Field(ge=0)
+    index_updated_at: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    index_entry_count: int = Field(ge=0)
+    catalog_entry_count: int = Field(ge=0)
+    index_fresh: bool
+    query_terms: list[str] = Field(default_factory=list)
+
+
+class SearchIndexStatus(_CtxfsModel):
+    build_status: Literal["building", "ready", "missing", "invalid"]
+    schema_version: int | None = Field(default=None, ge=0)
+    expected_schema_version: int = Field(ge=1)
+    revision: int | None = Field(default=None, ge=0)
+    updated_at: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    index_entry_count: int = Field(ge=0)
+    catalog_entry_count: int = Field(ge=0)
+    fresh: bool
+    healthy: bool
