@@ -6,6 +6,17 @@ title: 'CLI'
 The `ctxd` CLI manages the local tracker and ctxfs service and can connect to an
 externally managed ctxfs server.
 
+Search-index operators can inspect or rebuild the default local server index:
+
+```sh
+ctxd server index status --json
+ctxd server index rebuild --json
+```
+
+For a standalone server, place `--root PATH` after `index`. Status exits 1 for
+an incomplete, stale, or incompatible index. Rebuild replaces derived search
+state from the authoritative catalog and advances its revision.
+
 ## Command coverage policy
 
 `ctxd --help` and `ctxd <command> --help` are the exhaustive command and option
@@ -42,6 +53,9 @@ and option so additions and removals require an explicit documentation decision.
 | `machine register` | Optional workflow | Machine identity |
 | `machine status` | Optional workflow | Machine identity |
 | `server` | Administration | ctxfs |
+| `server index` | Administration | ctxfs |
+| `server index rebuild` | Administration | ctxfs |
+| `server index status` | Administration | ctxfs |
 | `server serve` | Administration | ctxfs |
 | `status` | Workflow | Configuration |
 | `tracker` | Workflow | Tracker |

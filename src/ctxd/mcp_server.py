@@ -78,6 +78,43 @@ TOOLS = [
         },
         ["pattern"],
     ),
+    (
+        "search",
+        (
+            "Search authorized ctxfs documents by natural-language lexical relevance. "
+            "The query planner selects up to eight corpus-rare terms and ranks with "
+            "title-weighted BM25 and includes bounded evidence excerpts by default. "
+            "Pass excerpt_bytes=0 and excerpt_limit=0 for metadata-only results. "
+            "Use index_revision on later pages so a "
+            "concurrent update cannot silently reorder pagination. Raw grep remains "
+            "available for exact regular-expression matching."
+        ),
+        {
+            "query": {"type": "string", "minLength": 1, "maxLength": 4096},
+            "prefix": {"type": "string"},
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100,
+                "default": 10,
+            },
+            "offset": {"type": "integer", "minimum": 0},
+            "index_revision": {"type": "integer", "minimum": 0},
+            "excerpt_bytes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4096,
+                "default": 800,
+            },
+            "excerpt_limit": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 20,
+                "default": 5,
+            },
+        },
+        ["query"],
+    ),
 ]
 
 
@@ -177,9 +214,19 @@ def execute_client_tool(
             limit=arguments.get("limit"),
             timeout_seconds=arguments.get("timeout_seconds"),
         )
+    elif name == "search":
+        value = files.search(
+            arguments["query"],
+            prefix=arguments.get("prefix", ""),
+            limit=arguments.get("limit"),
+            offset=arguments.get("offset", 0),
+            index_revision=arguments.get("index_revision"),
+            excerpt_bytes=arguments.get("excerpt_bytes", 800),
+            excerpt_limit=arguments.get("excerpt_limit", 5),
+        )
     else:
         raise ValueError(f"Unknown ctxfs tool: {name}")
-    return value.model_dump(mode="json")
+    return value.model_dump(mode="json", exclude_none=name == "search")
 
 
 def _result(request_id: Any, result: dict[str, Any]) -> dict[str, Any]:

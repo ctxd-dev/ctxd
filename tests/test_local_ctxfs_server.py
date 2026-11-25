@@ -261,6 +261,7 @@ def test_local_ctxfs_server_exposes_mcp_tool_discovery(tmp_path) -> None:
         "read",
         "read_lines",
         "grep",
+        "search",
     ]
 
 
@@ -314,6 +315,73 @@ def test_local_ctxfs_mcp_reads_in_process(tmp_path) -> None:
     result = response.json()["result"]
     assert result["structuredContent"]["text"] == "hello ctxfs\n"
     assert result.get("isError") is None
+
+    search = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "search",
+                "arguments": {
+                    "query": "hello ctxfs",
+                    "prefix": "local-files/root",
+                    "excerpt_bytes": 0,
+                    "excerpt_limit": 0,
+                },
+            },
+        },
+    )
+    assert search.status_code == 200
+    structured = search.json()["result"]["structuredContent"]
+    assert [item["path"] for item in structured["items"]] == [
+        "local-files/root/notes.md"
+    ]
+    assert structured["index_fresh"] is True
+    assert "excerpt" not in structured["items"][0]
+
+    assert client.get(
+        "/api/ctxfs/search", params={"query": "hello ctxfs"}
+    ).status_code == 405
+    direct_search = client.post(
+        "/api/ctxfs/search",
+        json={
+            "query": "hello ctxfs",
+            "prefix": "local-files/root",
+            "excerpt_bytes": 0,
+            "excerpt_limit": 0,
+        },
+    )
+    assert direct_search.status_code == 200
+    assert direct_search.json()["items"][0]["path"] == "local-files/root/notes.md"
+
+
+def test_existing_catalog_stays_available_until_explicit_index_rebuild(tmp_path) -> None:
+    root = tmp_path / "ctxfs"
+    client = TestClient(create_ctxfs_app(root, auth_mode=CtxfsAuthMode.TRUSTED_LOCAL))
+    assert client.post(
+        "/api/ctxfs/submissions",
+        json=_submission("local-files/root", "local-files/root/notes.md"),
+    ).status_code == 200
+
+    store = CtxfsStore(root)
+    with store.connection:
+        store.connection.execute("DROP TABLE search_index_vocab")
+        store.connection.execute("DROP TABLE search_index")
+        store.connection.execute("DROP TABLE search_index_entries")
+        store.connection.execute("DROP TABLE search_index_state")
+    store.close()
+
+    read = client.get(
+        "/api/ctxfs/read", params={"path": "local-files/root/notes.md"}
+    )
+    assert read.status_code == 200
+    unavailable = client.post(
+        "/api/ctxfs/search", json={"query": "hello ctxfs"}
+    )
+    assert unavailable.status_code == 503
+    assert "server index rebuild" in unavailable.json()["detail"]
 
 
 def test_local_ctxfs_mcp_grep_hides_and_consumes_transport_pages(

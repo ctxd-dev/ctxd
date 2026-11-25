@@ -53,6 +53,23 @@ def test_status_help_describes_endpoint_health_not_authentication() -> None:
     assert "API key" not in output
 
 
+def test_server_index_status_and_rebuild(tmp_path) -> None:
+    root = tmp_path / "ctxfs"
+    stdout = StringIO()
+    with redirect_stdout(stdout):
+        assert main(["server", "index", "--root", str(root), "status", "--json"]) == 0
+    status = json.loads(stdout.getvalue())
+    assert status["healthy"] is True
+    assert status["build_status"] == "ready"
+
+    stdout = StringIO()
+    with redirect_stdout(stdout):
+        assert main(["server", "index", "--root", str(root), "rebuild", "--json"]) == 0
+    rebuilt = json.loads(stdout.getvalue())
+    assert rebuilt["healthy"] is True
+    assert rebuilt["revision"] > status["revision"]
+
+
 def test_files_grep_help_teaches_scoped_search_methodology() -> None:
     stdout = StringIO()
     with redirect_stdout(stdout), pytest.raises(SystemExit) as exc:

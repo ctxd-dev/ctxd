@@ -1,4 +1,4 @@
-"""Pure authorization policy for the single-tenant ctxfs service.
+"""Pure authorization policy for the single-namespace ctxfs service.
 
 This module deliberately does not parse or store credentials.  Authentication
 adapters construct :class:`Principal` instances from server-owned credential

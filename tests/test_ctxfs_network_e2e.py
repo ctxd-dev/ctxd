@@ -706,6 +706,7 @@ def test_isolated_tracker_server_and_cli_network_topology(tmp_path: Path) -> Non
             "read",
             "read_lines",
             "grep",
+            "search",
         ]
 
         operations = [

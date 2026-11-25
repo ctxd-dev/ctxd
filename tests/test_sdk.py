@@ -149,7 +149,7 @@ def test_ctxfs_endpoint_prefers_socket_env(monkeypatch: pytest.MonkeyPatch) -> N
 
 def test_ctxfs_endpoint_rejects_paths_that_change_credential_scope() -> None:
     with pytest.raises(ValueError, match="must not contain a path"):
-        normalize_ctxfs_endpoint("https://ctxfs.example/tenant-a")
+        normalize_ctxfs_endpoint("https://ctxfs.example/project-a")
 
 
 def test_ctxfs_credentials_are_normalized_and_scoped(
@@ -376,6 +376,43 @@ def test_synchronous_files_client_exposes_ctxfs_grep(
 
     monkeypatch.setattr("httpx.AsyncClient.request", mock_request)
     assert client.files.grep("needle", prefix="root", limit=5).items[0].line == "needle"
+
+
+def test_synchronous_files_client_posts_search_query_in_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = CtxfsClient(endpoint="http://127.0.0.1:8765")
+
+    async def mock_request(self, method, url, *, json=None, **kwargs):
+        assert method == "POST" and url == "/api/ctxfs/search"
+        assert json == {
+            "query": "private acquisition plan",
+            "prefix": "root",
+            "offset": 0,
+            "excerpt_bytes": 0,
+            "excerpt_limit": 0,
+        }
+        return httpx.Response(
+            200,
+            json={
+                "items": [],
+                "complete": True,
+                "index_revision": 1,
+                "index_entry_count": 0,
+                "catalog_entry_count": 0,
+                "index_fresh": True,
+                "query_terms": [],
+            },
+        )
+
+    monkeypatch.setattr("httpx.AsyncClient.request", mock_request)
+    result = client.search(
+        "private acquisition plan",
+        prefix="root",
+        excerpt_bytes=0,
+        excerpt_limit=0,
+    )
+    assert result.items == []
 
 
 def test_synchronous_files_client_automatically_resumes_grep(

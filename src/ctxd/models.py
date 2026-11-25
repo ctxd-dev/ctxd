@@ -109,3 +109,29 @@ class CtxfsGrepResult(BaseModel):
     items: list[CtxfsGrepMatch] = Field(default_factory=list)
     complete: bool = True
     stopped_by: str | None = None
+
+
+class CtxfsSearchHit(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    path: str
+    score: float
+    content_hash: str
+    indexed_at: float
+    excerpt: str | None = None
+    excerpt_truncated: bool | None = None
+
+
+class CtxfsSearchResult(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    items: list[CtxfsSearchHit] = Field(default_factory=list)
+    complete: bool = True
+    stopped_by: str | None = None
+    next_offset: int | None = None
+    index_revision: int
+    index_updated_at: float | None = None
+    index_entry_count: int
+    catalog_entry_count: int
+    index_fresh: bool
+    query_terms: list[str] = Field(default_factory=list)

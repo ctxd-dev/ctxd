@@ -3,13 +3,21 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, "feature/**"]
   workflow_dispatch:
 
 jobs:
   test:
-    name: Test
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, python: "3.11"}
+          - {os: ubuntu-latest, python: "3.12"}
+          - {os: ubuntu-24.04-arm, python: "3.12"}
+          - {os: macos-15, python: "3.12"}
 
     steps:
       - name: Checkout Repository
@@ -20,7 +28,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version-file: ".python-version"
+          python-version: ${{ matrix.python }}
 
       - name: Set Up uv
         uses: astral-sh/setup-uv@v5
@@ -29,10 +37,29 @@ jobs:
         run: uv sync --locked
 
       - name: Install ripgrep
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ripgrep
 
+      - name: Validate SQLite FTS5 Capability
+        run: uv run python -c "import sqlite3; c=sqlite3.connect(':memory:'); c.execute(\"CREATE VIRTUAL TABLE probe USING fts5(value, content='', contentless_delete=1, tokenize='porter unicode61')\"); c.execute(\"CREATE VIRTUAL TABLE vocab USING fts5vocab(probe, 'row')\")"
+
       - name: Run Tests
+        if: runner.os == 'Linux'
         run: uv run pytest tests -v
+
+      - name: Run Indexed Search Platform Tests
+        run: >-
+          uv run pytest
+          tests/ctxfs/test_store.py
+          tests/test_cli.py
+          tests/test_local_ctxfs_server.py
+          tests/test_sdk.py
+          -k "search_index or search_excerpts or search_telemetry or server_index"
+          -v
+
+      - name: Run Mixed Search/Write Concurrency Gate
+        if: runner.os == 'Linux' && matrix.python == '3.12'
+        run: uv run python scripts/benchmark_search_concurrency.py
 
       - name: Build Distributions
         run: uv build

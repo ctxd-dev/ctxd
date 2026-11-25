@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import bisect
 import fnmatch
 import functools
 import hashlib
@@ -40,6 +39,9 @@ from ctxfs.models import (
     PutOperation,
     ReadLinesResult,
     ReadResult,
+    SearchHit,
+    SearchIndexStatus,
+    SearchPage,
     Submission,
     SubmissionState,
     TrackedFolder,
@@ -60,6 +62,27 @@ RIPGREP_MIN_VERSION = (13, 0, 0)
 GREP_MAX_JSON_RECORD_BYTES = 1_000_000
 _GREP_CONTENT_HASH_RE = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _GREP_PATH_IDENTITY_RE = re.compile(r"stat:\d+:\d+:\d+:-?\d+:-?\d+\Z")
+_SEARCH_TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
+_SEARCH_ACRONYM_BOUNDARY_RE = re.compile(r"([A-Z]+)([A-Z][a-z])")
+_SEARCH_IDENTIFIER_BOUNDARY_RE = re.compile(r"([a-z\d])([A-Z])")
+_SEARCH_LETTER_DIGIT_BOUNDARY_RE = re.compile(r"([^\W\d_])(\d)", re.UNICODE)
+_SEARCH_DIGIT_LETTER_BOUNDARY_RE = re.compile(r"(\d)([^\W\d_])", re.UNICODE)
+_SEARCH_STOP_WORDS = frozenset(
+    """
+    a about an and are as at be been by can did do does for from had has have how
+    i if in into is it its may of on or our should that the their them there these
+    they this those to was were what when where which who why will with would you
+    your
+    """.split()
+)
+SEARCH_QUERY_MAX_CHARS = 4096
+SEARCH_TERM_LIMIT = 8
+SEARCH_INDEX_SCHEMA_VERSION = 1
+SEARCH_INDEX_MIN_FREE_BYTES = 256 * 1024 * 1024
+SEARCH_INDEX_FREE_SPACE_MULTIPLIER = 2
+SEARCH_INDEX_PROGRESS_INTERVAL = 10_000
+SEARCH_EXCERPT_MAX_BYTES = 4096
+SEARCH_EXCERPT_MAX_HITS = 20
 
 
 @dataclass
@@ -102,7 +125,6 @@ class _GrepCursor:
     mode: str
     anchor: tuple[int, int, int] | None = None
     catalog_mismatch: bool = False
-    version: int = 3
 
 
 def _encode_grep_cursor(cursor: _GrepCursor) -> str:
@@ -143,15 +165,10 @@ def _decode_grep_cursor(value: str) -> _GrepCursor:
     if not isinstance(payload, dict):
         raise ValueError("invalid ctxfs grep cursor")
     version = payload.get("v")
-    if not isinstance(version, int) or isinstance(version, bool) or version not in {2, 3}:
+    if version != 3 or isinstance(version, bool):
         raise ValueError("invalid ctxfs grep cursor")
-    expected = {"v", "p", "q", "r", "h", "m", "a"}
-    if version == 3:
-        expected.add("c")
-    if (
-        set(payload) != expected
-        or (version == 3 and not isinstance(payload["c"], bool))
-    ):
+    expected = {"v", "p", "q", "r", "h", "m", "a", "c"}
+    if set(payload) != expected or not isinstance(payload["c"], bool):
         raise ValueError("invalid ctxfs grep cursor")
     string_fields = ("p", "q", "r", "m")
     if any(not isinstance(payload[field], str) for field in string_fields):
@@ -164,7 +181,6 @@ def _decode_grep_cursor(value: str) -> _GrepCursor:
         or payload["m"]
         not in {
             "after_match",
-            "legacy_after_match",
             "file_start",
             "search_start",
         }
@@ -179,7 +195,7 @@ def _decode_grep_cursor(value: str) -> _GrepCursor:
     )
     anchor_value = payload["a"]
     anchor: tuple[int, int, int] | None = None
-    if payload["m"] in {"after_match", "legacy_after_match"}:
+    if payload["m"] == "after_match":
         if (
             not is_content_hash
             or not isinstance(anchor_value, list)
@@ -211,8 +227,7 @@ def _decode_grep_cursor(value: str) -> _GrepCursor:
         content_hash=payload["h"],
         mode=payload["m"],
         anchor=anchor,
-        catalog_mismatch=payload.get("c", False),
-        version=version,
+        catalog_mismatch=payload["c"],
     )
 
 
@@ -264,7 +279,8 @@ class CtxfsStore:
                 """
             )
             self._migrate_entries_table()
-            self._drop_legacy_grep_index()
+            self._migrate_search_index()
+            self._migrate_search_prefix_counts()
             self.connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS submissions (
@@ -376,21 +392,303 @@ class CtxfsStore:
                 """
             )
 
-    def _drop_legacy_grep_index(self) -> None:
-        """Remove legacy derived search state when its FTS module can load."""
-        try:
-            self.connection.execute("DROP TABLE IF EXISTS grep_index")
-        except sqlite3.OperationalError as error:
-            if not _is_legacy_fts_capability_error(error):
-                raise
-            logger.info(
-                "Legacy SQLite FTS grep tables could not be loaded; "
-                "deferring their cleanup",
-                exc_info=True,
+    def _migrate_search_index(self, *, force: bool = False) -> None:
+        required = {
+            "search_index",
+            "search_index_entries",
+            "search_index_state",
+            "search_index_vocab",
+        }
+        present = {
+            row["name"]
+            for row in self.connection.execute(
+                "SELECT name FROM sqlite_master WHERE name LIKE 'search_index%'"
+            )
+        }
+        previous_revision = 0
+        if "search_index_state" in present:
+            previous_state = self.connection.execute(
+                "SELECT revision FROM search_index_state WHERE id = 1"
+            ).fetchone()
+            if previous_state is not None:
+                previous_revision = int(previous_state["revision"])
+        if not force and required <= present:
+            state_columns = {
+                row["name"]
+                for row in self.connection.execute(
+                    "PRAGMA table_info(search_index_state)"
+                )
+            }
+            state = self.connection.execute(
+                "SELECT revision FROM search_index_state WHERE id = 1"
+            ).fetchone()
+            if "build_status" not in state_columns:
+                catalog_empty = False
+                if state is not None and state["revision"] == 0:
+                    catalog_empty = (
+                        self.connection.execute("SELECT 1 FROM entries LIMIT 1").fetchone()
+                        is None
+                    )
+                if state is not None and (state["revision"] > 0 or catalog_empty):
+                    self.connection.execute(
+                        "ALTER TABLE search_index_state ADD COLUMN "
+                        "build_status TEXT NOT NULL DEFAULT 'ready'"
+                    )
+                    self.connection.execute(
+                        "ALTER TABLE search_index_state ADD COLUMN "
+                        "schema_version INTEGER NOT NULL DEFAULT 1"
+                    )
+                    return
+            else:
+                status = self.connection.execute(
+                    "SELECT build_status, schema_version "
+                    "FROM search_index_state WHERE id = 1"
+                ).fetchone()
+                if (
+                    status is not None
+                    and status["schema_version"] == SEARCH_INDEX_SCHEMA_VERSION
+                ):
+                    if status["build_status"] in {"building", "ready"}:
+                        return
+            logger.warning("Incomplete search index detected; explicit rebuild required")
+
+        if not force:
+            catalog_empty = (
+                self.connection.execute("SELECT 1 FROM entries LIMIT 1").fetchone()
+                is None
+            )
+            self._create_empty_search_index(
+                previous_revision=previous_revision,
+                build_status="ready" if catalog_empty else "building",
             )
             return
-        self.connection.execute("DROP TABLE IF EXISTS grep_index_entries")
-        self.connection.execute("DROP TABLE IF EXISTS grep_index_metadata")
+
+        source_bytes = self.connection.execute(
+            "SELECT coalesce(sum(size_bytes), 0) FROM entries"
+        ).fetchone()[0]
+        required_free = max(
+            SEARCH_INDEX_MIN_FREE_BYTES,
+            source_bytes * SEARCH_INDEX_FREE_SPACE_MULTIPLIER,
+        )
+        free_bytes = shutil.disk_usage(self.root).free
+        if source_bytes and free_bytes < required_free:
+            raise RuntimeError(
+                "insufficient free space to build the ctxfs search index: "
+                f"need at least {required_free} bytes, found {free_bytes}"
+            )
+        logger.info(
+            "Building ctxfs search index for %s catalog bytes", source_bytes
+        )
+        self._create_empty_search_index(
+            previous_revision=previous_revision, build_status="building"
+        )
+        indexed = 0
+        for row in self.connection.execute(
+            "SELECT user_id, path, content_hash, object_id, updated_at FROM entries"
+        ).fetchall():
+            try:
+                text = self._object_path(row["user_id"], row["object_id"]).read_text()
+            except (OSError, UnicodeDecodeError):
+                continue
+            self._insert_search_document(
+                row["user_id"],
+                row["path"],
+                row["content_hash"],
+                text,
+                row["updated_at"],
+                update_counts=False,
+            )
+            indexed += 1
+            if indexed % SEARCH_INDEX_PROGRESS_INTERVAL == 0:
+                logger.info("Indexed %s ctxfs documents", indexed)
+        if indexed:
+            self.connection.execute(
+                "INSERT INTO search_index(search_index) VALUES ('optimize')"
+            )
+        self.connection.execute(
+            """
+            UPDATE search_index_state
+            SET revision = revision + 1,
+                updated_at = ?,
+                build_status = 'ready'
+            WHERE id = 1
+            """,
+            (time.time(),),
+        )
+        logger.info("Completed ctxfs search index with %s documents", indexed)
+
+    def _create_empty_search_index(
+        self, *, previous_revision: int, build_status: str
+    ) -> None:
+        self.connection.execute("DROP TABLE IF EXISTS search_index_prefix_counts")
+        self.connection.execute("DROP TABLE IF EXISTS search_index_vocab")
+        self.connection.execute("DROP TABLE IF EXISTS search_index")
+        self.connection.execute("DROP TABLE IF EXISTS search_index_entries")
+        self.connection.execute("DROP TABLE IF EXISTS search_index_state")
+        self.connection.executescript(
+            f"""
+            BEGIN IMMEDIATE;
+            CREATE TABLE search_index_entries (
+                rowid INTEGER PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                path TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                source_updated_at REAL NOT NULL,
+                indexed_at REAL NOT NULL,
+                UNIQUE(user_id, path)
+            );
+            CREATE INDEX search_index_entries_user_path
+            ON search_index_entries(user_id, path);
+            CREATE VIRTUAL TABLE search_index USING fts5(
+                title,
+                content,
+                content='',
+                contentless_delete=1,
+                tokenize='porter unicode61'
+            );
+            CREATE VIRTUAL TABLE search_index_vocab
+            USING fts5vocab(search_index, 'row');
+            CREATE TABLE search_index_state (
+                id INTEGER PRIMARY KEY CHECK(id = 1),
+                revision INTEGER NOT NULL,
+                updated_at REAL,
+                build_status TEXT NOT NULL CHECK(build_status IN ('building', 'ready')),
+                schema_version INTEGER NOT NULL
+            );
+            INSERT INTO search_index_state(
+                id, revision, updated_at, build_status, schema_version
+            ) VALUES (1, 0, NULL, '{build_status}', 1);
+            """
+        )
+        self.connection.execute(
+            "UPDATE search_index_state SET revision = ? WHERE id = 1",
+            (previous_revision,),
+        )
+
+    def search_index_status(self) -> SearchIndexStatus:
+        required = {
+            "search_index",
+            "search_index_entries",
+            "search_index_state",
+            "search_index_vocab",
+            "search_index_prefix_counts",
+        }
+        present = {
+            row["name"]
+            for row in self.connection.execute(
+                "SELECT name FROM sqlite_master WHERE name LIKE 'search_index%'"
+            )
+        }
+        catalog_count = int(
+            self.connection.execute("SELECT count(*) FROM entries").fetchone()[0]
+        )
+        if not required <= present:
+            return SearchIndexStatus(
+                build_status="missing" if not present else "invalid",
+                expected_schema_version=SEARCH_INDEX_SCHEMA_VERSION,
+                index_entry_count=0,
+                catalog_entry_count=catalog_count,
+                fresh=False,
+                healthy=False,
+            )
+        state = self.connection.execute(
+            "SELECT revision, updated_at, build_status, schema_version "
+            "FROM search_index_state WHERE id = 1"
+        ).fetchone()
+        if state is None:
+            return SearchIndexStatus(
+                build_status="invalid",
+                expected_schema_version=SEARCH_INDEX_SCHEMA_VERSION,
+                index_entry_count=0,
+                catalog_entry_count=catalog_count,
+                fresh=False,
+                healthy=False,
+            )
+        index_count = int(
+            self.connection.execute(
+                "SELECT count(*) FROM search_index_entries"
+            ).fetchone()[0]
+        )
+        fresh = index_count == catalog_count
+        healthy = (
+            state["build_status"] == "ready"
+            and state["schema_version"] == SEARCH_INDEX_SCHEMA_VERSION
+            and fresh
+        )
+        return SearchIndexStatus(
+            build_status=state["build_status"],
+            schema_version=state["schema_version"],
+            expected_schema_version=SEARCH_INDEX_SCHEMA_VERSION,
+            revision=state["revision"],
+            updated_at=state["updated_at"],
+            index_entry_count=index_count,
+            catalog_entry_count=catalog_count,
+            fresh=fresh,
+            healthy=healthy,
+        )
+
+    def rebuild_search_index(self) -> SearchIndexStatus:
+        started = time.monotonic()
+        logger.info("ctxfs_search_index_rebuild status=started")
+        try:
+            with self.connection:
+                self._migrate_search_index(force=True)
+                self._migrate_search_prefix_counts()
+        except Exception:
+            logger.exception(
+                "ctxfs_search_index_rebuild status=failed latency_ms=%.3f",
+                (time.monotonic() - started) * 1000,
+            )
+            raise
+        status = self.search_index_status()
+        logger.info(
+            "ctxfs_search_index_rebuild status=completed latency_ms=%.3f "
+            "revision=%s index_entries=%s catalog_entries=%s",
+            (time.monotonic() - started) * 1000,
+            status.revision,
+            status.index_entry_count,
+            status.catalog_entry_count,
+        )
+        return status
+
+    def _migrate_search_prefix_counts(self) -> None:
+        exists = self.connection.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'search_index_prefix_counts'"
+        ).fetchone()
+        if exists is not None:
+            return
+        self.connection.execute(
+            """
+            CREATE TABLE search_index_prefix_counts (
+                user_id TEXT NOT NULL,
+                prefix TEXT NOT NULL,
+                index_entry_count INTEGER NOT NULL CHECK(index_entry_count >= 0),
+                catalog_entry_count INTEGER NOT NULL CHECK(catalog_entry_count >= 0),
+                PRIMARY KEY(user_id, prefix)
+            )
+            """
+        )
+        counts: dict[tuple[str, str], list[int]] = {}
+        for row in self.connection.execute("SELECT user_id, path FROM entries"):
+            for prefix in _search_directory_prefixes(row["path"]):
+                counts.setdefault((row["user_id"], prefix), [0, 0])[1] += 1
+        for row in self.connection.execute(
+            "SELECT user_id, path FROM search_index_entries"
+        ):
+            for prefix in _search_directory_prefixes(row["path"]):
+                counts.setdefault((row["user_id"], prefix), [0, 0])[0] += 1
+        self.connection.executemany(
+            """
+            INSERT INTO search_index_prefix_counts(
+                user_id, prefix, index_entry_count, catalog_entry_count
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (
+                (user_id, prefix, values[0], values[1])
+                for (user_id, prefix), values in counts.items()
+            ),
+        )
 
     def register_machine(
         self,
@@ -1355,6 +1653,198 @@ class CtxfsStore:
         )
         return page
 
+    def search(
+        self,
+        user_id: str,
+        query: str,
+        *,
+        prefix: str = "",
+        limit: int = 10,
+        offset: int = 0,
+        index_revision: int | None = None,
+        excerpt_bytes: int = 800,
+        excerpt_limit: int = 5,
+    ) -> SearchPage:
+        started = time.monotonic()
+        try:
+            self.connection.execute("BEGIN")
+            page = self._search(
+                user_id,
+                query,
+                prefix=prefix,
+                limit=limit,
+                offset=offset,
+                index_revision=index_revision,
+                excerpt_bytes=excerpt_bytes,
+                excerpt_limit=excerpt_limit,
+            )
+            self.connection.commit()
+        except Exception as exc:
+            self.connection.rollback()
+            logger.warning(
+                "ctxfs_search status=failed latency_ms=%.3f error_type=%s",
+                (time.monotonic() - started) * 1000,
+                type(exc).__name__,
+            )
+            raise
+        expected_excerpts = min(excerpt_limit, len(page.items)) if excerpt_bytes else 0
+        returned_excerpts = sum(item.excerpt is not None for item in page.items)
+        logger.info(
+            "ctxfs_search status=completed latency_ms=%.3f fresh=%s "
+            "selected_terms=%s response_bytes=%s excerpt_fallbacks=%s "
+            "index_revision=%s result_count=%s",
+            (time.monotonic() - started) * 1000,
+            page.index_fresh,
+            len(page.query_terms),
+            len(page.model_dump_json(exclude_none=True).encode("utf-8")),
+            expected_excerpts - returned_excerpts,
+            page.index_revision,
+            len(page.items),
+        )
+        return page
+
+    def _search(
+        self,
+        user_id: str,
+        query: str,
+        *,
+        prefix: str = "",
+        limit: int = 10,
+        offset: int = 0,
+        index_revision: int | None = None,
+        excerpt_bytes: int = 800,
+        excerpt_limit: int = 5,
+    ) -> SearchPage:
+        if not query or len(query) > SEARCH_QUERY_MAX_CHARS:
+            raise ValueError("query must contain between 1 and 4096 characters")
+        if limit <= 0 or limit > 100:
+            raise ValueError("limit must be between 1 and 100")
+        if offset < 0:
+            raise ValueError("offset must be non-negative")
+        if excerpt_bytes < 0 or excerpt_bytes > SEARCH_EXCERPT_MAX_BYTES:
+            raise ValueError("excerpt_bytes must be between 0 and 4096")
+        if excerpt_limit < 0 or excerpt_limit > SEARCH_EXCERPT_MAX_HITS:
+            raise ValueError("excerpt_limit must be between 0 and 20")
+        if bool(excerpt_bytes) != bool(excerpt_limit):
+            raise ValueError("excerpt_bytes and excerpt_limit must both be zero or positive")
+        normalized_prefix = _normalize_path(prefix) if prefix else ""
+        state = self.connection.execute(
+            "SELECT revision, updated_at, build_status, schema_version "
+            "FROM search_index_state WHERE id = 1"
+        ).fetchone()
+        if (
+            state is None
+            or state["build_status"] != "ready"
+            or state["schema_version"] != SEARCH_INDEX_SCHEMA_VERSION
+        ):
+            raise RuntimeError("ctxfs search index is not ready; run server index rebuild")
+        revision = state["revision"]
+        if index_revision is not None and index_revision != revision:
+            raise ValueError("search index revision changed; restart pagination")
+        terms = _search_question_terms(query)
+        stems = _search_porter_stems(self.connection, terms)
+        frequencies = {
+            row["term"]: row["doc"]
+            for row in self.connection.execute(
+                f"SELECT term, doc FROM search_index_vocab WHERE term IN "
+                f"({','.join('?' for _ in stems)})",
+                stems,
+            )
+        } if stems else {}
+        ranked_terms = [
+            (frequencies[stem], position, term)
+            for position, (term, stem) in enumerate(zip(terms, stems, strict=True))
+            if stem in frequencies
+        ]
+        ranked_terms.sort()
+        selected_terms = [term for _, _, term in ranked_terms[:SEARCH_TERM_LIMIT]]
+        index_count, catalog_count = self._search_scope_counts(
+            user_id, normalized_prefix
+        )
+        common = {
+            "index_revision": revision,
+            "index_updated_at": state["updated_at"],
+            "index_entry_count": index_count,
+            "catalog_entry_count": catalog_count,
+            "index_fresh": index_count == catalog_count,
+            "query_terms": selected_terms,
+        }
+        if not selected_terms:
+            return SearchPage(items=[], **common)
+        match_query = " OR ".join(
+            f'"{term.replace(chr(34), chr(34) * 2)}"' for term in selected_terms
+        )
+        scope_sql, scope_params = _search_scope_sql(user_id, normalized_prefix)
+        rows = self.connection.execute(
+            f"""
+            SELECT e.path, e.content_hash, e.indexed_at,
+                   bm25(search_index, 5.0, 1.0) AS rank
+            FROM search_index
+            JOIN search_index_entries AS e ON e.rowid = search_index.rowid
+            WHERE search_index MATCH ? AND {scope_sql}
+            ORDER BY rank, e.path
+            LIMIT ? OFFSET ?
+            """,
+            (match_query, *scope_params, limit + 1, offset),
+        ).fetchall()
+        has_more = len(rows) > limit
+        page_rows = rows[:limit]
+        items = []
+        for position, row in enumerate(page_rows):
+            excerpt = None
+            excerpt_truncated = None
+            if excerpt_bytes and position < excerpt_limit:
+                try:
+                    text = self._tree_path(user_id, row["path"]).read_text()
+                except (OSError, UnicodeDecodeError):
+                    pass
+                else:
+                    if _sha256(text.encode("utf-8")) == row["content_hash"]:
+                        excerpt, excerpt_truncated = _bounded_search_excerpt(
+                            text, selected_terms, excerpt_bytes
+                        )
+            items.append(
+                SearchHit(
+                    path=row["path"],
+                    score=-row["rank"],
+                    content_hash=row["content_hash"],
+                    indexed_at=row["indexed_at"],
+                    excerpt=excerpt,
+                    excerpt_truncated=excerpt_truncated,
+                )
+            )
+        return SearchPage(
+            items=items,
+            complete=not has_more,
+            stopped_by="page_limit" if has_more else None,
+            next_offset=offset + len(page_rows) if has_more else None,
+            **common,
+        )
+
+    def _search_scope_counts(self, user_id: str, prefix: str) -> tuple[int, int]:
+        cached = self.connection.execute(
+            """
+            SELECT index_entry_count, catalog_entry_count
+            FROM search_index_prefix_counts
+            WHERE user_id = ? AND prefix = ?
+            """,
+            (user_id, prefix),
+        ).fetchone()
+        if cached is not None:
+            return cached["index_entry_count"], cached["catalog_entry_count"]
+        scope_sql, params = _search_scope_sql(user_id, prefix)
+        index_count = self.connection.execute(
+            f"SELECT count(*) FROM search_index_entries AS e WHERE {scope_sql}",
+            params,
+        ).fetchone()[0]
+        entry_scope_sql, entry_params = _search_scope_sql(
+            user_id, prefix, alias="entries"
+        )
+        catalog_count = self.connection.execute(
+            f"SELECT count(*) FROM entries WHERE {entry_scope_sql}", entry_params
+        ).fetchone()[0]
+        return index_count, catalog_count
+
     def _validate_grep_pattern(self, pattern: str, deadline: float) -> None:
         _require_rg()
 
@@ -1422,71 +1912,19 @@ class CtxfsStore:
         enrichment_seconds = 0.0
         matched_file_count = 0
         pending = b""
-        legacy_logical_resume = resume is not None and (
-            resume.mode == "legacy_after_match"
-            or (resume.version == 2 and resume.mode == "after_match")
-        )
-        legacy_candidate_keys: list[tuple[str, int, int, int]] = []
-        legacy_candidates: list[GrepMatch] = []
-        legacy_file_start = resume is not None and resume.mode == "file_start"
+        file_start_resume = resume is not None and resume.mode == "file_start"
         resume_tree_path = (
             Path(os.path.abspath(self._tree_path(user_id, resume_path)))
-            if legacy_file_start
+            if file_start_resume
             else None
         )
-        resume_replay_complete = not legacy_file_start
-
-        # v2 cursors were issued against catalog path order. The encoded tree
-        # order consumed by a direct ripgrep scan differs when one path is a
-        # directory prefix of another (for example, a-x sorts before a/b in
-        # the catalog but after it on disk). Only legacy logical resumes pay
-        # for a full scan. Keep at most limit + 1 verified matches so the
-        # compatibility cost is bounded in memory, then continue with an
-        # explicitly marked v3 cursor until the logical scan is exhausted.
-        if legacy_logical_resume:
-            assert resume is not None
-            resume_tree_path = Path(
-                os.path.abspath(self._tree_path(user_id, resume_path))
-            )
-            enrichment_started = time.monotonic()
-            try:
-                try:
-                    resume_snapshot = self._snapshot_grep_file(
-                        user_id, resume_path, resume_tree_path, deadline
-                    )
-                except TimeoutError:
-                    resume_snapshot = None
-            finally:
-                enrichment_seconds += max(
-                    0.0, time.monotonic() - enrichment_started
-                )
-            if resume_snapshot is None:
-                total = max(0.0, time.monotonic() - started)
-                return _GrepScanResult(
-                    [],
-                    stopped_by="timeout",
-                    anchor_found=False,
-                    next_cursor=resume,
-                    scan_seconds=max(0.0, total - enrichment_seconds),
-                    enrichment_seconds=enrichment_seconds,
-                )
-            catalog_mismatch = (
-                catalog_mismatch or resume_snapshot.catalog_mismatch
-            )
-            expected_identity = (
-                resume_snapshot.path_identity
-                if resume.content_hash is not None
-                and resume.content_hash.startswith("stat:")
-                else resume_snapshot.content_hash
-            )
-            if expected_identity != resume.content_hash:
-                raise ValueError("ctxfs grep cursor is stale")
+        resume_replay_complete = not file_start_resume
 
         # Direct directory scans do not necessarily emit JSON events for files
-        # with zero matches. Base-issued v2 file_start cursors can nevertheless
-        # name such a file, so validate that one file before replaying the scan.
+        # with zero matches. A file_start cursor can nevertheless name such a
+        # file, so validate that one file before replaying the scan.
         # Reuse the snapshot if ripgrep does emit an event for it.
-        if legacy_file_start:
+        if file_start_resume:
             assert resume is not None
             assert resume_tree_path is not None
             enrichment_started = time.monotonic()
@@ -1530,10 +1968,7 @@ class CtxfsStore:
         assert process.stdout is not None
 
         def timeout_cursor() -> _GrepCursor:
-            if legacy_logical_resume:
-                assert resume is not None
-                return resume
-            if legacy_file_start and not resume_replay_complete:
+            if file_start_resume and not resume_replay_complete:
                 assert resume is not None
                 return resume
             if not anchor_found and resume is not None:
@@ -1585,7 +2020,7 @@ class CtxfsStore:
                 prefix and not _path_is_within_prefix(logical_path, prefix)
             ):
                 raise RuntimeError("ctxfs grep returned an unexpected path")
-            if legacy_file_start and not resume_replay_complete:
+            if file_start_resume and not resume_replay_complete:
                 assert resume_tree_path is not None
                 if os.fspath(tree_path) < os.fspath(resume_tree_path):
                     return None
@@ -1594,7 +2029,7 @@ class CtxfsStore:
                 active_path = logical_path
                 active_snapshot = (
                     resume_snapshot
-                    if (legacy_file_start or legacy_logical_resume)
+                    if file_start_resume
                     and tree_path == resume_tree_path
                     else None
                 )
@@ -1613,14 +2048,11 @@ class CtxfsStore:
             if event_type != "match":
                 return None
             active_path = logical_path
-            if legacy_logical_resume and logical_path < resume_path:
-                return None
             # A continuation cursor carries mismatch state observed on earlier
             # pages, so pre-anchor files need not be read and hashed again.
             if (
                 resume is not None
                 and not anchor_found
-                and not legacy_logical_resume
                 and logical_path != resume_path
             ):
                 return None
@@ -1657,23 +2089,6 @@ class CtxfsStore:
                 _terminate_process(process)
                 return result(stopped_by="catalog_mismatch")
             position = (match.line_number, match.match_start, match.match_end)
-            if legacy_logical_resume:
-                assert resume is not None
-                assert resume.anchor is not None
-                if logical_path == resume_path:
-                    if position == resume.anchor:
-                        anchor_found = True
-                        return None
-                    if position < resume.anchor:
-                        return None
-                key = (logical_path, *position)
-                insertion = bisect.bisect_right(legacy_candidate_keys, key)
-                legacy_candidate_keys.insert(insertion, key)
-                legacy_candidates.insert(insertion, match)
-                if len(legacy_candidates) > match_limit + 1:
-                    legacy_candidate_keys.pop()
-                    legacy_candidates.pop()
-                return None
             if not anchor_found:
                 if resume is None:
                     raise ValueError("ctxfs grep cursor is stale")
@@ -1732,8 +2147,6 @@ class CtxfsStore:
                         return consumed
         except TimeoutError:
             _terminate_process(process)
-            if legacy_logical_resume:
-                matches.clear()
             return result(stopped_by="timeout", next_cursor=timeout_cursor())
         except Exception:
             _terminate_process(process)
@@ -1744,8 +2157,6 @@ class CtxfsStore:
             returncode = process.wait(timeout=max(deadline - time.monotonic(), 0.0))
         except subprocess.TimeoutExpired:
             _terminate_process(process)
-            if legacy_logical_resume:
-                matches.clear()
             return result(stopped_by="timeout", next_cursor=timeout_cursor())
         if not anchor_found:
             raise ValueError("ctxfs grep cursor is stale")
@@ -1753,20 +2164,6 @@ class CtxfsStore:
             raise RuntimeError("ctxfs grep failed")
         if returncode not in {0, 1}:
             raise RuntimeError("ctxfs grep failed")
-        if legacy_logical_resume:
-            matches[:] = legacy_candidates[:match_limit]
-            if len(legacy_candidates) > match_limit:
-                last_match = matches[-1]
-                return result(
-                    stopped_by="limit",
-                    next_cursor=_grep_cursor_for_match(
-                        prefix,
-                        pattern_hash,
-                        last_match,
-                        catalog_mismatch,
-                        mode="legacy_after_match",
-                    ),
-                )
         if returncode == 1:
             return result()
         return result()
@@ -1924,6 +2321,15 @@ class CtxfsStore:
                 now,
             ),
         )
+        if self._sync_search_document(
+            user_id,
+            old_path=existing.path if existing is not None else None,
+            path=path,
+            content_hash=content_hash,
+            text=text,
+            source_updated_at=now,
+        ):
+            self._bump_search_revision()
     def _move(
         self,
         user_id: str,
@@ -1987,6 +2393,10 @@ class CtxfsStore:
                     source_key_by_path[old_path],
                 ),
             )
+            if self._move_search_document(
+                user_id, old_path, temp_logical_path, source_updated_at=time.time()
+            ):
+                self._bump_search_revision()
         for operation in operations:
             entry = entries_by_source[operation.source_key]
             path = _normalize_path(operation.path)
@@ -2022,6 +2432,11 @@ class CtxfsStore:
                     operation.source_key,
                 ),
             )
+            search_source = temp_locations.get(entry.path, (None, entry.path))[1]
+            if self._move_search_document(
+                user_id, search_source, path, source_updated_at=time.time()
+            ):
+                self._bump_search_revision()
 
     def _validated_move_entry(
         self,
@@ -2089,6 +2504,163 @@ class CtxfsStore:
             WHERE user_id = ? AND writer_id = ? AND source_key = ?
             """,
             (user_id, writer_id, operation.source_key),
+        )
+        if self._delete_search_document(user_id, existing.path):
+            self._bump_search_revision()
+
+    def _insert_search_document(
+        self,
+        user_id: str,
+        path: str,
+        content_hash: str,
+        text: str,
+        source_updated_at: float,
+        *,
+        update_counts: bool = True,
+    ) -> int:
+        indexed_at = time.time()
+        cursor = self.connection.execute(
+            """
+            INSERT INTO search_index_entries(
+                user_id, path, content_hash, source_updated_at, indexed_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (user_id, path, content_hash, source_updated_at, indexed_at),
+        )
+        rowid = cursor.lastrowid
+        self.connection.execute(
+            "INSERT INTO search_index(rowid, title, content) VALUES (?, ?, ?)",
+            (rowid, _search_title(text, path), text),
+        )
+        if update_counts:
+            self._adjust_search_prefix_counts(user_id, path, 1)
+        return rowid
+
+    def _sync_search_document(
+        self,
+        user_id: str,
+        *,
+        old_path: str | None,
+        path: str,
+        content_hash: str,
+        text: str,
+        source_updated_at: float,
+    ) -> bool:
+        existing = self.connection.execute(
+            "SELECT * FROM search_index_entries WHERE user_id = ? AND path = ?",
+            (user_id, old_path or path),
+        ).fetchone()
+        if existing is not None and existing["content_hash"] == content_hash:
+            changed = existing["path"] != path
+            self.connection.execute(
+                """
+                UPDATE search_index_entries
+                SET path = ?, source_updated_at = ?
+                WHERE rowid = ?
+                """,
+                (path, source_updated_at, existing["rowid"]),
+            )
+            if changed:
+                self._adjust_search_prefix_counts(user_id, existing["path"], -1)
+                self._adjust_search_prefix_counts(user_id, path, 1)
+            return changed
+        if existing is not None:
+            self.connection.execute(
+                "DELETE FROM search_index WHERE rowid = ?", (existing["rowid"],)
+            )
+            self.connection.execute(
+                "DELETE FROM search_index_entries WHERE rowid = ?",
+                (existing["rowid"],),
+            )
+        self._insert_search_document(
+            user_id,
+            path,
+            content_hash,
+            text,
+            source_updated_at,
+            update_counts=existing is None,
+        )
+        return True
+
+    def _move_search_document(
+        self,
+        user_id: str,
+        old_path: str,
+        path: str,
+        *,
+        source_updated_at: float,
+    ) -> bool:
+        if old_path == path:
+            return False
+        cursor = self.connection.execute(
+            """
+            UPDATE search_index_entries SET path = ?, source_updated_at = ?
+            WHERE user_id = ? AND path = ?
+            """,
+            (path, source_updated_at, user_id, old_path),
+        )
+        if cursor.rowcount == 1:
+            self._adjust_search_prefix_counts(user_id, old_path, -1)
+            self._adjust_search_prefix_counts(user_id, path, 1)
+        return cursor.rowcount == 1
+
+    def _delete_search_document(self, user_id: str, path: str) -> bool:
+        existing = self.connection.execute(
+            "SELECT rowid FROM search_index_entries WHERE user_id = ? AND path = ?",
+            (user_id, path),
+        ).fetchone()
+        if existing is None:
+            return False
+        self.connection.execute(
+            "DELETE FROM search_index WHERE rowid = ?", (existing["rowid"],)
+        )
+        self.connection.execute(
+            "DELETE FROM search_index_entries WHERE rowid = ?", (existing["rowid"],)
+        )
+        self._adjust_search_prefix_counts(user_id, path, -1)
+        return True
+
+    def _adjust_search_prefix_counts(
+        self, user_id: str, path: str, delta: int
+    ) -> None:
+        for prefix in _search_directory_prefixes(path):
+            cursor = self.connection.execute(
+                """
+                UPDATE search_index_prefix_counts
+                SET index_entry_count = index_entry_count + ?,
+                    catalog_entry_count = catalog_entry_count + ?
+                WHERE user_id = ? AND prefix = ?
+                """,
+                (delta, delta, user_id, prefix),
+            )
+            if cursor.rowcount == 0:
+                if delta < 0:
+                    raise RuntimeError(
+                        f"missing search prefix count for {user_id}:{prefix}"
+                    )
+                self.connection.execute(
+                    """
+                    INSERT INTO search_index_prefix_counts(
+                        user_id, prefix, index_entry_count, catalog_entry_count
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (user_id, prefix, delta, delta),
+                )
+        self.connection.execute(
+            """
+            DELETE FROM search_index_prefix_counts
+            WHERE user_id = ? AND index_entry_count = 0 AND catalog_entry_count = 0
+            """,
+            (user_id,),
+        )
+
+    def _bump_search_revision(self) -> None:
+        self.connection.execute(
+            """
+            UPDATE search_index_state
+            SET revision = revision + 1, updated_at = ? WHERE id = 1
+            """,
+            (time.time(),),
         )
 
     def _decision(
@@ -2706,6 +3278,98 @@ def _entry_from_row(row: sqlite3.Row) -> Entry:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
+
+
+def _search_tokenize(value: str) -> list[str]:
+    expanded = unicodedata.normalize("NFKC", value)
+    expanded = _SEARCH_ACRONYM_BOUNDARY_RE.sub(r"\1 \2", expanded)
+    expanded = _SEARCH_IDENTIFIER_BOUNDARY_RE.sub(r"\1 \2", expanded)
+    expanded = _SEARCH_LETTER_DIGIT_BOUNDARY_RE.sub(r"\1 \2", expanded)
+    expanded = _SEARCH_DIGIT_LETTER_BOUNDARY_RE.sub(r"\1 \2", expanded)
+    return [token.casefold() for token in _SEARCH_TOKEN_RE.findall(expanded)]
+
+
+def _search_question_terms(value: str, *, limit: int = 32) -> list[str]:
+    terms: list[str] = []
+    for term in _search_tokenize(value):
+        if len(term) < 3 or term in _SEARCH_STOP_WORDS or term in terms:
+            continue
+        terms.append(term)
+    ranked = sorted(enumerate(terms), key=lambda item: (-len(item[1]), item[0]))
+    return [term for _, term in ranked[:limit]]
+
+
+def _search_title(text: str, path: str) -> str:
+    for line in text.splitlines():
+        title = line.strip().lstrip("#").strip()
+        if title:
+            return title[:512]
+    return PurePosixPath(path).name[:512]
+
+
+def _search_porter_stems(
+    connection: sqlite3.Connection, terms: list[str]
+) -> list[str]:
+    if not terms:
+        return []
+    connection.execute(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS temp.search_query_fts "
+        "USING fts5(term, tokenize='porter unicode61')"
+    )
+    connection.execute(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS temp.search_query_vocab "
+        "USING fts5vocab(search_query_fts, 'instance')"
+    )
+    connection.execute("DELETE FROM temp.search_query_fts")
+    connection.executemany(
+        "INSERT INTO temp.search_query_fts(rowid, term) VALUES (?, ?)",
+        enumerate(terms, 1),
+    )
+    by_row = {
+        row["doc"]: row["term"]
+        for row in connection.execute("SELECT term, doc FROM temp.search_query_vocab")
+    }
+    return [by_row[index] for index in range(1, len(terms) + 1)]
+
+
+def _search_scope_sql(
+    user_id: str, prefix: str, *, alias: str = "e"
+) -> tuple[str, tuple[object, ...]]:
+    if not prefix:
+        return f"{alias}.user_id = ?", (user_id,)
+    return (
+        f"{alias}.user_id = ? AND "
+        f"({alias}.path = ? OR "
+        f"({alias}.path >= ? || '/' AND {alias}.path < ? || '0'))",
+        (user_id, prefix, prefix, prefix),
+    )
+
+
+def _search_directory_prefixes(path: str) -> list[str]:
+    parts = PurePosixPath(path).parts
+    return [""] + ["/".join(parts[:end]) for end in range(1, len(parts))]
+
+
+def _bounded_search_excerpt(
+    text: str, terms: list[str], max_bytes: int
+) -> tuple[str, bool]:
+    raw = text.encode("utf-8")
+    if len(raw) <= max_bytes:
+        return text, False
+    folded = raw.lower()
+    center = next(
+        (
+            position
+            for term in terms
+            if (position := folded.find(term.encode("utf-8").lower())) >= 0
+        ),
+        0,
+    )
+    start = max(0, center - max_bytes // 3)
+    end = min(len(raw), start + max_bytes)
+    start = max(0, end - max_bytes)
+    excerpt = raw[start:end].decode("utf-8", errors="ignore")
+    return excerpt, True
 
 
 def _normalize_path(path: str) -> str:
@@ -3362,17 +4026,6 @@ def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
         (table_name,),
     ).fetchone()
     return row is not None
-
-
-def _is_legacy_fts_capability_error(error: sqlite3.OperationalError) -> bool:
-    message = str(error).lower()
-    return (
-        "no such module: fts5" in message
-        or "no such tokenizer:" in message
-        or (
-            "unrecognized option:" in message and "contentless_delete" in message
-        )
-    )
 
 
 def _table_columns(connection: sqlite3.Connection, table_name: str) -> set[str]:

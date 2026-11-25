@@ -16,6 +16,7 @@ from ctxd.models import (
     CtxfsMachineRegistration,
     CtxfsReadLinesResult,
     CtxfsReadResult,
+    CtxfsSearchResult,
     CtxfsStatus,
 )
 
@@ -199,6 +200,31 @@ class AsyncCtxfsClient:
             "ctxfs grep exceeded its continuation safety limit; narrow the prefix "
             "or pattern and retry"
         )
+
+    async def search(
+        self,
+        query: str,
+        *,
+        prefix: str = "",
+        limit: int | None = None,
+        offset: int = 0,
+        index_revision: int | None = None,
+        excerpt_bytes: int = 800,
+        excerpt_limit: int = 5,
+    ) -> CtxfsSearchResult:
+        params = _drop_none(
+            {
+                "query": query,
+                "prefix": prefix,
+                "limit": limit,
+                "offset": offset,
+                "index_revision": index_revision,
+                "excerpt_bytes": excerpt_bytes,
+                "excerpt_limit": excerpt_limit,
+            }
+        )
+        payload = await self._request("POST", "/api/ctxfs/search", json=params)
+        return CtxfsSearchResult.model_validate(payload)
 
     async def _grep_page(
         self,
@@ -389,6 +415,27 @@ class CtxfsFiles:
             timeout_seconds=timeout_seconds,
         )
 
+    def search(
+        self,
+        query: str,
+        *,
+        prefix: str = "",
+        limit: int | None = None,
+        offset: int = 0,
+        index_revision: int | None = None,
+        excerpt_bytes: int = 800,
+        excerpt_limit: int = 5,
+    ) -> CtxfsSearchResult:
+        return self._client.search(
+            query,
+            prefix=prefix,
+            limit=limit,
+            offset=offset,
+            index_revision=index_revision,
+            excerpt_bytes=excerpt_bytes,
+            excerpt_limit=excerpt_limit,
+        )
+
 
 class CtxfsClient:
     """Synchronous client for the local ctxfs read interface."""
@@ -490,6 +537,29 @@ class CtxfsClient:
                 prefix=prefix,
                 limit=limit,
                 timeout_seconds=timeout_seconds,
+            )
+        )
+
+    def search(
+        self,
+        query: str,
+        *,
+        prefix: str = "",
+        limit: int | None = None,
+        offset: int = 0,
+        index_revision: int | None = None,
+        excerpt_bytes: int = 800,
+        excerpt_limit: int = 5,
+    ) -> CtxfsSearchResult:
+        return _run(
+            self._async_client.search(
+                query,
+                prefix=prefix,
+                limit=limit,
+                offset=offset,
+                index_revision=index_revision,
+                excerpt_bytes=excerpt_bytes,
+                excerpt_limit=excerpt_limit,
             )
         )
 

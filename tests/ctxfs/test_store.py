@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import sqlite3
 import subprocess
 import threading
 import time
@@ -255,6 +256,434 @@ def test_exact_reads_return_hashes_and_completeness(tmp_path):
     assert matches.items[0].match_start == 0
     assert matches.items[0].match_end == len("needle")
     assert matches.items[0].content_hash == entry.content_hash
+
+
+def test_search_index_tracks_put_update_move_and_delete(tmp_path):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    store.register_prefix("user-1", "writer-1", "local-files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [
+            _put(
+                "local-files/root/notes.md",
+                "inode-1",
+                "# Multipart limits\nThe request supports ten megabytes.",
+            )
+        ],
+    )
+
+    first = store.search("user-1", "multipart request limits")
+    assert [item.path for item in first.items] == ["local-files/root/notes.md"]
+    assert first.index_fresh is True
+    assert first.index_entry_count == first.catalog_entry_count == 1
+    first_revision = first.index_revision
+
+    store.submit(
+        "user-1",
+        "writer-1",
+        [
+            _put(
+                "local-files/root/notes.md",
+                "inode-1",
+                "# Retry policy\nSessions use exponential backoff.",
+            )
+        ],
+    )
+    assert store.search("user-1", "multipart request limits").items == []
+    updated = store.search("user-1", "session retry backoff")
+    assert [item.path for item in updated.items] == ["local-files/root/notes.md"]
+    assert updated.index_revision > first_revision
+
+    entry = store.stat("user-1", "local-files/root/notes.md")
+    assert entry is not None
+    store.submit(
+        "user-1",
+        "writer-1",
+        [
+            MoveOperation(
+                source_key="inode-1",
+                path="local-files/root/archive.md",
+                source_version="v2",
+                expected_content_hash=entry.content_hash,
+            )
+        ],
+    )
+    moved = store.search("user-1", "session retry backoff")
+    assert [item.path for item in moved.items] == ["local-files/root/archive.md"]
+
+    store.submit(
+        "user-1",
+        "writer-1",
+        [DeleteOperation(source_key="inode-1", source_version="v3")],
+    )
+    deleted = store.search("user-1", "session retry backoff")
+    assert deleted.items == []
+    assert deleted.index_fresh is True
+    assert deleted.index_entry_count == deleted.catalog_entry_count == 0
+
+
+def test_search_index_status_and_operator_rebuild(tmp_path):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    store.register_prefix("user-1", "writer-1", "local-files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [_put("local-files/root/notes.md", "notes", "# Retry policy\nbackoff")],
+    )
+    before = store.search_index_status()
+    assert before.healthy is True
+    assert before.fresh is True
+    assert before.build_status == "ready"
+    assert before.index_entry_count == before.catalog_entry_count == 1
+
+    with store.connection:
+        store.connection.execute("DELETE FROM search_index_entries")
+    stale = store.search_index_status()
+    assert stale.healthy is False
+    assert stale.fresh is False
+
+    rebuilt = store.rebuild_search_index()
+    assert rebuilt.healthy is True
+    assert rebuilt.fresh is True
+    assert rebuilt.revision > before.revision
+    assert [
+        item.path for item in store.search("user-1", "retry backoff").items
+    ] == ["local-files/root/notes.md"]
+
+
+def test_search_excerpts_default_on_and_can_be_disabled(tmp_path):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    store.register_prefix("user-1", "writer-1", "local-files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [
+            _put(
+                f"local-files/root/{index}.md",
+                f"inode-{index}",
+                "x" * 200 + " retry backoff policy " + "y" * 200,
+            )
+            for index in range(2)
+        ],
+    )
+
+    excerpted_by_default = store.search("user-1", "retry backoff", limit=2)
+    assert all(item.excerpt is not None for item in excerpted_by_default.items)
+
+    metadata_only = store.search(
+        "user-1", "retry backoff", limit=2, excerpt_bytes=0, excerpt_limit=0
+    )
+    assert all(item.excerpt is None for item in metadata_only.items)
+
+    excerpted = store.search(
+        "user-1",
+        "retry backoff",
+        limit=2,
+        excerpt_bytes=80,
+        excerpt_limit=1,
+    )
+    assert "retry backoff" in excerpted.items[0].excerpt
+    assert len(excerpted.items[0].excerpt.encode("utf-8")) <= 80
+    assert excerpted.items[0].excerpt_truncated is True
+    assert excerpted.items[1].excerpt is None
+    with pytest.raises(ValueError, match="both be zero or positive"):
+        store.search("user-1", "retry", excerpt_bytes=80, excerpt_limit=0)
+
+    prioritized, _ = store_module._bounded_search_excerpt(
+        "common " + "x" * 200 + " decisive qualifier " + "y" * 200,
+        ["decisive", "common"],
+        80,
+    )
+    assert "decisive qualifier" in prioritized
+    assert not prioritized.startswith("common")
+
+
+def test_search_telemetry_is_bounded_and_content_free(tmp_path, caplog):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    store.register_prefix("user-1", "writer-1", "local-files/root")
+    secret = "private-query-marker"
+    store.submit(
+        "user-1",
+        "writer-1",
+        [_put("local-files/root/secret-name.md", "notes", secret)],
+    )
+    with caplog.at_level("INFO", logger="ctxfs.store"):
+        store.search("user-1", secret, excerpt_bytes=100, excerpt_limit=1)
+    event = next(record.message for record in caplog.records if "ctxfs_search " in record.message)
+    assert "status=completed" in event
+    assert "latency_ms=" in event
+    assert "fresh=True" in event
+    assert "selected_terms=" in event
+    assert "response_bytes=" in event
+    assert secret not in event
+    assert "secret-name" not in event
+
+
+def test_search_respects_identity_and_prefix_with_revision_safe_pagination(tmp_path):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    for user, writer in (("user-1", "writer-1"), ("user-2", "writer-2")):
+        store.register_prefix(user, writer, "local-files")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [
+            _put("local-files/a/one.md", "one", "# Alpha\nneedle shared"),
+            _put("local-files/a/two.md", "two", "# Beta\nneedle shared"),
+            _put("local-files/b/three.md", "three", "# Gamma\nneedle shared"),
+        ],
+    )
+    store.submit(
+        "user-2",
+        "writer-2",
+        [_put("local-files/a/secret.md", "secret", "# Secret\nneedle shared")],
+    )
+
+    first = store.search(
+        "user-1", "needle shared", prefix="local-files/a", limit=1
+    )
+    assert len(first.items) == 1
+    assert first.complete is False
+    assert first.stopped_by == "page_limit"
+    assert first.next_offset == 1
+    second = store.search(
+        "user-1",
+        "needle shared",
+        prefix="local-files/a",
+        limit=1,
+        offset=first.next_offset,
+        index_revision=first.index_revision,
+    )
+    assert len(second.items) == 1
+    assert {first.items[0].path, second.items[0].path} == {
+        "local-files/a/one.md",
+        "local-files/a/two.md",
+    }
+    assert all("secret" not in item.path for item in first.items + second.items)
+
+    store.submit(
+        "user-1",
+        "writer-1",
+        [_put("local-files/a/four.md", "four", "# Delta\nneedle shared")],
+    )
+    with pytest.raises(ValueError, match="revision changed"):
+        store.search(
+            "user-1",
+            "needle shared",
+            prefix="local-files/a",
+            offset=1,
+            index_revision=first.index_revision,
+        )
+
+
+def test_search_uses_one_revision_snapshot_during_concurrent_write(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "ctxfs"
+    reader = CtxfsStore(root)
+    reader.register_prefix("user-1", "writer-1", "local-files/root")
+    reader.submit(
+        "user-1",
+        "writer-1",
+        [_put("local-files/root/notes.md", "notes", "alpha stable")],
+    )
+    before = reader.search_index_status().revision
+    start_write = threading.Event()
+    write_done = threading.Event()
+    original_stems = store_module._search_porter_stems
+
+    def write() -> None:
+        writer = CtxfsStore(root)
+        try:
+            start_write.wait(timeout=5)
+            writer.submit(
+                "user-1",
+                "writer-1",
+                [_put("local-files/root/notes.md", "notes", "beta changed")],
+            )
+        finally:
+            writer.close()
+            write_done.set()
+
+    thread = threading.Thread(target=write)
+    thread.start()
+
+    def pause_after_revision(connection, terms):
+        start_write.set()
+        assert write_done.wait(timeout=0.1) is False
+        return original_stems(connection, terms)
+
+    monkeypatch.setattr(store_module, "_search_porter_stems", pause_after_revision)
+    page = reader.search(
+        "user-1", "alpha", excerpt_bytes=0, excerpt_limit=0
+    )
+    thread.join(timeout=5)
+    assert write_done.is_set()
+    assert page.index_revision == before
+    assert [item.path for item in page.items] == ["local-files/root/notes.md"]
+    with pytest.raises(ValueError, match="revision changed"):
+        reader.search(
+            "user-1",
+            "alpha",
+            index_revision=page.index_revision,
+            excerpt_bytes=0,
+            excerpt_limit=0,
+        )
+
+
+def test_search_index_build_rolls_back_on_interruption_and_recovers(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "ctxfs"
+    store = CtxfsStore(root)
+    store.register_prefix("user-1", "writer-1", "local-files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [_put("local-files/root/notes.md", "notes", "# Retry policy\nbackoff")],
+    )
+    store.close()
+    connection = sqlite3.connect(root / "catalog.sqlite3")
+    connection.executescript(
+        """
+        DROP TABLE search_index_vocab;
+        DROP TABLE search_index;
+        DROP TABLE search_index_entries;
+        DROP TABLE search_index_state;
+        """
+    )
+    connection.close()
+
+    original = CtxfsStore._insert_search_document
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            CtxfsStore,
+            "_insert_search_document",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("interrupted")),
+        )
+        unavailable = CtxfsStore(root)
+        with pytest.raises(RuntimeError, match="interrupted"):
+            unavailable.rebuild_search_index()
+        unavailable.close()
+
+    connection = sqlite3.connect(root / "catalog.sqlite3")
+    remaining = connection.execute(
+        "SELECT name FROM sqlite_master WHERE name LIKE 'search_index%'"
+    ).fetchall()
+    connection.close()
+    assert remaining == []
+
+    assert CtxfsStore._insert_search_document is original
+    recovered = CtxfsStore(root)
+    assert recovered.search_index_status().healthy is False
+    recovered.rebuild_search_index()
+    assert [
+        item.path for item in recovered.search("user-1", "retry backoff").items
+    ] == ["local-files/root/notes.md"]
+    state = recovered.connection.execute(
+        "SELECT build_status, schema_version FROM search_index_state WHERE id = 1"
+    ).fetchone()
+    assert tuple(state) == ("ready", 1)
+
+
+def test_search_index_rebuilds_state_marked_incomplete(tmp_path):
+    root = tmp_path / "ctxfs"
+    store = CtxfsStore(root)
+    store.register_prefix("user-1", "writer-1", "local-files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [_put("local-files/root/notes.md", "notes", "# Retry policy\nbackoff")],
+    )
+    rowid = store.connection.execute(
+        "SELECT rowid FROM search_index_entries"
+    ).fetchone()[0]
+    with store.connection:
+        store.connection.execute("DELETE FROM search_index WHERE rowid = ?", (rowid,))
+        store.connection.execute("DELETE FROM search_index_entries WHERE rowid = ?", (rowid,))
+        store.connection.execute(
+            "UPDATE search_index_state SET build_status = 'building' WHERE id = 1"
+        )
+    store.close()
+
+    recovered = CtxfsStore(root)
+    assert recovered.search_index_status().healthy is False
+    with pytest.raises(RuntimeError, match="not ready"):
+        recovered.search("user-1", "retry backoff")
+    recovered.rebuild_search_index()
+    assert [
+        item.path for item in recovered.search("user-1", "retry backoff").items
+    ] == ["local-files/root/notes.md"]
+
+
+def test_search_index_build_requires_disk_headroom(tmp_path, monkeypatch):
+    root = tmp_path / "ctxfs"
+    store = CtxfsStore(root)
+    store.register_prefix("user-1", "writer-1", "local-files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [_put("local-files/root/notes.md", "notes", "# Retry policy\nbackoff")],
+    )
+    store.close()
+    connection = sqlite3.connect(root / "catalog.sqlite3")
+    connection.executescript(
+        """
+        DROP TABLE search_index_vocab;
+        DROP TABLE search_index;
+        DROP TABLE search_index_entries;
+        DROP TABLE search_index_state;
+        """
+    )
+    connection.close()
+    usage = store_module.shutil.disk_usage(root)
+    monkeypatch.setattr(
+        store_module.shutil,
+        "disk_usage",
+        lambda path: usage._replace(free=1),
+    )
+
+    available = CtxfsStore(root)
+    assert available.read("user-1", "local-files/root/notes.md").text.endswith(
+        "backoff"
+    )
+    with pytest.raises(RuntimeError, match="insufficient free space"):
+        available.rebuild_search_index()
+
+
+def test_failed_submission_rolls_back_catalog_files_and_search_index(
+    tmp_path, monkeypatch
+):
+    store = CtxfsStore(tmp_path / "ctxfs")
+    store.register_prefix("user-1", "writer-1", "local-files/root")
+    store.submit(
+        "user-1",
+        "writer-1",
+        [_put("local-files/root/original.md", "original", "# Alpha\nstable")],
+    )
+    before = store.search("user-1", "alpha stable")
+    original_sync = store._sync_search_document
+
+    def fail_after_index_update(*args, **kwargs):
+        changed = original_sync(*args, **kwargs)
+        if kwargs["path"] == "local-files/root/new.md":
+            raise RuntimeError("injected index failure")
+        return changed
+
+    monkeypatch.setattr(store, "_sync_search_document", fail_after_index_update)
+    with pytest.raises(RuntimeError, match="injected index failure"):
+        store.submit(
+            "user-1",
+            "writer-1",
+            [_put("local-files/root/new.md", "new", "# Beta\ntransient")],
+        )
+
+    assert store.stat("user-1", "local-files/root/new.md") is None
+    assert not store._tree_path("user-1", "local-files/root/new.md").exists()
+    assert store.search("user-1", "beta transient").items == []
+    after = store.search("user-1", "alpha stable")
+    assert [item.path for item in after.items] == ["local-files/root/original.md"]
+    assert after.index_revision == before.index_revision
 
 
 def test_tree_and_glob_return_bounded_catalog_entries(tmp_path):
@@ -937,173 +1366,6 @@ def test_new_catalog_does_not_create_grep_index_tables(tmp_path):
     }
 
     assert table_names == set()
-
-
-def test_upgrade_drops_legacy_index_tables_without_losing_content(tmp_path):
-    root = tmp_path / "ctxfs"
-    store = CtxfsStore(root)
-    store.register_prefix("user-1", "writer-1", "local_files/root")
-    store.submit(
-        "user-1",
-        "writer-1",
-        [_put("local_files/root/notes.md", "inode-1", "literal needle")],
-    )
-    with store.connection:
-        store.connection.execute(
-            """
-            CREATE VIRTUAL TABLE grep_index USING fts5(
-                content,
-                tokenize='trigram',
-                content='',
-                contentless_delete=1
-            )
-            """
-        )
-        store.connection.execute(
-            "CREATE TABLE grep_index_entries(rowid INTEGER PRIMARY KEY, path TEXT)"
-        )
-        store.connection.execute(
-            "CREATE TABLE grep_index_metadata(key TEXT PRIMARY KEY, value TEXT)"
-        )
-        store.connection.execute(
-            "INSERT INTO grep_index(rowid, content) VALUES (1, 'derived copy')"
-        )
-        store.connection.execute("INSERT INTO grep_index_entries VALUES (1, 'notes')")
-        store.connection.execute("INSERT INTO grep_index_metadata VALUES ('complete', '1')")
-    store.close()
-
-    upgraded = CtxfsStore(root)
-    table_names = {
-        row["name"]
-        for row in upgraded.connection.execute(
-            "SELECT name FROM sqlite_master WHERE name LIKE 'grep_index%'"
-        ).fetchall()
-    }
-
-    assert table_names == set()
-    assert [item.path for item in upgraded.grep("user-1", "literal needle").items] == [
-        "local_files/root/notes.md"
-    ]
-
-
-def test_upgrade_defers_legacy_index_cleanup_when_tokenizer_is_unavailable(tmp_path):
-    root = tmp_path / "ctxfs"
-    store = CtxfsStore(root)
-    store.register_prefix("user-1", "writer-1", "local_files/root")
-    store.submit(
-        "user-1",
-        "writer-1",
-        [_put("local_files/root/notes.md", "inode-1", "literal needle")],
-    )
-    with store.connection:
-        store.connection.execute(
-            """
-            CREATE VIRTUAL TABLE grep_index USING fts5(
-                content,
-                tokenize='trigram',
-                content='',
-                contentless_delete=1
-            )
-            """
-        )
-        store.connection.execute(
-            "CREATE TABLE grep_index_entries(rowid INTEGER PRIMARY KEY, path TEXT)"
-        )
-        store.connection.execute(
-            "CREATE TABLE grep_index_metadata(key TEXT PRIMARY KEY, value TEXT)"
-        )
-        store.connection.execute(
-            "INSERT INTO grep_index(rowid, content) VALUES (1, 'derived copy')"
-        )
-        store.connection.execute("INSERT INTO grep_index_entries VALUES (1, 'notes')")
-        store.connection.execute(
-            "INSERT INTO grep_index_metadata VALUES ('complete', '1')"
-        )
-
-        schema_version = store.connection.execute("PRAGMA schema_version").fetchone()[0]
-        store.connection.execute("PRAGMA writable_schema = ON")
-        store.connection.execute(
-            """
-            UPDATE sqlite_master
-            SET sql = replace(
-                sql,
-                'tokenize=''trigram''',
-                'tokenize=''unavailable_legacy_tokenizer'''
-            )
-            WHERE name = 'grep_index'
-            """
-        )
-        store.connection.execute("PRAGMA writable_schema = OFF")
-        store.connection.execute(f"PRAGMA schema_version = {schema_version + 1}")
-    store.close()
-
-    upgraded = CtxfsStore(root)
-
-    table_names = {
-        row["name"]
-        for row in upgraded.connection.execute(
-            "SELECT name FROM sqlite_master WHERE name LIKE 'grep_index%'"
-        ).fetchall()
-    }
-    assert {
-        "grep_index",
-        "grep_index_entries",
-        "grep_index_metadata",
-    } <= table_names
-    assert (
-        upgraded.connection.execute(
-            "SELECT path FROM grep_index_entries WHERE rowid = 1"
-        ).fetchone()["path"]
-        == "notes"
-    )
-    assert (
-        upgraded.connection.execute(
-            "SELECT value FROM grep_index_metadata WHERE key = 'complete'"
-        ).fetchone()["value"]
-        == "1"
-    )
-    assert [item.path for item in upgraded.grep("user-1", "literal needle").items] == [
-        "local_files/root/notes.md"
-    ]
-
-
-@pytest.mark.parametrize(
-    "message",
-    [
-        "no such module: fts5",
-        "no such tokenizer: trigram",
-        'unrecognized option: "contentless_delete"',
-    ],
-)
-def test_legacy_index_cleanup_defers_known_fts_capability_errors(message):
-    class IncapableConnection:
-        def __init__(self):
-            self.statements = []
-
-        def execute(self, statement):
-            self.statements.append(statement)
-            raise store_module.sqlite3.OperationalError(message)
-
-    store = object.__new__(CtxfsStore)
-    store.connection = IncapableConnection()
-
-    store._drop_legacy_grep_index()
-
-    assert store.connection.statements == ["DROP TABLE IF EXISTS grep_index"]
-
-
-def test_legacy_index_cleanup_does_not_hide_unrelated_sqlite_errors():
-    class BrokenConnection:
-        def execute(self, statement):
-            raise store_module.sqlite3.OperationalError("database is locked")
-
-    store = object.__new__(CtxfsStore)
-    store.connection = BrokenConnection()
-
-    with pytest.raises(
-        store_module.sqlite3.OperationalError, match="database is locked"
-    ):
-        store._drop_legacy_grep_index()
 
 
 def test_grep_pathological_regex_does_not_backtrack_indefinitely(tmp_path, monkeypatch):
@@ -2240,153 +2502,6 @@ def test_grep_limit_pages_snapshot_only_anchor_and_new_file_and_carry_mismatch(
     ]
 
 
-def test_grep_accepts_v2_after_match_cursor(tmp_path):
-    store = CtxfsStore(tmp_path / "ctxfs")
-    store.register_prefix("user-1", "writer-1", "local_files/root")
-    store.submit(
-        "user-1",
-        "writer-1",
-        [
-            _put("local_files/root/a.md", "inode-a", "needle a\n"),
-            _put("local_files/root/b.md", "inode-b", "needle b\n"),
-        ],
-    )
-    first = store.grep("user-1", "needle", prefix="local_files/root", limit=1)
-    assert first.next_cursor is not None
-    payload = json.loads(
-        base64.urlsafe_b64decode(
-            first.next_cursor + "=" * (-len(first.next_cursor) % 4)
-        )
-    )
-    payload["v"] = 2
-    del payload["c"]
-    v2_cursor = (
-        base64.urlsafe_b64encode(
-            json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
-        )
-        .decode()
-        .rstrip("=")
-    )
-
-    resumed = store.grep(
-        "user-1", "needle", prefix="local_files/root", cursor=v2_cursor
-    )
-
-    assert [match.path for match in resumed.items] == ["local_files/root/b.md"]
-    assert resumed.complete is True
-
-
-def test_grep_v2_after_match_uses_legacy_logical_order_across_pages(tmp_path):
-    store = CtxfsStore(tmp_path / "ctxfs")
-    prefix = "local_files/root"
-    store.register_prefix("user-1", "writer-1", prefix)
-    store.submit(
-        "user-1",
-        "writer-1",
-        [
-            _put(f"{prefix}/a-x", "inode-anchor", "needle anchor\n"),
-            _put(f"{prefix}/a/b", "inode-b", "needle b\n"),
-            _put(f"{prefix}/a/c", "inode-c", "needle c\n"),
-            _put(f"{prefix}/z", "inode-z", "needle z\n"),
-        ],
-    )
-    anchor_hash = store.stat("user-1", f"{prefix}/a-x").content_hash
-    payload = {
-        "v": 2,
-        "p": f"sha256:{hashlib.sha256(prefix.encode()).hexdigest()}",
-        "q": f"sha256:{hashlib.sha256(b'needle').hexdigest()}",
-        "r": "a-x",
-        "h": anchor_hash,
-        "m": "after_match",
-        "a": [1, 0, 6],
-    }
-    cursor = (
-        base64.urlsafe_b64encode(
-            json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
-        )
-        .decode()
-        .rstrip("=")
-    )
-
-    found = []
-    modes = []
-    while cursor is not None:
-        page = store.grep("user-1", "needle", prefix=prefix, limit=1, cursor=cursor)
-        found.extend(match.path for match in page.items)
-        cursor = page.next_cursor
-        if cursor is not None:
-            emitted = json.loads(
-                base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
-            )
-            assert emitted["v"] == 3
-            modes.append(emitted["m"])
-
-    assert found == [f"{prefix}/a/b", f"{prefix}/a/c", f"{prefix}/z"]
-    assert modes == ["legacy_after_match", "legacy_after_match"]
-    assert page.complete is True
-
-    raw = store.grep("user-1", "needle", prefix=prefix, limit=4)
-    assert [match.path for match in raw.items] == [
-        f"{prefix}/a/b",
-        f"{prefix}/a/c",
-        f"{prefix}/a-x",
-        f"{prefix}/z",
-    ]
-
-
-def test_grep_v2_logical_resume_timeout_is_retryable_and_anchor_is_stale(
-    tmp_path, monkeypatch
-):
-    store = CtxfsStore(tmp_path / "ctxfs")
-    prefix = "local_files/root"
-    anchor_path = f"{prefix}/a-x"
-    store.register_prefix("user-1", "writer-1", prefix)
-    store.submit(
-        "user-1",
-        "writer-1",
-        [
-            _put(anchor_path, "inode-anchor", "needle anchor\n"),
-            _put(f"{prefix}/a/b", "inode-b", "needle b\n"),
-        ],
-    )
-    payload = {
-        "v": 2,
-        "p": f"sha256:{hashlib.sha256(prefix.encode()).hexdigest()}",
-        "q": f"sha256:{hashlib.sha256(b'needle').hexdigest()}",
-        "r": "a-x",
-        "h": store.stat("user-1", anchor_path).content_hash,
-        "m": "after_match",
-        "a": [1, 0, 6],
-    }
-    cursor = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
-    original_snapshot = store._snapshot_grep_file
-
-    def timeout_after_anchor(user_id, logical_path, tree_path, deadline):
-        if logical_path != anchor_path:
-            raise TimeoutError
-        return original_snapshot(user_id, logical_path, tree_path, deadline)
-
-    monkeypatch.setattr(store, "_snapshot_grep_file", timeout_after_anchor)
-    timed_out = store.grep("user-1", "needle", prefix=prefix, cursor=cursor)
-    assert timed_out.items == []
-    assert timed_out.stopped_by == "timeout"
-    assert timed_out.next_cursor == cursor
-
-    monkeypatch.setattr(store, "_snapshot_grep_file", original_snapshot)
-    stale_payload = {**payload, "a": [2, 0, 6]}
-    stale_cursor = (
-        base64.urlsafe_b64encode(json.dumps(stale_payload).encode())
-        .decode()
-        .rstrip("=")
-    )
-    with pytest.raises(ValueError, match="cursor is stale"):
-        store.grep("user-1", "needle", prefix=prefix, cursor=stale_cursor)
-
-    store._tree_path("user-1", anchor_path).write_text("needle mutated\n")
-    with pytest.raises(ValueError, match="cursor is stale"):
-        store.grep("user-1", "needle", prefix=prefix, cursor=cursor)
-
-
 @pytest.mark.parametrize(
     ("mode", "path", "content", "anchor"),
     [
@@ -2764,19 +2879,21 @@ def test_grep_cursor_rejects_absent_anchor_when_pattern_has_no_matches(
             "writer-1",
             [_put(path, "inode-a", "haystack\n")],
         )
+    disk_content_hash = f"sha256:{hashlib.sha256(b'haystack' + bytes([10])).hexdigest()}"
     content_hash = (
         store.stat("user-1", path).content_hash
         if not disk_only
-        else (f"sha256:{hashlib.sha256(b'haystack\n').hexdigest()}")
+        else disk_content_hash
     )
     payload = {
-        "v": 2,
+        "v": 3,
         "p": f"sha256:{hashlib.sha256(b'local_files/root').hexdigest()}",
         "q": f"sha256:{hashlib.sha256(b'needle').hexdigest()}",
         "r": "a.md",
         "h": content_hash,
         "m": "after_match",
         "a": [1, 0, 6],
+        "c": False,
     }
     cursor = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
 
@@ -2787,6 +2904,23 @@ def test_grep_cursor_rejects_absent_anchor_when_pattern_has_no_matches(
 def test_grep_cursor_rejects_boolean_version(tmp_path):
     payload = {
         "v": True,
+        "p": f"sha256:{hashlib.sha256(b'').hexdigest()}",
+        "q": f"sha256:{hashlib.sha256(b'needle').hexdigest()}",
+        "r": "",
+        "h": None,
+        "m": "search_start",
+        "a": None,
+    }
+    cursor = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+    store = CtxfsStore(tmp_path / "ctxfs")
+
+    with pytest.raises(ValueError, match="invalid ctxfs grep cursor"):
+        store.grep("user-1", "needle", cursor=cursor)
+
+
+def test_grep_cursor_rejects_pre_release_v2_format(tmp_path):
+    payload = {
+        "v": 2,
         "p": f"sha256:{hashlib.sha256(b'').hexdigest()}",
         "q": f"sha256:{hashlib.sha256(b'needle').hexdigest()}",
         "r": "",
@@ -2813,13 +2947,14 @@ def test_grep_cursor_rejects_file_start_without_disk_identity(tmp_path):
         ],
     )
     payload = {
-        "v": 2,
+        "v": 3,
         "p": f"sha256:{hashlib.sha256(b'local_files/root').hexdigest()}",
         "q": f"sha256:{hashlib.sha256(b'needle').hexdigest()}",
         "r": "b.md",
         "h": None,
         "m": "file_start",
         "a": None,
+        "c": False,
     }
     cursor = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
 
@@ -3862,7 +3997,7 @@ def test_folder_and_metadata_entry_points_reject_invalid_text_without_mutation(
     assert store.folders("user-1", machine.machine_id) == [folder]
 
 
-def test_catalog_access_is_tenant_scoped(tmp_path):
+def test_catalog_access_is_identity_scoped(tmp_path):
     store = CtxfsStore(tmp_path / "ctxfs")
     machine = store.register_machine(
         "user-1", local_registration_id="machine-1", name="Laptop", now=10
@@ -3939,7 +4074,7 @@ def test_catalog_lists_deterministically_and_preserves_existing_store_flow(tmp_p
     assert store.read("user-1", "local_files/root/notes.md").text == "still works"
 
 
-def test_machine_credential_binding_is_compare_and_set_and_tenant_scoped(tmp_path):
+def test_machine_credential_binding_is_compare_and_set_and_identity_scoped(tmp_path):
     store = CtxfsStore(tmp_path / "ctxfs")
     machine = store.register_machine(
         "user-1", local_registration_id="machine-1", name="Laptop", now=10

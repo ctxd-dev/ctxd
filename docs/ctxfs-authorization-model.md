@@ -2,10 +2,10 @@
 
 ## Status and scope
 
-This document defines the authorization contract for the first authenticated
-ctxfs network release. The release is **single-tenant**: all principals operate
-inside one server-owned context namespace, while scoped credentials control
-which capabilities and writer prefixes each client may use.
+This document defines the authorization contract for the authenticated ctxfs
+network release. All principals operate inside one server-owned context
+namespace, while scoped credentials control which capabilities and writer
+prefixes each client may use.
 
 This contract does not implement credential persistence, bearer-token parsing,
 HTTP middleware, CLI key administration, or TLS. Those layers must consume this
@@ -83,7 +83,6 @@ to how the server process is launched.
 ## Stability boundary
 
 The policy types and decisions are reusable domain primitives. Credential
-storage will produce their inputs, and REST/MCP middleware will enforce their
-outputs. A later multi-tenant release will require a separate design for tenant
-identity and storage isolation rather than treating request-provided user IDs as
-an authorization boundary.
+storage produces their inputs, and REST/MCP middleware enforces their outputs.
+Request-provided user IDs are provenance metadata and are never an
+authorization boundary.

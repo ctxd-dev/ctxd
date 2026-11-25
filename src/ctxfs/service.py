@@ -16,6 +16,8 @@ from ctxfs.models import (
     OperationKind,
     ReadLinesResult,
     ReadResult,
+    SearchPage,
+    SearchIndexStatus,
     Submission,
     SubmissionState,
 )
@@ -163,6 +165,29 @@ class CtxfsReadService:
             limit=limit,
             timeout_seconds=timeout_seconds,
             cursor=cursor,
+        )
+
+    def search(
+        self,
+        user_id: str,
+        query: str,
+        *,
+        prefix: str = "",
+        limit: int = 10,
+        offset: int = 0,
+        index_revision: int | None = None,
+        excerpt_bytes: int = 800,
+        excerpt_limit: int = 5,
+    ) -> SearchPage:
+        return self._store.search(
+            user_id,
+            query,
+            prefix=prefix,
+            limit=limit,
+            offset=offset,
+            index_revision=index_revision,
+            excerpt_bytes=excerpt_bytes,
+            excerpt_limit=excerpt_limit,
         )
 
 
@@ -328,6 +353,12 @@ class CtxfsMaintainer:
             (SubmissionState.QUEUED.value,),
         ).fetchone()
         return int(row["count"])
+
+    def search_index_status(self) -> SearchIndexStatus:
+        return self._store.search_index_status()
+
+    def rebuild_search_index(self) -> SearchIndexStatus:
+        return self._store.rebuild_search_index()
 
 
 class CtxfsManagementService:

@@ -32,6 +32,7 @@ from ctxfs import (
     PutOperation,
     ReadLinesResult,
     ReadResult,
+    SearchPage,
     Scope,
     Submission,
     authorize,
@@ -65,6 +66,18 @@ class CtxfsSubmissionRequest(BaseModel):
     writer_id: str = Field(min_length=1)
     writer_prefix: str = Field(min_length=1)
     submission: CtxfsSubmissionBody
+
+
+class CtxfsSearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(min_length=1, max_length=4096)
+    prefix: str = ""
+    limit: int = Field(default=10, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
+    index_revision: int | None = Field(default=None, ge=0)
+    excerpt_bytes: int = Field(default=800, ge=0, le=4096)
+    excerpt_limit: int = Field(default=5, ge=0, le=20)
 
 
 class MachineRegistrationBody(BaseModel):
@@ -439,6 +452,34 @@ def create_ctxfs_app(
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
+    @app.post(
+        "/api/ctxfs/search",
+        response_model=SearchPage,
+        response_model_exclude_none=True,
+    )
+    def search_ctxfs_paths(
+        payload: CtxfsSearchRequest,
+        _principal: Principal = Depends(require(Scope.READ)),
+        _identity_guard: None = Depends(_reject_user_id_query),
+    ) -> SearchPage:
+        try:
+            return _with_store(
+                root,
+                lambda store: _call_store(
+                    store.search,
+                    LOCAL_CTXFS_USER_ID,
+                    payload.query,
+                    prefix=payload.prefix,
+                    limit=payload.limit,
+                    offset=payload.offset,
+                    index_revision=payload.index_revision,
+                    excerpt_bytes=payload.excerpt_bytes,
+                    excerpt_limit=payload.excerpt_limit,
+                ),
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
     @app.post("/api/ctxfs/submissions", response_model=Submission)
     def submit_ctxfs_operations(
         payload: CtxfsSubmissionRequest,
@@ -581,10 +622,22 @@ def _execute_ctxfs_tool(
                 limit=arguments.get("limit"),
                 timeout_seconds=arguments.get("timeout_seconds", 2.0),
             )
+        if name == "search":
+            return _call_store(
+                store.search,
+                LOCAL_CTXFS_USER_ID,
+                arguments["query"],
+                prefix=arguments.get("prefix", ""),
+                limit=arguments.get("limit", 10),
+                offset=arguments.get("offset", 0),
+                index_revision=arguments.get("index_revision"),
+                excerpt_bytes=arguments.get("excerpt_bytes", 800),
+                excerpt_limit=arguments.get("excerpt_limit", 5),
+            )
         raise ValueError(f"Unknown ctxfs tool: {name}")
 
     value = _with_store(root, execute)
-    return value.model_dump(mode="json")
+    return value.model_dump(mode="json", exclude_none=name == "search")
 
 
 def _execute_ctxfs_grep(
